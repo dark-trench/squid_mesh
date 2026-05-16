@@ -314,30 +314,42 @@ advanced host applications can still implement a custom executor adapter if
 they need a different backend. That adapter boundary should come after the core
 protocol is trustworthy, matching the sequencing in #160 and #170.
 
-## Future Agent Steps
+## AI-Backed Steps
 
-Most workflow steps should stay simple: a `SquidMesh.Step`, a built-in step, or
-an explicit `Jido.Action`. Some future workflows may need a step that is itself
-a long-running agent.
+In the target runtime, the workflow run is already coordinated by a
+`WorkflowAgent`. That means Squid Mesh does not need a separate step kind just
+because a step implementation uses an LLM, calls tools, or delegates some local
+decision-making to Jido.
 
-The first-class `agent_step/3` idea was scoped as metadata first in
-[#138](https://github.com/ccarvalho-eng/squid_mesh/issues/138): agentic work
-should be visible to inspection and dashboards without letting Jido own Squid
-Mesh lifecycle transitions. The longer-term work described here is different: a
-step may eventually coordinate a child agent with its own journaled state, while
-the parent workflow still owns retries, replay, cancellation, terminal fences,
-and audit history.
+AI-backed work should usually be modeled as an ordinary step:
 
-Candidate use cases:
+```elixir
+step :triage_ticket, MyApp.Steps.TriageTicket,
+  input: [:ticket],
+  output: :triage,
+  retry: [max_attempts: 2]
+```
 
-- an AI research step that plans, calls tools, and emits intermediate findings
-- a human-in-the-loop step with reminders, escalations, and permission checks
-- a long-running external process monitor that needs heartbeats and resumable
-  local state
-- a sub-workflow that should expose its own audit thread while still reporting
-  one result to the parent workflow
+That keeps the important contract visible:
 
-The intended shape is:
+- the workflow owns lifecycle, retries, replay, cancellation, and audit history
+- the step owns its input/output contract and side-effect safety
+- model calls and tool calls stay inside the step boundary
+- inspection can explain the workflow without inventing a second workflow
+  primitive
+
+The closed `agent_step/3` issue
+[#138](https://github.com/ccarvalho-eng/squid_mesh/issues/138) explored an
+explicit metadata marker for agentic steps. With the workflow run itself moving
+to a Jido-agent coordinator, that separate DSL construct is not currently part
+of the core runtime roadmap.
+
+A new construct would only be worth adding later if it has different lifecycle
+semantics from a normal step. Examples might include a child journal, independent
+checkpointing, or a bounded sub-agent whose internal state must survive
+pause/resume, retry, replay, and deploys.
+
+That possible shape would look like this:
 
 ```mermaid
 flowchart TD
@@ -349,15 +361,15 @@ flowchart TD
     Result --> ParentRun
 ```
 
-Open design questions:
+Design questions before adding such a construct:
 
 | Question | Direction |
 | --- | --- |
-| How much step-agent state should be visible in `SquidMesh.explain_run/2`? | Surface high-signal checkpoints and links, not every internal token |
-| Should agent steps share the parent run thread or own a child thread? | Prefer child threads for long-running autonomous state |
-| How are permissions applied inside agent steps? | Host app policy should remain the trust boundary |
-| Can agent steps be replayed safely? | Require explicit replay contracts and side-effect idempotency |
-| Can a step agent outlive its parent run? | Default no; terminal parent runs should fence child work |
+| Does this need a child journal, or is a normal step enough? | Prefer a normal step unless separate durable state is required |
+| How much child state should appear in `SquidMesh.explain_run/2`? | Surface high-signal checkpoints and links, not every internal token |
+| How are permissions applied inside child work? | Host app policy should remain the trust boundary |
+| Can child work be replayed safely? | Require explicit replay contracts and side-effect idempotency |
+| Can child work outlive its parent run? | Default no; terminal parent runs should fence child work |
 
 ## Current Versus Target
 
@@ -381,7 +393,7 @@ These are intentionally not first-slice requirements:
 | Conditional paths and deferred continuation | [#140](https://github.com/ccarvalho-eng/squid_mesh/issues/140) | Durable planner facts and wakeup metadata |
 | Dynamic graph expansion | [#141](https://github.com/ccarvalho-eng/squid_mesh/issues/141) | Proven static Runic planning, stable identifiers, inspectable origin metadata |
 | Advanced reference workflows | [#109](https://github.com/ccarvalho-eng/squid_mesh/issues/109) | Implemented target features only, without Oban-specific assumptions |
-| Long-lived agent-backed steps | Follow-up design after [#138](https://github.com/ccarvalho-eng/squid_mesh/issues/138) | Child journal semantics, permission boundaries, replay contracts |
+| Child-agent step lifecycle | No active core issue | Only relevant if normal steps are insufficient because child journal semantics are required |
 
 ## Reading Order
 
