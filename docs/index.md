@@ -30,6 +30,8 @@ reference material.
 
 - [Architecture](architecture.md) for runtime responsibilities and execution
   flow
+- [Jido runtime architecture](jido_runtime_architecture.md) for the intended
+  journal, agent, heartbeat, and executor shape
 - [Positioning](positioning.md) for supported, planned, and out-of-scope
   workflow capabilities
 - [Durable dispatch protocol](durable_dispatch_protocol.md) for the Jido-native
