@@ -12,6 +12,7 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
 
   - what logical schedule window was intended by the scheduler
   - when Squid Mesh actually received and started processing the signal
+  - which stable idempotency key, when configured, protects the logical start
 
   Keeping both timestamps matters because delayed delivery is normal in durable
   executors. Workflow steps should not infer their schedule window from current
@@ -32,6 +33,8 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
           required(:timezone) => String.t(),
           required(:received_at) => String.t(),
           optional(:signal_id) => String.t(),
+          optional(:idempotency) => :return_existing_run | :skip_duplicate,
+          optional(:idempotency_key) => String.t(),
           optional(:intended_window) => map()
         }
 
@@ -47,16 +50,27 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
   `received_at` at activation delivery time, so operators can compare scheduler
   intent against actual processing. Any `received_at` value in the payload is
   ignored because this timestamp belongs to the runner boundary.
+
+  When the cron trigger opts into idempotency, the runtime also stores
+  `idempotency` and `idempotency_key` under the schedule context. The key is the
+  scheduler `signal_id`, either supplied by the host scheduler or derived from a
+  complete intended window. Without that identity, Squid Mesh rejects the start
+  because it cannot prove whether the activation is new or a duplicate.
   """
   @spec cron_context(module(), WorkflowDefinition.trigger(), map()) ::
-          {:ok, %{schedule: t()}} | {:error, {:invalid_schedule_signal_id, term()}}
+          {:ok, %{schedule: t()}}
+          | {:error, {:invalid_schedule_signal_id, term()}}
+          | {:error, {:missing_schedule_idempotency_key, atom()}}
   def cron_context(workflow, %{name: trigger_name, type: :cron, config: config}, payload)
       when is_atom(workflow) and is_map(config) and is_map(payload) do
     workflow_name = WorkflowDefinition.serialize_workflow(workflow)
+    raw_trigger_name = trigger_name
     trigger_name = WorkflowDefinition.serialize_trigger(trigger_name)
     intended_window = intended_window(payload)
+    idempotency = Map.get(config, :idempotency)
 
-    with {:ok, signal_id} <- signal_id(workflow_name, trigger_name, intended_window, payload) do
+    with {:ok, signal_id} <- signal_id(workflow_name, trigger_name, intended_window, payload),
+         {:ok, idempotency_key} <- idempotency_key(idempotency, signal_id, raw_trigger_name) do
       {:ok,
        %{
          schedule:
@@ -70,10 +84,18 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
              received_at: received_at()
            }
            |> maybe_put_signal_id(signal_id)
+           |> maybe_put_idempotency(idempotency, idempotency_key)
            |> maybe_put(:intended_window, intended_window)
        }}
     end
   end
+
+  defp idempotency_key(nil, _signal_id, _trigger_name), do: {:ok, :none}
+
+  defp idempotency_key(_idempotency, :none, trigger_name),
+    do: {:error, {:missing_schedule_idempotency_key, trigger_name}}
+
+  defp idempotency_key(_idempotency, signal_id, _trigger_name), do: {:ok, signal_id}
 
   defp signal_id(workflow_name, trigger_name, intended_window, payload) do
     case payload_value(payload, "signal_id") do
@@ -162,4 +184,12 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
 
   defp maybe_put_signal_id(map, :none), do: map
   defp maybe_put_signal_id(map, signal_id), do: Map.put(map, :signal_id, signal_id)
+
+  defp maybe_put_idempotency(map, nil, :none), do: map
+
+  defp maybe_put_idempotency(map, idempotency, idempotency_key) do
+    map
+    |> Map.put(:idempotency, idempotency)
+    |> Map.put(:idempotency_key, idempotency_key)
+  end
 end

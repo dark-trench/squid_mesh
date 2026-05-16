@@ -252,10 +252,15 @@ defmodule SquidMesh.Runtime.JournalTest do
   defp cleanup_storage do
     for suffix <- [:checkpoints, :threads, :thread_meta] do
       table = :"squid_mesh_journal_test_#{suffix}"
-
-      if :ets.whereis(table) != :undefined do
-        :ets.delete(table)
-      end
+      delete_table_if_present(table)
     end
+  end
+
+  defp delete_table_if_present(table) do
+    if :ets.whereis(table) != :undefined do
+      :ets.delete(table)
+    end
+  rescue
+    ArgumentError -> :ok
   end
 end

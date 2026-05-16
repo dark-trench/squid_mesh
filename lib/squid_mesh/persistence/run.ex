@@ -23,6 +23,7 @@ defmodule SquidMesh.Persistence.Run do
 
   @required_fields ~w(workflow trigger status input)a
   @optional_fields ~w(context current_step last_error replayed_from_run_id)a
+  @schedule_idempotency_index :squid_mesh_runs_schedule_idempotency_index
 
   schema "squid_mesh_runs" do
     field(:workflow, :string)
@@ -47,6 +48,10 @@ defmodule SquidMesh.Persistence.Run do
     run
     |> cast(attrs, @required_fields ++ @optional_fields)
     |> validate_required(@required_fields)
+    |> unique_constraint(:context,
+      name: @schedule_idempotency_index,
+      message: "has already been used for this scheduled start"
+    )
     |> foreign_key_constraint(:replayed_from_run_id)
   end
 end

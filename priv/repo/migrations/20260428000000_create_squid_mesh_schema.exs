@@ -21,6 +21,15 @@ defmodule SquidMesh.Repo.Migrations.CreateSquidMeshSchema do
     create index(:squid_mesh_runs, [:inserted_at])
     create index(:squid_mesh_runs, [:replayed_from_run_id])
 
+    execute(
+      """
+      CREATE UNIQUE INDEX squid_mesh_runs_schedule_idempotency_index
+      ON squid_mesh_runs (workflow, trigger, ((context->'schedule'->>'idempotency_key')))
+      WHERE context->'schedule'->>'idempotency_key' IS NOT NULL
+      """,
+      "DROP INDEX squid_mesh_runs_schedule_idempotency_index"
+    )
+
     create table(:squid_mesh_step_runs, primary_key: false) do
       add :id, :binary_id, primary_key: true
       add :run_id, references(:squid_mesh_runs, type: :binary_id, on_delete: :delete_all),

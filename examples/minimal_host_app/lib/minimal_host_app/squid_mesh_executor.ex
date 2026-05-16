@@ -50,7 +50,7 @@ defmodule MinimalHostApp.SquidMeshExecutor do
   def enqueue_cron(_config, workflow, trigger, opts) do
     changeset =
       workflow
-      |> Payload.cron(trigger)
+      |> Payload.cron(trigger, Keyword.take(opts, [:signal_id, :intended_window]))
       |> SquidMeshWorker.new(job_opts(opts))
 
     oban_name()

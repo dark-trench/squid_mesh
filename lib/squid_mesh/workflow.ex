@@ -117,15 +117,31 @@ defmodule SquidMesh.Workflow do
 
   @doc """
   Declares a cron-based trigger.
+
+  Pass `idempotency: :return_existing_run` when duplicate deliveries should
+  return the first run, or `idempotency: :skip_duplicate` when duplicates should
+  be reported as skipped. Idempotent cron triggers require either a
+  scheduler-provided `:signal_id` or an `:intended_window` with both bounds so
+  the runtime can derive a stable idempotency key.
   """
   defmacro cron(expression, opts \\ []) do
     quote bind_quoted: [expression: expression, opts: opts] do
-      SquidMesh.Workflow.__push_current_trigger_definition__(__MODULE__, %{
-        type: :cron,
-        config: %{
+      config =
+        %{
           expression: expression,
           timezone: Keyword.get(opts, :timezone)
         }
+        |> then(fn config ->
+          if Keyword.has_key?(opts, :idempotency) do
+            Map.put(config, :idempotency, Keyword.get(opts, :idempotency))
+          else
+            config
+          end
+        end)
+
+      SquidMesh.Workflow.__push_current_trigger_definition__(__MODULE__, %{
+        type: :cron,
+        config: config
       })
     end
   end

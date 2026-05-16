@@ -31,6 +31,7 @@ defmodule SquidMesh.RunStore do
           | {:invalid_trigger, atom() | String.t()}
           | {:invalid_workflow, module() | String.t()}
           | {:invalid_run, Ecto.Changeset.t()}
+          | {:duplicate_schedule_start, Persistence.schedule_start_identity()}
 
   @type get_error :: :not_found | :invalid_run_id
   @type transition_attrs :: %{
@@ -200,6 +201,31 @@ defmodule SquidMesh.RunStore do
         %RunRecord{} = run -> {:ok, Serialization.to_public_run(run)}
         nil -> {:error, :not_found}
       end
+    end
+  end
+
+  @doc false
+  @spec get_run_by_schedule_idempotency(module(), Persistence.schedule_start_identity()) ::
+          {:ok, Run.t()} | {:error, :not_found}
+  def get_run_by_schedule_idempotency(
+        repo,
+        %{workflow: workflow, trigger: trigger, idempotency_key: idempotency_key}
+      )
+      when is_binary(workflow) and is_binary(trigger) and is_binary(idempotency_key) do
+    query =
+      RunRecord
+      |> where([run], run.workflow == ^workflow)
+      |> where([run], run.trigger == ^trigger)
+      |> where(
+        [run],
+        fragment("?->'schedule'->>'idempotency_key' = ?", run.context, ^idempotency_key)
+      )
+      |> order_by([run], desc: run.inserted_at, desc: run.id)
+      |> limit(1)
+
+    case repo.one(query) do
+      %RunRecord{} = run -> {:ok, Serialization.to_public_run(run)}
+      nil -> {:error, :not_found}
     end
   end
 

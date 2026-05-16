@@ -74,7 +74,7 @@ host-executor path until the journal-backed execution path is wired through.
 | Jido.Storage-backed core | In progress | Protocol entries and projection checkpoints can be persisted through `Jido.Storage`; live runtime adoption remains follow-up work after [#162](https://github.com/ccarvalho-eng/squid_mesh/issues/162). |
 | Jido-native runtime agents | In progress | Workflow and dispatch agents can rebuild from durable journals and checkpoints; [#164](https://github.com/ccarvalho-eng/squid_mesh/issues/164) covers the completed agent foundation. |
 | IntentLedger executor | Planned | IntentLedger is the preferred durable executor direction for leases, retries, queue delivery, and worker recovery while Squid Mesh keeps custom executor support. |
-| Scheduled-start metadata | Supported, evolving | Intended schedule windows are stored in durable run context for cron starts. Duplicate-start protection remains tracked in [#145](https://github.com/ccarvalho-eng/squid_mesh/issues/145). |
+| Scheduled-start metadata | Supported | Intended schedule windows are stored in durable run context for cron starts. Cron triggers can opt into duplicate-start protection with stable scheduler signal ids or complete intended windows. |
 | Conditional and deferred continuation | Planned | Durable planner facts and deferred wakeups are tracked in [#140](https://github.com/ccarvalho-eng/squid_mesh/issues/140). |
 | Fan-out and fan-in contract | Planned | Runic-backed join and sibling behavior are tracked in [#142](https://github.com/ccarvalho-eng/squid_mesh/issues/142). |
 | Dynamic graph expansion | Planned | Runtime-safe dynamic subflows are deferred until after the core runtime and tracked in [#141](https://github.com/ccarvalho-eng/squid_mesh/issues/141). |
@@ -160,8 +160,5 @@ Track the linked issues for the larger runtime transition:
   integration.
 - [#163](https://github.com/ccarvalho-eng/squid_mesh/issues/163) covers
   journal-backed inspection and explanation projections.
-- [#145](https://github.com/ccarvalho-eng/squid_mesh/issues/145) covers
-  scheduled-start idempotency on top of the persisted schedule-window metadata.
-
 Oban can still be a practical executor choice in a host application. It is an
 executor implementation detail, not the core Squid Mesh runtime model.

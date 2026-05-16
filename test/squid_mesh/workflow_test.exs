@@ -1200,6 +1200,54 @@ defmodule SquidMesh.WorkflowTest do
            ]
   end
 
+  test "exposes cron trigger idempotency strategy" do
+    module =
+      compile_module("""
+      defmodule WorkflowWithIdempotentCronTrigger do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :scheduled_digest do
+            cron "0 9 * * *", timezone: "UTC", idempotency: :return_existing_run
+          end
+
+          step :load_invoice, WorkflowWithIdempotentCronTrigger.LoadInvoice
+        end
+      end
+      """)
+
+    assert [
+             %{
+               name: :scheduled_digest,
+               type: :cron,
+               config: %{
+                 expression: "0 9 * * *",
+                 timezone: "UTC",
+                 idempotency: :return_existing_run
+               }
+             }
+           ] = module.workflow_definition().triggers
+  end
+
+  test "fails when a cron trigger declares an invalid idempotency strategy" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidCronIdempotency do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :scheduled_digest do
+            cron "0 9 * * *", timezone: "UTC", idempotency: :retry
+          end
+
+          step :load_invoice, WorkflowWithInvalidCronIdempotency.LoadInvoice
+        end
+      end
+      """,
+      "trigger :scheduled_digest defines invalid cron idempotency strategy :retry"
+    )
+  end
+
   test "supports declarative built-in steps" do
     module =
       compile_module("""

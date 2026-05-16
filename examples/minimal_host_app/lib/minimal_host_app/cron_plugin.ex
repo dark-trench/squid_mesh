@@ -58,10 +58,11 @@ defmodule MinimalHostApp.CronPlugin do
   def init(opts) do
     conf = Keyword.fetch!(opts, :conf)
     workflows = Keyword.fetch!(opts, :workflows)
+    reboot_activation_id = reboot_activation_id()
 
     children =
       workflows
-      |> build_crontabs(SquidMeshExecutor.queue())
+      |> build_crontabs(SquidMeshExecutor.queue(), reboot_activation_id)
       |> Enum.map(fn {timezone, crontab} ->
         opts = [conf: conf, crontab: crontab, timezone: timezone]
         Supervisor.child_spec({Oban.Plugins.Cron, opts}, id: {:cron, timezone})
@@ -100,48 +101,57 @@ defmodule MinimalHostApp.CronPlugin do
   end
 
   defp validate_cron_trigger(workflow, trigger, :ok) do
-    %{name: trigger_name, config: %{expression: expression, timezone: timezone}} = trigger
+    %{config: %{expression: expression, timezone: timezone}} = trigger
 
     with {:ok, _payload} <- WorkflowDefinition.resolve_payload(trigger, %{}),
-         :ok <- validate_crontab_entry(workflow, trigger_name, expression, timezone) do
+         :ok <- validate_crontab_entry(workflow, trigger, expression, timezone) do
       {:cont, :ok}
     else
       {:error, {:invalid_payload, _details}} ->
         {:halt,
          {:error, "cron workflow #{inspect(workflow)} must resolve its payload from defaults"}}
 
+      {:error, :requires_dynamic_schedule_identity} ->
+        {:halt,
+         {:error,
+          "cron workflow #{inspect(workflow)} must provide dynamic schedule identity for idempotent recurring triggers"}}
+
       _other ->
         {:halt, {:error, "workflow #{inspect(workflow)} must define one valid cron trigger"}}
     end
   end
 
-  defp validate_crontab_entry(workflow, trigger_name, expression, timezone) do
-    opts = [args: Payload.cron(workflow, trigger_name)]
+  defp validate_crontab_entry(workflow, trigger, expression, timezone) do
+    with {:ok, payload} <- cron_payload(workflow, trigger, "validation") do
+      opts = [args: payload]
 
-    case Oban.Plugins.Cron.validate(
-           crontab: [{expression, SquidMeshWorker, opts}],
-           timezone: timezone
-         ) do
-      :ok -> :ok
-      {:error, reason} -> {:error, reason}
+      case Oban.Plugins.Cron.validate(
+             crontab: [{expression, SquidMeshWorker, opts}],
+             timezone: timezone
+           ) do
+        :ok -> :ok
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
-  defp build_crontabs(workflows, queue) do
+  defp build_crontabs(workflows, queue, reboot_activation_id) do
     workflows
-    |> Enum.flat_map(&build_entries(&1, queue))
+    |> Enum.flat_map(&build_entries(&1, queue, reboot_activation_id))
     |> Enum.group_by(fn {timezone, _entry} -> timezone end, fn {_timezone, entry} -> entry end)
     |> Enum.sort_by(fn {timezone, _entries} -> timezone end)
   end
 
-  defp build_entries(workflow, queue) do
+  defp build_entries(workflow, queue, reboot_activation_id) do
     {:ok, definition} = WorkflowDefinition.load(workflow)
 
     Enum.map(cron_triggers(definition), fn trigger ->
+      {:ok, payload} = cron_payload(workflow, trigger, reboot_activation_id)
+
       entry = {
         trigger.config.expression,
         SquidMeshWorker,
-        [args: Payload.cron(workflow, trigger.name), queue: queue]
+        [args: payload, queue: queue]
       }
 
       {trigger.config.timezone, entry}
@@ -150,5 +160,39 @@ defmodule MinimalHostApp.CronPlugin do
 
   defp cron_triggers(definition) do
     Enum.filter(definition.triggers, &(&1.type == :cron))
+  end
+
+  defp cron_payload(
+         workflow,
+         %{name: trigger_name, config: %{idempotency: idempotency}} = trigger,
+         reboot_activation_id
+       )
+       when idempotency in [:return_existing_run, :skip_duplicate] do
+    case trigger.config.expression do
+      "@reboot" ->
+        {:ok,
+         Payload.cron(workflow, trigger_name,
+           signal_id: reboot_signal_id(workflow, trigger, reboot_activation_id)
+         )}
+
+      _recurring_expression ->
+        {:error, :requires_dynamic_schedule_identity}
+    end
+  end
+
+  defp cron_payload(workflow, %{name: trigger_name}, _reboot_activation_id) do
+    {:ok, Payload.cron(workflow, trigger_name)}
+  end
+
+  defp reboot_activation_id do
+    16
+    |> :crypto.strong_rand_bytes()
+    |> Base.url_encode64(padding: false)
+  end
+
+  defp reboot_signal_id(workflow, trigger, reboot_activation_id) do
+    workflow_name = WorkflowDefinition.serialize_workflow(workflow)
+    trigger_name = WorkflowDefinition.serialize_trigger(trigger.name)
+    "minimal-host-app:reboot:#{reboot_activation_id}:#{workflow_name}:#{trigger_name}"
   end
 end

@@ -81,6 +81,11 @@ defmodule SquidMesh.Executor do
   `:intended_window` through to `SquidMesh.Executor.Payload.cron/3`. Squid Mesh
   persists those values as run context before workflow processing starts, so
   delayed workers do not need to infer the intended window from wall-clock time.
+
+  Cron triggers that opt into idempotency use the scheduler `:signal_id`, or a
+  deterministic id derived from a complete `:intended_window`, as the duplicate
+  start key. If the host omits both, the runtime rejects the start because it
+  cannot safely distinguish a new activation from a redelivery.
   """
   @callback enqueue_cron(Config.t(), module(), atom(), cron_enqueue_opts()) ::
               {:ok, metadata()} | {:error, enqueue_error()}

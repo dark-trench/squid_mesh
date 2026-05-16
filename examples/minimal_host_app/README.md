@@ -216,7 +216,7 @@ trigger :manual_digest do
 end
 
 trigger :daily_digest do
-  cron "@reboot", timezone: "Etc/UTC"
+  cron "@reboot", timezone: "Etc/UTC", idempotency: :return_existing_run
 
   payload do
     field :channel, :string, default: "ops"
@@ -228,6 +228,12 @@ end
 Both triggers run `:announce_digest` and `:record_digest_delivery`. The host app
 can start the manual entrypoint through `WorkflowRuns.start_manual_digest/1`,
 while the cron plugin starts the same workflow through `:daily_digest`.
+
+The cron trigger opts into scheduled-start idempotency. Because this example
+uses Oban's static `@reboot` cron args, the host plugin supplies one signal id
+per plugin boot; duplicate delivery of that same boot activation returns the
+first run instead of creating a second one. Normal recurring schedules should
+provide a per-window `signal_id` or `intended_window` from the host scheduler.
 
 ## Dependency Workflow Example
 

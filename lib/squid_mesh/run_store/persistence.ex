@@ -15,11 +15,17 @@ defmodule SquidMesh.RunStore.Persistence do
   # Replays intentionally drop step-derived context. Only reserved run-level
   # facts that describe how the run was started are copied into the new run.
   @reserved_run_context_keys [:schedule]
+  @schedule_idempotency_index "squid_mesh_runs_schedule_idempotency_index"
 
   @type transition_attrs :: %{
           optional(:context) => map(),
           optional(:current_step) => String.t() | atom() | nil,
           optional(:last_error) => map() | nil
+        }
+  @type schedule_start_identity :: %{
+          workflow: String.t(),
+          trigger: String.t(),
+          idempotency_key: String.t()
         }
 
   @spec build_run_attrs(module(), atom(), WorkflowDefinition.t(), map(), keyword()) :: map()
@@ -65,14 +71,23 @@ defmodule SquidMesh.RunStore.Persistence do
   end
 
   @spec insert_run_record(module(), map()) ::
-          {:ok, Run.t()} | {:error, {:invalid_run, Ecto.Changeset.t()}}
+          {:ok, Run.t()}
+          | {:error, {:invalid_run, Ecto.Changeset.t()}}
+          | {:error, {:duplicate_schedule_start, schedule_start_identity()}}
   def insert_run_record(repo, attrs) do
     %RunRecord{}
     |> RunRecord.changeset(attrs)
     |> repo.insert()
     |> case do
-      {:ok, run} -> {:ok, Serialization.to_public_run(run)}
-      {:error, changeset} -> {:error, {:invalid_run, changeset}}
+      {:ok, run} ->
+        {:ok, Serialization.to_public_run(run)}
+
+      {:error, changeset} ->
+        if schedule_start_duplicate?(changeset) do
+          {:error, {:duplicate_schedule_start, schedule_start_identity(attrs)}}
+        else
+          {:error, {:invalid_run, changeset}}
+        end
     end
   end
 
@@ -89,7 +104,11 @@ defmodule SquidMesh.RunStore.Persistence do
   end
 
   @spec insert_run_with_dispatch(module(), map(), (Run.t() -> {:ok, term()} | {:error, term()})) ::
-          {:ok, Run.t()} | {:error, {:invalid_run, Ecto.Changeset.t()} | term()}
+          {:ok, Run.t()}
+          | {:error,
+             {:invalid_run, Ecto.Changeset.t()}
+             | {:duplicate_schedule_start, schedule_start_identity()}
+             | term()}
   def insert_run_with_dispatch(repo, attrs, dispatch_fun) do
     case repo.transaction(fn ->
            with {:ok, run} <- insert_run_record(repo, attrs),
@@ -124,8 +143,17 @@ defmodule SquidMesh.RunStore.Persistence do
   end
 
   defp replay_context(context) do
-    pick_reserved_context(context)
+    context
+    |> pick_reserved_context()
+    |> Map.update(:schedule, nil, &replay_schedule_context/1)
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
   end
+
+  defp replay_schedule_context(schedule) when is_map(schedule) do
+    Map.drop(schedule, [:idempotency, "idempotency", :idempotency_key, "idempotency_key"])
+  end
+
+  defp replay_schedule_context(_schedule), do: nil
 
   defp replay_context_value(context, key) do
     case Map.fetch(context, Atom.to_string(key)) do
@@ -145,5 +173,26 @@ defmodule SquidMesh.RunStore.Persistence do
       {key, replay_context_value(context, key)}
     end)
     |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp schedule_start_duplicate?(changeset) do
+    Enum.any?(changeset.errors, fn
+      {_field, {_message, meta}} ->
+        meta[:constraint] == :unique and
+          to_string(meta[:constraint_name]) == @schedule_idempotency_index
+
+      _other ->
+        false
+    end)
+  end
+
+  defp schedule_start_identity(attrs) do
+    schedule = Map.get(attrs, :context, %{}) |> replay_context_value(:schedule)
+
+    %{
+      workflow: Map.fetch!(attrs, :workflow),
+      trigger: Map.fetch!(attrs, :trigger),
+      idempotency_key: replay_context_value(schedule, :idempotency_key)
+    }
   end
 end

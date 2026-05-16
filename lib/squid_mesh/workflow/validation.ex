@@ -11,6 +11,7 @@ defmodule SquidMesh.Workflow.Validation do
   @supported_transition_recovery_markers [:compensation, :undo]
   @supported_transaction_boundaries [:repo]
   @allowed_trigger_types [:manual, :cron]
+  @allowed_cron_idempotency_strategies [:return_existing_run, :skip_duplicate]
   @built_in_step_kinds [:wait, :log, :pause, :approval]
   @log_levels [:debug, :info, :warning, :error]
 
@@ -299,14 +300,35 @@ defmodule SquidMesh.Workflow.Validation do
     expression = Map.get(config, :expression)
     timezone = Map.get(config, :timezone)
 
-    if is_binary(expression) and expression != "" and is_binary(timezone) and timezone != "" do
-      errors
-    else
-      ["trigger #{inspect(name)} must define a cron expression and timezone" | errors]
-    end
+    errors
+    |> validate_cron_schedule(name, expression, timezone)
+    |> validate_cron_idempotency(name, Map.get(config, :idempotency))
   end
 
   defp validate_trigger_config(errors, _trigger), do: errors
+
+  defp validate_cron_schedule(errors, _name, expression, timezone)
+       when is_binary(expression) and expression != "" and is_binary(timezone) and timezone != "" do
+    errors
+  end
+
+  defp validate_cron_schedule(errors, name, _expression, _timezone) do
+    ["trigger #{inspect(name)} must define a cron expression and timezone" | errors]
+  end
+
+  defp validate_cron_idempotency(errors, _name, nil), do: errors
+
+  defp validate_cron_idempotency(errors, _name, strategy)
+       when strategy in @allowed_cron_idempotency_strategies do
+    errors
+  end
+
+  defp validate_cron_idempotency(errors, name, strategy) do
+    [
+      "trigger #{inspect(name)} defines invalid cron idempotency strategy #{inspect(strategy)}"
+      | errors
+    ]
+  end
 
   defp validate_payload_defaults(errors, payload_fields) do
     Enum.reduce(payload_fields, errors, fn field, acc ->

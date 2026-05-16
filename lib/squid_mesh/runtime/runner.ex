@@ -38,7 +38,11 @@ defmodule SquidMesh.Runtime.Runner do
 
   def perform(%{"kind" => "cron", "workflow" => workflow, "trigger" => trigger} = args, overrides)
       when is_binary(workflow) and is_binary(trigger) do
-    start_cron_trigger(workflow, trigger, args, overrides)
+    case start_cron_trigger(workflow, trigger, args, overrides) do
+      {:ok, {:duplicate_schedule_start, _run_id}} -> :ok
+      {:ok, {:skipped_schedule_start, _run_id}} -> :ok
+      result -> result
+    end
   end
 
   def perform(args, _overrides) do
@@ -113,7 +117,11 @@ defmodule SquidMesh.Runtime.Runner do
   timestamp. A signal id is recorded only when the scheduler supplies one or an
   intended window is available for deterministic derivation.
   """
-  @spec start_cron_trigger(String.t(), String.t(), keyword()) :: :ok | {:error, term()}
+  @spec start_cron_trigger(String.t(), String.t(), keyword()) ::
+          :ok
+          | {:ok, {:duplicate_schedule_start, Ecto.UUID.t()}}
+          | {:ok, {:skipped_schedule_start, Ecto.UUID.t()}}
+          | {:error, term()}
   def start_cron_trigger(workflow_name, trigger_name, overrides \\ [])
       when is_binary(workflow_name) and is_binary(trigger_name) do
     start_cron_trigger(workflow_name, trigger_name, %{}, overrides)
@@ -128,7 +136,11 @@ defmodule SquidMesh.Runtime.Runner do
   step, making delayed delivery and restart recovery observable to workflow
   steps and operators.
   """
-  @spec start_cron_trigger(String.t(), String.t(), map(), keyword()) :: :ok | {:error, term()}
+  @spec start_cron_trigger(String.t(), String.t(), map(), keyword()) ::
+          :ok
+          | {:ok, {:duplicate_schedule_start, Ecto.UUID.t()}}
+          | {:ok, {:skipped_schedule_start, Ecto.UUID.t()}}
+          | {:error, term()}
   def start_cron_trigger(workflow_name, trigger_name, signal_payload, overrides)
       when is_binary(workflow_name) and is_binary(trigger_name) and is_map(signal_payload) and
              is_list(overrides) do
@@ -138,14 +150,14 @@ defmodule SquidMesh.Runtime.Runner do
          {:ok, trigger_definition} <- WorkflowDefinition.trigger(definition, trigger),
          {:ok, schedule_context} <-
            ScheduleMetadata.cron_context(workflow, trigger_definition, signal_payload),
-         {:ok, _run} <-
+         {:ok, run_result} <-
            start_cron_run(
              workflow,
              trigger,
              schedule_context,
              overrides
            ) do
-      :ok
+      cron_start_result(run_result)
     else
       {:error, reason} ->
         {:error, reason}
@@ -168,4 +180,44 @@ defmodule SquidMesh.Runtime.Runner do
       overrides
     )
   end
+
+  defp cron_start_result(
+         {:duplicate_schedule_start, %SquidMesh.Run{id: run_id, context: context}}
+       ) do
+    case schedule_idempotency(context) do
+      :skip_duplicate -> {:ok, {:skipped_schedule_start, run_id}}
+      _other -> {:ok, {:duplicate_schedule_start, run_id}}
+    end
+  end
+
+  defp cron_start_result(%SquidMesh.Run{}), do: :ok
+
+  defp schedule_idempotency(context) when is_map(context) do
+    context
+    |> schedule_context()
+    |> schedule_value(:idempotency)
+    |> case do
+      "skip_duplicate" -> :skip_duplicate
+      :skip_duplicate -> :skip_duplicate
+      strategy -> strategy
+    end
+  end
+
+  defp schedule_idempotency(_context), do: nil
+
+  defp schedule_context(context) do
+    case Map.fetch(context, :schedule) do
+      {:ok, schedule} -> schedule
+      :error -> Map.get(context, "schedule", %{})
+    end
+  end
+
+  defp schedule_value(schedule, key) when is_map(schedule) do
+    case Map.fetch(schedule, key) do
+      {:ok, value} -> value
+      :error -> Map.get(schedule, Atom.to_string(key))
+    end
+  end
+
+  defp schedule_value(_schedule, _key), do: nil
 end

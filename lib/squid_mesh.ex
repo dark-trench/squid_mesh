@@ -137,6 +137,7 @@ defmodule SquidMesh do
   @doc false
   @spec start_run_with_initial_context(module(), atom(), map(), map(), keyword()) ::
           {:ok, Run.t()}
+          | {:ok, {:duplicate_schedule_start, Run.t()}}
           | {:error, {:missing_config, [atom()]}}
           | {:error, {:invalid_option, atom()}}
           | {:error, RunStore.create_error()}
@@ -145,9 +146,8 @@ defmodule SquidMesh do
       when is_atom(trigger_name) and is_map(payload) and is_map(initial_context) and
              is_list(overrides) do
     with :ok <- reject_public_start_options(overrides),
-         {:ok, config} <- Config.load(overrides),
-         {:ok, run} <-
-           RunStore.create_and_dispatch_run(
+         {:ok, config} <- Config.load(overrides) do
+      case RunStore.create_and_dispatch_run(
              config.repo,
              workflow,
              trigger_name,
@@ -155,8 +155,18 @@ defmodule SquidMesh do
              fn run -> Dispatcher.dispatch_run(config, run) end,
              initial_context: initial_context
            ) do
-      SquidMesh.Observability.emit_run_created(run)
-      {:ok, run}
+        {:ok, run} ->
+          SquidMesh.Observability.emit_run_created(run)
+          {:ok, run}
+
+        {:error, {:duplicate_schedule_start, identity}} ->
+          with {:ok, run} <- RunStore.get_run_by_schedule_idempotency(config.repo, identity) do
+            {:ok, {:duplicate_schedule_start, run}}
+          end
+
+        {:error, reason} ->
+          normalize_start_error(reason)
+      end
     else
       {:error, reason} when is_tuple(reason) and elem(reason, 0) == :invalid_run ->
         {:error, reason}
@@ -174,6 +184,14 @@ defmodule SquidMesh do
         {:error, {:dispatch_failed, reason}}
     end
   end
+
+  defp normalize_start_error(reason) when is_tuple(reason) and elem(reason, 0) == :invalid_run,
+    do: {:error, reason}
+
+  defp normalize_start_error(reason) when reason in [:not_found], do: {:error, reason}
+  defp normalize_start_error(%_{} = reason), do: {:error, {:dispatch_failed, reason}}
+  defp normalize_start_error(reason) when is_tuple(reason), do: {:error, reason}
+  defp normalize_start_error(reason), do: {:error, {:dispatch_failed, reason}}
 
   defp reject_public_start_options(overrides) do
     cond do
