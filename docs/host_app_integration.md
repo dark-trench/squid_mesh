@@ -194,11 +194,11 @@ processing. Steps can read it from `context.state.schedule`, and inspection or
 explanation surfaces can show the intended window separately from actual worker
 receive time.
 
-If the workflow declares `cron ..., idempotency: :reuse_existing` or
-`idempotency: :skip`, the scheduler identity also becomes the start idempotency
-key. Duplicate delivery of the same workflow, trigger, and key will not insert a
-second run. Idempotent cron starts must include `signal_id` or a complete
-`intended_window`; otherwise Squid Mesh returns
+If the workflow declares `cron ..., idempotency: :return_existing_run` or
+`idempotency: :skip_duplicate`, the scheduler identity also becomes the start
+idempotency key. Duplicate delivery of the same workflow, trigger, and key will
+not insert a second run. Idempotent cron starts must include `signal_id` or a
+complete `intended_window`; otherwise Squid Mesh returns
 `{:error, {:missing_schedule_idempotency_key, trigger_name}}`.
 
 That is the whole execution contract. Workflow modules, context modules, and

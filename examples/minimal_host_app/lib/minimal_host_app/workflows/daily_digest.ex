@@ -16,7 +16,7 @@ defmodule MinimalHostApp.Workflows.DailyDigest do
     end
 
     trigger :daily_digest do
-      cron "@reboot", timezone: "Etc/UTC", idempotency: :reuse_existing
+      cron "@reboot", timezone: "Etc/UTC", idempotency: :return_existing_run
 
       payload do
         field :channel, :string, default: "ops"

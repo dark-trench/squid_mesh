@@ -430,6 +430,34 @@ defmodule SquidMesh.RunStoreTest do
       refute Map.has_key?(replay_run.context, :attempt)
     end
 
+    test "drops schedule idempotency from replayed runs" do
+      schedule = %{
+        trigger_name: "scheduled_digest",
+        cron_expression: "0 9 * * *",
+        timezone: "UTC",
+        signal_id: "signal_123",
+        idempotency: "return_existing_run",
+        idempotency_key: "signal_123",
+        received_at: "2026-05-15T10:15:00Z"
+      }
+
+      assert {:ok, source_run} =
+               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, failed_run} =
+               RunStore.transition_run(Repo, source_run.id, :failed, %{
+                 current_step: :load_invoice,
+                 context: %{schedule: schedule},
+                 last_error: %{message: "timeout"}
+               })
+
+      assert {:ok, replay_run} = RunStore.replay_run(Repo, failed_run.id)
+
+      assert replay_run.context.schedule.signal_id == "signal_123"
+      refute Map.has_key?(replay_run.context.schedule, :idempotency)
+      refute Map.has_key?(replay_run.context.schedule, :idempotency_key)
+    end
+
     test "returns not found when the source run does not exist" do
       assert {:error, :not_found} = RunStore.replay_run(Repo, Ecto.UUID.generate())
     end

@@ -68,7 +68,7 @@ Supported trigger types:
 
 - `manual()`
 - `cron expression, timezone: "Etc/UTC"`
-- `cron expression, timezone: "Etc/UTC", idempotency: :reuse_existing`
+- `cron expression, timezone: "Etc/UTC", idempotency: :return_existing_run`
 
 Trigger names are business-oriented entrypoints such as `:payment_recovery` or
 `:invoice_delivery`. The trigger type describes how that entrypoint is invoked.
@@ -87,7 +87,7 @@ defmodule Content.Workflows.PostDailyDigest do
 
   workflow do
     trigger :daily_digest do
-      cron "0 9 * * 1-5", timezone: "Etc/UTC", idempotency: :reuse_existing
+      cron "0 9 * * 1-5", timezone: "Etc/UTC", idempotency: :return_existing_run
 
       payload do
         field :feed_url, :string, default: "https://example.com/feed.xml"
@@ -137,12 +137,12 @@ context, not through the workflow payload contract. If the host scheduler passes
 `context.state.schedule`. This is the value to use for windowed work because it
 represents the logical schedule period even when job delivery is delayed.
 
-Cron trigger idempotency is opt-in. Add `idempotency: :reuse_existing` when a
-duplicate delivery of the same scheduled activation should return the existing
-run instead of creating another run. `idempotency: :skip` is also accepted for
-hosts that want to describe the duplicate decision as a skip. Both strategies
-require a stable scheduler identity: pass `signal_id`, or pass an
-`intended_window` with `start_at` and `end_at` so Squid Mesh can derive one.
+Cron trigger idempotency is opt-in. Add `idempotency: :return_existing_run`
+when a duplicate delivery of the same scheduled activation should return the
+first run instead of creating another run. `idempotency: :skip_duplicate` is
+also accepted for hosts that want to describe the duplicate decision as a skip.
+Both strategies require a stable scheduler identity: pass `signal_id`, or pass
+an `intended_window` with `start_at` and `end_at` so Squid Mesh can derive one.
 When idempotency is enabled, the persisted schedule context includes
 `idempotency` and `idempotency_key`, and the database enforces uniqueness for
 that workflow, trigger, and key.

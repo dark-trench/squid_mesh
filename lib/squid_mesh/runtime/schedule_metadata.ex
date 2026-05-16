@@ -33,7 +33,7 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
           required(:timezone) => String.t(),
           required(:received_at) => String.t(),
           optional(:signal_id) => String.t(),
-          optional(:idempotency) => :reuse_existing | :skip,
+          optional(:idempotency) => :return_existing_run | :skip_duplicate,
           optional(:idempotency_key) => String.t(),
           optional(:intended_window) => map()
         }

@@ -143,8 +143,17 @@ defmodule SquidMesh.RunStore.Persistence do
   end
 
   defp replay_context(context) do
-    pick_reserved_context(context)
+    context
+    |> pick_reserved_context()
+    |> Map.update(:schedule, nil, &replay_schedule_context/1)
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
   end
+
+  defp replay_schedule_context(schedule) when is_map(schedule) do
+    Map.drop(schedule, [:idempotency, "idempotency", :idempotency_key, "idempotency_key"])
+  end
+
+  defp replay_schedule_context(_schedule), do: nil
 
   defp replay_context_value(context, key) do
     case Map.fetch(context, Atom.to_string(key)) do

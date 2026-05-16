@@ -1208,7 +1208,7 @@ defmodule SquidMesh.WorkflowTest do
 
         workflow do
           trigger :scheduled_digest do
-            cron "0 9 * * *", timezone: "UTC", idempotency: :reuse_existing
+            cron "0 9 * * *", timezone: "UTC", idempotency: :return_existing_run
           end
 
           step :load_invoice, WorkflowWithIdempotentCronTrigger.LoadInvoice
@@ -1223,7 +1223,7 @@ defmodule SquidMesh.WorkflowTest do
                config: %{
                  expression: "0 9 * * *",
                  timezone: "UTC",
-                 idempotency: :reuse_existing
+                 idempotency: :return_existing_run
                }
              }
            ] = module.workflow_definition().triggers

@@ -11,7 +11,7 @@ defmodule SquidMesh.Workflow.Validation do
   @supported_transition_recovery_markers [:compensation, :undo]
   @supported_transaction_boundaries [:repo]
   @allowed_trigger_types [:manual, :cron]
-  @allowed_cron_idempotency_strategies [:reuse_existing, :skip]
+  @allowed_cron_idempotency_strategies [:return_existing_run, :skip_duplicate]
   @built_in_step_kinds [:wait, :log, :pause, :approval]
   @log_levels [:debug, :info, :warning, :error]
 

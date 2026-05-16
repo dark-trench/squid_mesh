@@ -5,6 +5,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
   alias MinimalHostApp.Smoke
   alias MinimalHostApp.Workers.SquidMeshWorker
   alias MinimalHostApp.WorkflowRuns
+  alias MinimalHostApp.Workflows.DailyDigest
   alias Oban.Job
 
   defmodule InvalidRecurringIdempotentCronWorkflow do
@@ -12,7 +13,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     workflow do
       trigger :daily_digest do
-        cron "0 9 * * *", timezone: "Etc/UTC", idempotency: :reuse_existing
+        cron "0 9 * * *", timezone: "Etc/UTC", idempotency: :return_existing_run
 
         payload do
           field :channel, :string, default: "ops"
@@ -315,17 +316,31 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert run.trigger == :daily_digest
     assert is_binary(run.payload.digest_date)
     assert run.payload.channel == "ops"
-    assert run.context.schedule.idempotency == "reuse_existing"
+    assert run.context.schedule.idempotency == "return_existing_run"
     assert run.context.schedule.idempotency_key == signal_id
   end
 
+  test "generates a new reboot signal id for each cron plugin boot" do
+    first_signal_id = plugin_reboot_signal_id()
+    second_signal_id = plugin_reboot_signal_id()
+
+    assert first_signal_id != second_signal_id
+    assert String.starts_with?(first_signal_id, "minimal-host-app:reboot:")
+
+    assert String.ends_with?(
+             first_signal_id,
+             ":Elixir.MinimalHostApp.Workflows.DailyDigest:daily_digest"
+           )
+  end
+
   test "skips duplicate daily digest cron activation in the host example" do
+    signal_id = "minimal-host-app:test:daily_digest:duplicate"
+
     payload = %{
       "kind" => "cron",
       "workflow" => "Elixir.MinimalHostApp.Workflows.DailyDigest",
       "trigger" => "daily_digest",
-      "signal_id" =>
-        "minimal-host-app:reboot:Elixir.MinimalHostApp.Workflows.DailyDigest:daily_digest"
+      "signal_id" => signal_id
     }
 
     assert :ok = SquidMeshWorker.perform(%Job{args: payload})
@@ -336,8 +351,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     runs_with_signal =
       Enum.filter(runs, fn run ->
-        get_in(run.context, [:schedule, :idempotency_key]) ==
-          "minimal-host-app:reboot:Elixir.MinimalHostApp.Workflows.DailyDigest:daily_digest"
+        get_in(run.context, [:schedule, :idempotency_key]) == signal_id
       end)
 
     assert [_run] = runs_with_signal
@@ -428,6 +442,26 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
   defp unique_reboot_signal_id do
     "minimal-host-app:test:daily_digest:#{System.unique_integer([:positive])}"
+  end
+
+  defp plugin_reboot_signal_id do
+    assert {:ok, {_supervisor_flags, [child_spec]}} =
+             CronPlugin.init(conf: oban_config(), workflows: [DailyDigest])
+
+    %{start: {Oban.Plugins.Cron, :start_link, [opts]}} = child_spec
+    [{"@reboot", SquidMeshWorker, entry_opts}] = Keyword.fetch!(opts, :crontab)
+    payload = Keyword.fetch!(entry_opts, :args)
+    Map.fetch!(payload, "signal_id")
+  end
+
+  defp oban_config do
+    :minimal_host_app
+    |> Application.fetch_env!(Oban)
+    |> Keyword.put(:testing, :disabled)
+    |> Keyword.put(:plugins, false)
+    |> Keyword.put(:queues, false)
+    |> Keyword.put(:peer, {Oban.Peers.Isolated, [leader?: true]})
+    |> Oban.Config.new()
   end
 
   defp local_ledger_entries(run_id) do

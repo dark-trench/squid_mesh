@@ -26,6 +26,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   alias SquidMesh.StepRunStore
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
+  @reserved_context_keys [:schedule]
+
   @type execution_error ::
           :not_found
           | {:invalid_workflow, module() | String.t()}
@@ -935,7 +937,34 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   end
 
   defp merged_context(run, output) do
-    Map.merge(run.context || %{}, output)
+    base_context = run.context || %{}
+
+    base_context
+    |> Map.merge(output)
+    |> preserve_reserved_context(base_context)
+  end
+
+  defp preserve_reserved_context(context, base_context) do
+    Enum.reduce(@reserved_context_keys, context, fn key, acc ->
+      case context_value(base_context, key) do
+        nil -> acc
+        value -> put_reserved_context(acc, key, value)
+      end
+    end)
+  end
+
+  defp put_reserved_context(context, key, value) do
+    context
+    |> Map.delete(key)
+    |> Map.delete(Atom.to_string(key))
+    |> Map.put(key, value)
+  end
+
+  defp context_value(context, key) do
+    case Map.fetch(context, key) do
+      {:ok, value} -> value
+      :error -> Map.get(context, Atom.to_string(key))
+    end
   end
 
   defp normalize_attrs_fun(attrs_fun) when is_function(attrs_fun, 1), do: attrs_fun

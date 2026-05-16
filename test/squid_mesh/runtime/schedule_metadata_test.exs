@@ -8,7 +8,7 @@ defmodule SquidMesh.Runtime.ScheduleMetadataTest do
 
     workflow do
       trigger :scheduled_digest do
-        cron "0 9 * * *", timezone: "UTC", idempotency: :reuse_existing
+        cron "0 9 * * *", timezone: "UTC", idempotency: :return_existing_run
       end
 
       step :deliver_digest, ScheduledDigestWorkflow.DeliverDigest
@@ -26,7 +26,7 @@ defmodule SquidMesh.Runtime.ScheduleMetadataTest do
                }
              })
 
-    assert schedule.idempotency == :reuse_existing
+    assert schedule.idempotency == :return_existing_run
     assert schedule.idempotency_key == schedule.signal_id
   end
 

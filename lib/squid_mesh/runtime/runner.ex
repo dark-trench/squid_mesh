@@ -185,7 +185,7 @@ defmodule SquidMesh.Runtime.Runner do
          {:duplicate_schedule_start, %SquidMesh.Run{id: run_id, context: context}}
        ) do
     case schedule_idempotency(context) do
-      :skip -> {:ok, {:skipped_schedule_start, run_id}}
+      :skip_duplicate -> {:ok, {:skipped_schedule_start, run_id}}
       _other -> {:ok, {:duplicate_schedule_start, run_id}}
     end
   end
@@ -197,8 +197,8 @@ defmodule SquidMesh.Runtime.Runner do
     |> schedule_context()
     |> schedule_value(:idempotency)
     |> case do
-      "skip" -> :skip
-      :skip -> :skip
+      "skip_duplicate" -> :skip_duplicate
+      :skip_duplicate -> :skip_duplicate
       strategy -> strategy
     end
   end

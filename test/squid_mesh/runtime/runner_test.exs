@@ -10,7 +10,7 @@ defmodule SquidMesh.Runtime.RunnerTest do
 
     workflow do
       trigger :scheduled_digest do
-        cron "0 9 * * *", timezone: "UTC", idempotency: :reuse_existing
+        cron "0 9 * * *", timezone: "UTC", idempotency: :return_existing_run
       end
 
       step :deliver_digest, IdempotentCronWorkflow.DeliverDigest
@@ -54,7 +54,7 @@ defmodule SquidMesh.Runtime.RunnerTest do
 
     workflow do
       trigger :scheduled_digest do
-        cron "0 9 * * *", timezone: "UTC", idempotency: :skip
+        cron "0 9 * * *", timezone: "UTC", idempotency: :skip_duplicate
       end
 
       step :deliver_digest, SkipIdempotentCronWorkflow.DeliverDigest
@@ -86,7 +86,7 @@ defmodule SquidMesh.Runtime.RunnerTest do
 
     assert [%RunRecord{id: run_id, context: context}] = Repo.all(RunRecord)
     assert duplicate_run_id == run_id
-    assert get_in(context, ["schedule", "idempotency"]) == "reuse_existing"
+    assert get_in(context, ["schedule", "idempotency"]) == "return_existing_run"
     assert get_in(context, ["schedule", "idempotency_key"]) == "digest-2026-05-16T09"
   end
 
@@ -105,7 +105,19 @@ defmodule SquidMesh.Runtime.RunnerTest do
 
     assert [%RunRecord{id: run_id, context: context}] = Repo.all(RunRecord)
     assert skipped_run_id == run_id
-    assert get_in(context, ["schedule", "idempotency"]) == "skip"
+    assert get_in(context, ["schedule", "idempotency"]) == "skip_duplicate"
+  end
+
+  test "preserves reserved schedule metadata when a step returns schedule output" do
+    payload = cron_payload(__MODULE__.ScheduleClobberWorkflow)
+
+    assert :ok = Runner.perform(payload)
+    assert %{success: 1, failure: 0} = SquidMesh.Test.Executor.drain()
+
+    assert [%RunRecord{context: context}] = Repo.all(RunRecord)
+    assert get_in(context, ["schedule", "idempotency"]) == "return_existing_run"
+    assert get_in(context, ["schedule", "idempotency_key"]) == "digest-2026-05-16T09"
+    assert get_in(context, ["digest_delivery", "ok"]) == true
   end
 
   test "allows duplicate cron deliveries when idempotency is not enabled" do
@@ -125,5 +137,34 @@ defmodule SquidMesh.Runtime.RunnerTest do
         end_at: "2026-05-16T10:00:00Z"
       }
     )
+  end
+
+  defmodule ScheduleClobberWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :scheduled_digest do
+        cron "0 9 * * *", timezone: "UTC", idempotency: :return_existing_run
+      end
+
+      step :deliver_digest, SquidMesh.Runtime.RunnerTest.ScheduleClobberWorkflow.DeliverDigest
+    end
+  end
+
+  defmodule ScheduleClobberWorkflow.DeliverDigest do
+    use Jido.Action,
+      name: "deliver_digest",
+      description: "Delivers a scheduled digest with an accidental reserved key",
+      schema: []
+
+    @impl true
+    def run(_params, _context) do
+      {:ok,
+       %{
+         "schedule" => %{"idempotency_key" => "string-tampered"},
+         schedule: %{idempotency_key: "tampered"},
+         digest_delivery: %{ok: true}
+       }}
+    end
   end
 end
