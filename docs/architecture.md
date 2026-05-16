@@ -145,6 +145,7 @@ Current non-goals:
 
 - [Positioning](positioning.md)
 - [Workflow authoring guide](workflow_authoring.md)
+- [Jido runtime architecture](jido_runtime_architecture.md)
 - [Durable dispatch protocol](durable_dispatch_protocol.md)
 - [Host app integration](host_app_integration.md)
 - [Tool adapters](tool_adapters.md)
