@@ -66,6 +66,13 @@ inside a host application's supervision tree and infrastructure.
   explanation with reason-specific details, suggested runtime next actions, and
   evidence pointers back to durable journal revisions
 
+`SquidMesh.inspect_run/2` and `SquidMesh.explain_run/2`
+
+- keep the current runtime-table read model as the default public behavior
+- accept `read_model: :journal_projection` with `journal_storage:` when callers
+  want to inspect or explain a run from durable Jido journal projections without
+  switching the execution runtime
+
 `SquidMesh.Executor`
 
 - host-implemented behaviour for enqueueing step, compensation, and cron work
