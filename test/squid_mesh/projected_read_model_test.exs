@@ -81,6 +81,20 @@ defmodule SquidMesh.ProjectedReadModelTest do
              SquidMesh.explain_run(@run_id, [:bad])
   end
 
+  test "journal projection read model rejects malformed run ids without raising" do
+    assert {:error, {:invalid_option, {:run_id, 123}}} =
+             SquidMesh.inspect_run(123,
+               read_model: :journal_projection,
+               journal_storage: @storage
+             )
+
+    assert {:error, {:invalid_option, {:run_id, 123}}} =
+             SquidMesh.explain_run(123,
+               read_model: :journal_projection,
+               journal_storage: @storage
+             )
+  end
+
   defp append_run_entries(entries) do
     assert {:ok, _thread} = Journal.append_entries(@storage, entries)
   end

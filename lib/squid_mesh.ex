@@ -22,6 +22,16 @@ defmodule SquidMesh do
   @read_models [:runtime_tables, :journal_projection]
   @projection_read_options [:journal_storage, :queue, :now]
 
+  @typedoc """
+  Structured validation errors returned by the public read-model APIs.
+  """
+  @type read_option_error ::
+          {:invalid_option,
+           {:opts, term()}
+           | {:read_model, term()}
+           | {:journal_storage, nil}
+           | {:run_id, term()}}
+
   @doc """
   Loads Squid Mesh configuration from the application environment with optional
   runtime overrides.
@@ -204,6 +214,7 @@ defmodule SquidMesh do
           | {:error,
              :not_found
              | :invalid_run_id
+             | read_option_error()
              | Config.config_error()
              | ProjectedInspection.snapshot_error()}
   def inspect_run(run_id, overrides \\ []) do
@@ -242,6 +253,7 @@ defmodule SquidMesh do
           | {:error,
              :not_found
              | :invalid_run_id
+             | read_option_error()
              | Config.config_error()
              | ProjectedExplanation.explanation_error()}
   def explain_run(run_id, overrides \\ []) do
@@ -261,10 +273,14 @@ defmodule SquidMesh do
     end
   end
 
-  defp inspect_projected_run(run_id, overrides) do
+  defp inspect_projected_run(run_id, overrides) when is_binary(run_id) do
     with {:ok, storage} <- journal_storage(overrides) do
       ProjectedInspection.snapshot(storage, run_id, projected_snapshot_options(overrides))
     end
+  end
+
+  defp inspect_projected_run(run_id, _overrides) do
+    {:error, {:invalid_option, {:run_id, run_id}}}
   end
 
   defp explain_projected_run(run_id, overrides) do
