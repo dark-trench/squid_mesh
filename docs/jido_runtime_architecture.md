@@ -380,16 +380,21 @@ Design questions before adding such a construct:
 | Durable run state | Postgres run, step, attempt tables | Jido-backed run threads plus projections |
 | Dispatch | Host-provided `SquidMesh.Executor` | Dispatch agent plus default IntentLedger adapter |
 | Long-running recovery | Host executor redelivery and stale-step timeout | Lease heartbeat, expired claim recovery, journal rebuild |
-| Inspection | Tables, audit events, explanation model | Projection-backed read models, richer agent history |
+| Inspection | Tables, audit events, explanation model | Projection-backed snapshots, explanation views, richer agent history |
 | Storage | Host Repo and current migrations | `Jido.Storage` adapters, likely Postgres and Bedrock options |
 
 ## Later Runtime Features
 
-These are intentionally not first-slice requirements:
+These are intentionally not first-slice requirements. The first
+projection-backed inspection snapshot already rebuilds workflow and dispatch
+agent projections into a read-only view of pending dispatches, unapplied
+results, visible attempts, expired claims, terminal state, and projection
+anomalies. Wiring that view into the stable public inspection and explanation
+APIs remains a later step.
 
 | Feature | Issue | Runtime dependency |
 | --- | --- | --- |
-| Projection-backed inspection and explanation | [#163](https://github.com/ccarvalho-eng/squid_mesh/issues/163) | Stable run and dispatch journal entries plus checkpoints |
+| Public projection-backed inspection and explanation APIs | [#163](https://github.com/ccarvalho-eng/squid_mesh/issues/163) | Stable snapshot shape, run-index projections, and compatibility with the existing `SquidMesh.inspect_run/2` surface |
 | Conditional paths and deferred continuation | [#140](https://github.com/ccarvalho-eng/squid_mesh/issues/140) | Durable planner facts and wakeup metadata |
 | Dynamic graph expansion | [#141](https://github.com/ccarvalho-eng/squid_mesh/issues/141) | Proven static Runic planning, stable identifiers, inspectable origin metadata |
 | Advanced reference workflows | [#109](https://github.com/ccarvalho-eng/squid_mesh/issues/109) | Implemented target features only, without Oban-specific assumptions |

@@ -1,0 +1,226 @@
+defmodule SquidMesh.Runtime.ProjectedInspectionTest do
+  use ExUnit.Case, async: false
+
+  alias SquidMesh.Runtime.DispatchProtocol
+  alias SquidMesh.Runtime.Journal
+  alias SquidMesh.Runtime.ProjectedInspection
+  alias SquidMesh.Runtime.ProjectedInspection.Snapshot
+
+  @storage {Jido.Storage.ETS, table: :squid_mesh_projected_inspection_test}
+  @run_id "run_123"
+  @workflow "BillingWorkflow"
+  @queue "default"
+  @runnable_key "run_123:charge_card:1"
+  @idempotency_key "run_123:charge_card:payment_456"
+  @started_at ~U[2026-05-15 00:00:00Z]
+  @visible_at ~U[2026-05-15 00:00:10Z]
+  @claimed_at ~U[2026-05-15 00:00:20Z]
+  @completed_at ~U[2026-05-15 00:00:40Z]
+  @lease_until ~U[2026-05-15 00:01:00Z]
+  @expired_at ~U[2026-05-15 00:01:01Z]
+
+  setup do
+    cleanup_storage()
+    on_exit(&cleanup_storage/0)
+  end
+
+  test "builds a snapshot from run and dispatch projections" do
+    append_run_entries([run_started(), runnables_planned()])
+    append_dispatch_entries([attempt_scheduled()])
+
+    assert {:ok, %Snapshot{} = snapshot} =
+             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @visible_at)
+
+    assert snapshot.run_id == @run_id
+    assert snapshot.workflow == @workflow
+    assert snapshot.queue == @queue
+    assert snapshot.status == :running
+    assert snapshot.reason == :attempt_visible
+    assert snapshot.thread_revisions == %{run: 2, dispatch: 1}
+    assert snapshot.planned_runnable_keys == [@runnable_key]
+    assert snapshot.applied_runnable_keys == []
+    assert [%{runnable_key: @runnable_key, status: :available}] = snapshot.visible_attempts
+    assert snapshot.pending_dispatches == []
+    assert snapshot.pending_results == []
+    assert snapshot.expired_claims == []
+    assert snapshot.terminal? == false
+  end
+
+  test "shows planned runnables that have not been durably scheduled yet" do
+    append_run_entries([run_started(), runnables_planned()])
+
+    assert {:ok, %Snapshot{} = snapshot} =
+             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @visible_at)
+
+    assert snapshot.status == :running
+    assert snapshot.reason == :planned_dispatch_pending_schedule
+    assert snapshot.thread_revisions == %{run: 2, dispatch: 0}
+
+    assert [
+             %{
+               runnable_key: @runnable_key,
+               step: "charge_card",
+               input: %{"payment_id" => "pay_123"}
+             }
+           ] = snapshot.pending_dispatches
+
+    assert snapshot.visible_attempts == []
+    assert snapshot.attempts == []
+  end
+
+  test "shows completed dispatch results that are not applied to the run thread yet" do
+    append_run_entries([run_started(), runnables_planned()])
+    append_dispatch_entries([attempt_scheduled(), attempt_claimed(), attempt_completed()])
+
+    assert {:ok, %Snapshot{} = snapshot} =
+             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @completed_at)
+
+    assert snapshot.status == :running
+    assert snapshot.reason == :completed_result_pending_apply
+
+    assert [
+             %{
+               runnable_key: @runnable_key,
+               status: :completed,
+               result: %{"status" => "captured"},
+               applied?: false
+             }
+           ] = snapshot.pending_results
+
+    assert snapshot.visible_attempts == []
+    assert snapshot.expired_claims == []
+  end
+
+  test "uses terminal run facts to suppress dispatch redelivery views" do
+    append_run_entries([run_started(), runnables_planned(), run_terminal(:completed)])
+    append_dispatch_entries([attempt_scheduled(), attempt_claimed()])
+
+    assert {:ok, %Snapshot{} = snapshot} =
+             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @expired_at)
+
+    assert snapshot.status == :completed
+    assert snapshot.reason == :terminal
+    assert snapshot.terminal? == true
+    assert snapshot.visible_attempts == []
+    assert snapshot.expired_claims == []
+    assert [%{runnable_key: @runnable_key, status: :claimed}] = snapshot.attempts
+  end
+
+  test "returns not found when the run thread is missing" do
+    assert {:error, :not_found} =
+             ProjectedInspection.snapshot(@storage, "missing_run",
+               queue: @queue,
+               now: @visible_at
+             )
+  end
+
+  test "returns an invalid option error for unsupported snapshot options" do
+    assert {:error, {:invalid_option, {:now, :soon}}} =
+             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: :soon)
+
+    assert {:error, {:invalid_option, {:queue, %{name: @queue}}}} =
+             ProjectedInspection.snapshot(@storage, @run_id,
+               queue: %{name: @queue},
+               now: @visible_at
+             )
+  end
+
+  defp append_run_entries(entries) do
+    assert {:ok, _thread} = Journal.append_entries(@storage, entries)
+  end
+
+  defp append_dispatch_entries(entries) do
+    assert {:ok, _thread} = Journal.append_entries(@storage, entries)
+  end
+
+  defp run_started do
+    entry!(:run_started, %{
+      run_id: @run_id,
+      workflow: @workflow,
+      occurred_at: @started_at
+    })
+  end
+
+  defp runnables_planned do
+    entry!(:runnables_planned, %{
+      run_id: @run_id,
+      runnables: [planned_runnable()],
+      occurred_at: @visible_at
+    })
+  end
+
+  defp run_terminal(status) do
+    entry!(:run_terminal, %{
+      run_id: @run_id,
+      status: status,
+      occurred_at: @completed_at
+    })
+  end
+
+  defp attempt_scheduled do
+    entry!(:attempt_scheduled, scheduled_attrs())
+  end
+
+  defp attempt_claimed do
+    entry!(:attempt_claimed, %{
+      run_id: @run_id,
+      runnable_key: @runnable_key,
+      claim_id: "claim_1",
+      claim_token_hash: "token_hash_1",
+      owner_id: "worker_1",
+      queue: @queue,
+      lease_until: @lease_until,
+      occurred_at: @claimed_at
+    })
+  end
+
+  defp attempt_completed do
+    entry!(:attempt_completed, %{
+      run_id: @run_id,
+      runnable_key: @runnable_key,
+      claim_id: "claim_1",
+      claim_token_hash: "token_hash_1",
+      queue: @queue,
+      result: %{"status" => "captured"},
+      occurred_at: @completed_at
+    })
+  end
+
+  defp planned_runnable do
+    scheduled_attrs()
+    |> Map.delete(:occurred_at)
+  end
+
+  defp scheduled_attrs do
+    %{
+      run_id: @run_id,
+      runnable_key: @runnable_key,
+      idempotency_key: @idempotency_key,
+      attempt_number: 1,
+      queue: @queue,
+      step: "charge_card",
+      input: %{"payment_id" => "pay_123"},
+      visible_at: @visible_at,
+      occurred_at: @started_at
+    }
+  end
+
+  defp entry!(type, attrs) do
+    assert {:ok, entry} = DispatchProtocol.new_entry(type, attrs)
+    entry
+  end
+
+  defp cleanup_storage do
+    for suffix <- [:checkpoints, :threads, :thread_meta] do
+      delete_table_if_present(:"squid_mesh_projected_inspection_test_#{suffix}")
+    end
+  end
+
+  defp delete_table_if_present(table) do
+    if :ets.whereis(table) != :undefined do
+      :ets.delete(table)
+    end
+  rescue
+    ArgumentError -> :ok
+  end
+end
