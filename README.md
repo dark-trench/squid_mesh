@@ -1,7 +1,7 @@
 <div align="center">
   <img width="300" alt="sm-logo" src="https://github.com/user-attachments/assets/37bdd955-aacf-448e-b050-4d3305020c32" />
 
-  <p><strong>Workflow automation runtime for Elixir apps.</strong></p>
+  <p><strong>Durable workflows runtime for Elixir apps.</strong></p>
   
   <p>
     <a href="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml">
