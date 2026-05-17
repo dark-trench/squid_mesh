@@ -20,6 +20,7 @@ defmodule SquidMesh do
   alias SquidMesh.Runtime.Unblocker
 
   @read_models [:runtime_tables, :journal_projection]
+  @projection_read_options [:journal_storage, :queue, :now]
 
   @doc """
   Loads Squid Mesh configuration from the application environment with optional
@@ -215,7 +216,7 @@ defmodule SquidMesh do
   end
 
   defp inspect_runtime_table_run(run_id, overrides) do
-    overrides = Keyword.delete(overrides, :read_model)
+    overrides = runtime_table_read_options(overrides)
     {inspect_opts, config_overrides} = Keyword.split(overrides, [:include_history])
 
     with {:ok, config} <- Config.load(config_overrides) do
@@ -253,7 +254,7 @@ defmodule SquidMesh do
   end
 
   defp explain_runtime_table_run(run_id, overrides) do
-    overrides = Keyword.delete(overrides, :read_model)
+    overrides = runtime_table_read_options(overrides)
 
     with {:ok, config} <- Config.load(overrides) do
       RunExplanation.explain(config, run_id)
@@ -294,6 +295,10 @@ defmodule SquidMesh do
 
   defp projected_snapshot_options(overrides) do
     Keyword.take(overrides, [:queue, :now])
+  end
+
+  defp runtime_table_read_options(overrides) do
+    Keyword.drop(overrides, [:read_model | @projection_read_options])
   end
 
   @doc """

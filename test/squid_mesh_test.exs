@@ -792,6 +792,26 @@ defmodule SquidMeshTest do
       assert inspected_run == created_run
     end
 
+    test "runtime-table read model ignores projection-only options" do
+      assert {:ok, created_run} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_123"},
+                 repo: Repo
+               )
+
+      assert {:ok, %Run{} = inspected_run} =
+               SquidMesh.inspect_run(created_run.id,
+                 read_model: :runtime_tables,
+                 journal_storage: :not_used_by_runtime_tables,
+                 queue: "default",
+                 now: ~U[2026-05-15 00:00:00Z],
+                 repo: Repo
+               )
+
+      assert inspected_run.id == created_run.id
+    end
+
     test "returns not found when the run does not exist" do
       assert {:error, :not_found} =
                SquidMesh.inspect_run(Ecto.UUID.generate(), repo: Repo)

@@ -35,6 +35,22 @@ defmodule SquidMesh.RunExplanationTest do
                )
     end
 
+    test "runtime-table read model ignores projection-only options" do
+      assert {:ok, run} =
+               SquidMesh.start_run(SuccessfulWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert {:ok, %RunExplanation{} = explanation} =
+               SquidMesh.explain_run(run.id,
+                 read_model: :runtime_tables,
+                 journal_storage: :not_used_by_runtime_tables,
+                 queue: "default",
+                 now: ~U[2026-05-15 00:00:00Z],
+                 repo: Repo
+               )
+
+      assert explanation.status == :pending
+    end
+
     test "explains a failed run whose step exhausted retries" do
       assert {:ok, run} =
                SquidMesh.start_run(RetryExhaustedWorkflow, %{account_id: "acct_123"}, repo: Repo)
