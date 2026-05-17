@@ -117,6 +117,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
           attempts
         ),
       terminal?: terminal?,
+      terminal_status: WorkflowProjection.terminal_status(workflow_projection),
       thread_revisions: %{run: run_thread_rev, dispatch: dispatch_thread_rev},
       planned_runnables: normalize_runnables(WorkflowAgent.planned_runnables(workflow_agent)),
       planned_runnable_keys: WorkflowAgent.planned_runnable_keys(workflow_agent),

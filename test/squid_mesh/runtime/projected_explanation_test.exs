@@ -96,7 +96,26 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
     assert explanation.reason == :terminal
     assert explanation.step == nil
     assert explanation.next_actions == [:inspect_terminal_run]
-    assert explanation.details == %{terminal?: true}
+    assert explanation.details == %{terminal?: true, terminal_status: :completed}
+    assert explanation.evidence.terminal_status == :completed
+  end
+
+  test "explains failed and cancelled terminal runs with their terminal status" do
+    for status <- [:failed, :cancelled] do
+      cleanup_storage()
+      append_run_entries([run_started(), runnables_planned(), run_terminal(status)])
+      append_dispatch_entries([attempt_scheduled(), attempt_claimed()])
+
+      assert {:ok, %Explanation{} = explanation} =
+               ProjectedExplanation.explain(@storage, @run_id, queue: @queue, now: @expired_at)
+
+      assert explanation.status == status
+      assert explanation.reason == :terminal
+      assert explanation.step == nil
+      assert explanation.next_actions == [:inspect_terminal_run]
+      assert explanation.details == %{terminal?: true, terminal_status: status}
+      assert explanation.evidence.terminal_status == status
+    end
   end
 
   test "derives an explanation from an existing snapshot without rereading storage" do
@@ -107,6 +126,7 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
       status: :running,
       reason: :attempt_visible,
       terminal?: false,
+      terminal_status: nil,
       thread_revisions: %{run: 2, dispatch: 1},
       planned_runnable_keys: [@runnable_key],
       visible_attempts: [

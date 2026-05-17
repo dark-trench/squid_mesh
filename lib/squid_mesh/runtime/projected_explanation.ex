@@ -140,7 +140,7 @@ defmodule SquidMesh.Runtime.ProjectedExplanation do
   defp explanation_parts(%Snapshot{reason: :terminal} = snapshot) do
     {
       "The run is terminal according to the run journal.",
-      %{terminal?: snapshot.terminal?},
+      %{terminal?: snapshot.terminal?, terminal_status: snapshot.terminal_status},
       [:inspect_terminal_run],
       nil
     }
@@ -180,6 +180,7 @@ defmodule SquidMesh.Runtime.ProjectedExplanation do
     %{
       snapshot_reason: snapshot.reason,
       thread_revisions: snapshot.thread_revisions,
+      terminal_status: snapshot.terminal_status,
       planned_runnable_keys: snapshot.planned_runnable_keys,
       applied_runnable_keys: snapshot.applied_runnable_keys,
       attempt_counts: attempt_counts(snapshot.attempts),

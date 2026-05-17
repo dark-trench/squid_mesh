@@ -66,6 +66,10 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   def terminal?(%__MODULE__{}), do: true
 
   @doc false
+  @spec terminal_status(t()) :: atom() | nil
+  def terminal_status(%__MODULE__{terminal_status: terminal_status}), do: terminal_status
+
+  @doc false
   @spec planned_runnable_keys(t()) :: [String.t()]
   def planned_runnable_keys(%__MODULE__{planned_runnables: planned_runnables}) do
     planned_runnables
