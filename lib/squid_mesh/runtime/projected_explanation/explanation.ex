@@ -1,0 +1,61 @@
+defmodule SquidMesh.Runtime.ProjectedExplanation.Explanation do
+  @moduledoc """
+  Deterministic explanation built from a projection-backed inspection snapshot.
+
+  This struct is intentionally separate from the current table-backed
+  `SquidMesh.RunExplanation` shape. It describes what the Jido-native journals
+  prove right now and which runtime boundary would make forward progress, while
+  leaving mutation to recovery or dispatch modules.
+  """
+
+  alias SquidMesh.Runtime.ProjectedInspection.Snapshot
+
+  @type next_action ::
+          :schedule_pending_dispatch
+          | :apply_pending_result
+          | :recover_expired_claim
+          | :wait_for_worker_claim
+          | :wait_for_attempt_completion
+          | :inspect_terminal_run
+          | :wait_for_new_runnables
+          | :inspect_dispatch_state
+
+  @type t :: %__MODULE__{
+          run_id: String.t(),
+          workflow: String.t() | nil,
+          queue: String.t(),
+          status: atom(),
+          reason: Snapshot.reason(),
+          step: String.t() | nil,
+          summary: String.t(),
+          details: map(),
+          next_actions: [next_action()],
+          evidence: map()
+        }
+
+  @enforce_keys [
+    :run_id,
+    :workflow,
+    :queue,
+    :status,
+    :reason,
+    :step,
+    :summary,
+    :details,
+    :next_actions,
+    :evidence
+  ]
+
+  defstruct [
+    :run_id,
+    :workflow,
+    :queue,
+    :status,
+    :reason,
+    :step,
+    :summary,
+    :details,
+    next_actions: [],
+    evidence: %{}
+  ]
+end

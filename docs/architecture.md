@@ -60,6 +60,12 @@ inside a host application's supervision tree and infrastructure.
   unapplied results, visible attempts, expired claims, terminal state, and
   projection anomalies
 
+`SquidMesh.Runtime.ProjectedExplanation`
+
+- turns a projection-backed inspection snapshot into a deterministic operator
+  explanation with reason-specific details, suggested runtime next actions, and
+  evidence pointers back to durable journal revisions
+
 `SquidMesh.Executor`
 
 - host-implemented behaviour for enqueueing step, compensation, and cron work

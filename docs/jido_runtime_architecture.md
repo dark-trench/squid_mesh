@@ -389,8 +389,9 @@ These are intentionally not first-slice requirements. The first
 projection-backed inspection snapshot already rebuilds workflow and dispatch
 agent projections into a read-only view of pending dispatches, unapplied
 results, visible attempts, expired claims, terminal state, and projection
-anomalies. Wiring that view into the stable public inspection and explanation
-APIs remains a later step.
+anomalies. The first projected explanation layer derives deterministic
+reason-specific details and next actions from that snapshot. Wiring these views
+into the stable public inspection and explanation APIs remains a later step.
 
 | Feature | Issue | Runtime dependency |
 | --- | --- | --- |
