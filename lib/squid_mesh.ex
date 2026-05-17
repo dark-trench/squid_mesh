@@ -12,8 +12,14 @@ defmodule SquidMesh do
   alias SquidMesh.RunExplanation
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Dispatcher
+  alias SquidMesh.Runtime.ProjectedExplanation
+  alias SquidMesh.Runtime.ProjectedExplanation.Explanation, as: ProjectedExplanationResult
+  alias SquidMesh.Runtime.ProjectedInspection
+  alias SquidMesh.Runtime.ProjectedInspection.Snapshot, as: ProjectedInspectionSnapshot
   alias SquidMesh.Runtime.Reviewer
   alias SquidMesh.Runtime.Unblocker
+
+  @read_models [:runtime_tables, :journal_projection]
 
   @doc """
   Loads Squid Mesh configuration from the application environment with optional
@@ -187,10 +193,29 @@ defmodule SquidMesh do
 
   @doc """
   Fetches one workflow run by id.
+
+  By default this reads the stable runtime tables and returns `SquidMesh.Run`.
+  Pass `read_model: :journal_projection` with `journal_storage:` to rebuild the
+  Jido-native projection-backed snapshot from durable journal entries instead.
   """
-  @spec inspect_run(Ecto.UUID.t(), keyword()) ::
-          {:ok, Run.t()} | {:error, :not_found | :invalid_run_id | {:missing_config, [atom()]}}
+  @spec inspect_run(String.t(), keyword()) ::
+          {:ok, Run.t() | ProjectedInspectionSnapshot.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | Config.config_error()
+             | ProjectedInspection.snapshot_error()}
   def inspect_run(run_id, overrides \\ []) do
+    with {:ok, read_model} <- read_model(overrides) do
+      case read_model do
+        :runtime_tables -> inspect_runtime_table_run(run_id, overrides)
+        :journal_projection -> inspect_projected_run(run_id, overrides)
+      end
+    end
+  end
+
+  defp inspect_runtime_table_run(run_id, overrides) do
+    overrides = Keyword.delete(overrides, :read_model)
     {inspect_opts, config_overrides} = Keyword.split(overrides, [:include_history])
 
     with {:ok, config} <- Config.load(config_overrides) do
@@ -205,14 +230,70 @@ defmodule SquidMesh do
   Use `inspect_run/2` for the factual run snapshot and `explain_run/2` when an
   operator-facing surface needs the reason, evidence, and valid next actions for
   the run's current state.
+
+  By default this reads the stable runtime tables and returns
+  `SquidMesh.RunExplanation`. Pass `read_model: :journal_projection` with
+  `journal_storage:` to derive the explanation from durable Jido journal
+  projections instead.
   """
-  @spec explain_run(Ecto.UUID.t(), keyword()) ::
-          {:ok, RunExplanation.t()}
-          | {:error, :not_found | :invalid_run_id | Config.config_error()}
+  @spec explain_run(String.t(), keyword()) ::
+          {:ok, RunExplanation.t() | ProjectedExplanationResult.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | Config.config_error()
+             | ProjectedExplanation.explanation_error()}
   def explain_run(run_id, overrides \\ []) do
+    with {:ok, read_model} <- read_model(overrides) do
+      case read_model do
+        :runtime_tables -> explain_runtime_table_run(run_id, overrides)
+        :journal_projection -> explain_projected_run(run_id, overrides)
+      end
+    end
+  end
+
+  defp explain_runtime_table_run(run_id, overrides) do
+    overrides = Keyword.delete(overrides, :read_model)
+
     with {:ok, config} <- Config.load(overrides) do
       RunExplanation.explain(config, run_id)
     end
+  end
+
+  defp inspect_projected_run(run_id, overrides) do
+    with {:ok, storage} <- journal_storage(overrides) do
+      ProjectedInspection.snapshot(storage, run_id, projected_snapshot_options(overrides))
+    end
+  end
+
+  defp explain_projected_run(run_id, overrides) do
+    with {:ok, storage} <- journal_storage(overrides) do
+      ProjectedExplanation.explain(storage, run_id, projected_snapshot_options(overrides))
+    end
+  end
+
+  defp read_model(overrides) when is_list(overrides) do
+    if Keyword.keyword?(overrides) do
+      case Keyword.get(overrides, :read_model, :runtime_tables) do
+        read_model when read_model in @read_models -> {:ok, read_model}
+        read_model -> {:error, {:invalid_option, {:read_model, read_model}}}
+      end
+    else
+      {:error, {:invalid_option, {:opts, overrides}}}
+    end
+  end
+
+  defp read_model(overrides), do: {:error, {:invalid_option, {:opts, overrides}}}
+
+  defp journal_storage(overrides) do
+    case Keyword.get(overrides, :journal_storage) do
+      nil -> {:error, {:invalid_option, {:journal_storage, nil}}}
+      storage -> {:ok, storage}
+    end
+  end
+
+  defp projected_snapshot_options(overrides) do
+    Keyword.take(overrides, [:queue, :now])
   end
 
   @doc """
