@@ -16,9 +16,9 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
   alias SquidMesh.Runtime.DispatchAgent
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.DispatchProtocol.ActionAttempt
-  alias SquidMesh.Runtime.WorkflowAgent.Projection
   alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.Journal.Checkpoint
+  alias SquidMesh.Runtime.WorkflowAgent.Projection
 
   @type run_id :: String.t()
   @type apply_update :: %{
@@ -35,6 +35,9 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
         }
   @type storage_config :: Journal.storage_config()
 
+  @doc """
+  Rebuilds a workflow agent for one run from its durable run thread.
+  """
   @spec rebuild(storage_config(), run_id()) :: {:ok, Agent.t()} | {:error, term()}
   def rebuild(storage, run_id) when is_binary(run_id) do
     with {:ok, loaded_thread} <- Journal.load_thread(storage, {:run, run_id}),
@@ -52,9 +55,15 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
     end
   end
 
+  @doc """
+  Returns the stable Jido agent id for a workflow run.
+  """
   @spec agent_id(run_id()) :: String.t()
   def agent_id(run_id), do: "squid_mesh.workflow.#{run_id}"
 
+  @doc """
+  Stores the current workflow projection as a checkpoint for faster rebuilds.
+  """
   @spec put_checkpoint(storage_config(), Agent.t(), keyword()) :: :ok | {:error, term()}
   def put_checkpoint(
         storage,
@@ -68,26 +77,41 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
     Journal.put_checkpoint(storage, {:run, run_id}, projection, thread_rev, opts)
   end
 
+  @doc """
+  Returns the workflow projection status.
+  """
   @spec status(Agent.t()) :: atom()
   def status(%Agent{agent_module: __MODULE__, state: %{projection: projection}}) do
     Projection.status(projection)
   end
 
+  @doc """
+  Returns runnable keys planned by the workflow thread.
+  """
   @spec planned_runnable_keys(Agent.t()) :: [String.t()]
   def planned_runnable_keys(%Agent{agent_module: __MODULE__, state: %{projection: projection}}) do
     Projection.planned_runnable_keys(projection)
   end
 
+  @doc """
+  Returns planned runnable payloads in deterministic order.
+  """
   @spec planned_runnables(Agent.t()) :: [map()]
   def planned_runnables(%Agent{agent_module: __MODULE__, state: %{projection: projection}}) do
     Projection.planned_runnables(projection)
   end
 
+  @doc """
+  Returns runnable keys whose dispatch results have been applied to the run.
+  """
   @spec applied_runnable_keys(Agent.t()) :: MapSet.t(String.t())
   def applied_runnable_keys(%Agent{agent_module: __MODULE__, state: %{projection: projection}}) do
     Projection.applied_runnable_keys(projection)
   end
 
+  @doc """
+  Lists completed dispatch results that still need workflow application.
+  """
   @spec pending_results(Agent.t(), Agent.t()) :: [
           SquidMesh.Runtime.DispatchProtocol.ActionAttempt.t()
         ]
@@ -99,12 +123,17 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
 
     dispatch_agent
     |> DispatchAgent.completed_results()
-    |> Enum.filter(&(&1.run_id == run_id))
-    |> Enum.filter(&Projection.planned_runnable_key?(projection, &1.runnable_key))
+    |> Enum.filter(fn result ->
+      result.run_id == run_id and
+        Projection.planned_runnable_key?(projection, result.runnable_key)
+    end)
     |> Enum.reject(&MapSet.member?(applied_keys, &1.runnable_key))
     |> reject_when_terminal(projection)
   end
 
+  @doc """
+  Lists planned runnables that still need dispatch scheduling.
+  """
   @spec pending_dispatches(Agent.t(), Agent.t()) :: [map()]
   def pending_dispatches(
         %Agent{agent_module: __MODULE__, state: %{projection: projection}},
@@ -115,8 +144,10 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
 
     projection
     |> Projection.planned_runnables()
-    |> Enum.reject(&MapSet.member?(dispatched_keys, runnable_key(&1)))
-    |> Enum.reject(&MapSet.member?(applied_keys, runnable_key(&1)))
+    |> Enum.reject(fn runnable ->
+      key = runnable_key(runnable)
+      MapSet.member?(dispatched_keys, key) or MapSet.member?(applied_keys, key)
+    end)
     |> reject_when_terminal(projection)
   end
 

@@ -331,22 +331,25 @@ defmodule SquidMesh.Workflow.Validation do
   end
 
   defp validate_payload_defaults(errors, payload_fields) do
-    Enum.reduce(payload_fields, errors, fn field, acc ->
-      case Keyword.fetch(field.opts, :default) do
-        {:ok, default} ->
-          if valid_payload_default?(field.type, default) do
-            acc
-          else
-            [
-              "payload field #{inspect(field.name)} defines an invalid default for type #{inspect(field.type)}"
-              | acc
-            ]
-          end
+    Enum.reduce(payload_fields, errors, &validate_payload_default/2)
+  end
 
-        :error ->
-          acc
-      end
-    end)
+  defp validate_payload_default(field, acc) do
+    case Keyword.fetch(field.opts, :default) do
+      {:ok, default} -> maybe_invalid_payload_default(field, default, acc)
+      :error -> acc
+    end
+  end
+
+  defp maybe_invalid_payload_default(field, default, acc) do
+    if valid_payload_default?(field.type, default) do
+      acc
+    else
+      [
+        "payload field #{inspect(field.name)} defines an invalid default for type #{inspect(field.type)}"
+        | acc
+      ]
+    end
   end
 
   defp require_steps(errors, []), do: ["at least one step is required" | errors]
@@ -510,8 +513,6 @@ defmodule SquidMesh.Workflow.Validation do
     |> Atom.to_string()
     |> String.starts_with?("Elixir.")
   end
-
-  defp module_atom?(_callback), do: false
 
   defp validate_compensation_marker_conflict(errors, name, opts) do
     if Keyword.has_key?(opts, :compensate) and
@@ -830,13 +831,9 @@ defmodule SquidMesh.Workflow.Validation do
       true ->
         state = %{state | visiting: MapSet.put(state.visiting, step_name)}
 
-        Enum.reduce_while(Map.get(adjacency, step_name, []), {:ok, state}, fn dependency,
-                                                                              {:ok, acc} ->
-          case visit_dependency(dependency, adjacency, acc) do
-            {:ok, next_acc} -> {:cont, {:ok, next_acc}}
-            {:error, :cycle} -> {:halt, {:error, :cycle}}
-          end
-        end)
+        adjacency
+        |> Map.get(step_name, [])
+        |> visit_dependencies(adjacency, state)
         |> case do
           {:ok, next_state} ->
             {:ok,
@@ -850,6 +847,15 @@ defmodule SquidMesh.Workflow.Validation do
             {:error, :cycle}
         end
     end
+  end
+
+  defp visit_dependencies(dependencies, adjacency, state) do
+    Enum.reduce_while(dependencies, {:ok, state}, fn dependency, {:ok, acc} ->
+      case visit_dependency(dependency, adjacency, acc) do
+        {:ok, next_acc} -> {:cont, {:ok, next_acc}}
+        {:error, :cycle} -> {:halt, {:error, :cycle}}
+      end
+    end)
   end
 
   defp input_matches_type?(value, :string), do: is_binary(value)

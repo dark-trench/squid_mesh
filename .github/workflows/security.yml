@@ -1,0 +1,86 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 2 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+env:
+  ELIXIR_VERSION: "1.19.5"
+  OTP_VERSION: "28.4.1"
+
+jobs:
+  dependency-check:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Elixir
+        uses: ./.github/actions/setup-elixir
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Elixir security audit
+        run: mix deps.audit --ignore-file config/deps_audit.ignore
+
+  trivy:
+    name: Filesystem Vulnerability Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Run Trivy vulnerability scanner
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            aquasec/trivy:0.69.1 \
+            fs /repo \
+            --format sarif \
+            --output /repo/trivy-results.sarif \
+            --severity CRITICAL,HIGH,MEDIUM
+
+      - name: Upload Trivy scan results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        with:
+          sarif_file: "trivy-results.sarif"
+
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog OSS (PR)
+        if: github.event_name == 'pull_request'
+        uses: trufflesecurity/trufflehog@v3.95.3
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified
+
+      - name: TruffleHog OSS (Push/Schedule)
+        if: github.event_name != 'pull_request'
+        uses: trufflesecurity/trufflehog@v3.95.3
+        with:
+          path: ./
+          extra_args: --debug --only-verified

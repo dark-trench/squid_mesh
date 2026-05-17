@@ -3,32 +3,32 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
   import Ecto.Query
 
+  alias __MODULE__.ApprovalWorkflow
   alias __MODULE__.BackoffWorkflow
   alias __MODULE__.BuiltInWorkflow
   alias __MODULE__.CancellationCompletionWorkflow
+  alias __MODULE__.CompensationRetryWorkflow
+  alias __MODULE__.CompensationWorkflow
+  alias __MODULE__.CompleteUndoRoutingWorkflow
   alias __MODULE__.ConcurrentDependencyFailureWorkflow
   alias __MODULE__.ConcurrentDependencyWorkflow
   alias __MODULE__.ConcurrentRetryWorkflow
-  alias __MODULE__.CompensationWorkflow
-  alias __MODULE__.CompensationRetryWorkflow
-  alias __MODULE__.CompleteUndoRoutingWorkflow
   alias __MODULE__.DependencyFailureWorkflow
   alias __MODULE__.DependencyWorkflow
   alias __MODULE__.ErrorRoutingWorkflow
-  alias __MODULE__.ExplicitMappingWorkflow
   alias __MODULE__.ExhaustedRetryWorkflow
+  alias __MODULE__.ExplicitMappingWorkflow
   alias __MODULE__.FailingWorkflow
   alias __MODULE__.InputIsolationWorkflow
   alias __MODULE__.MissingExecutor
   alias __MODULE__.NativeStepErrorRoutingWorkflow
   alias __MODULE__.NativeStepInputValidationWorkflow
   alias __MODULE__.NativeStepOutputValidationWorkflow
-  alias __MODULE__.NativeStepRetryWorkflow
   alias __MODULE__.NativeStepRetryAfterWorkflow
+  alias __MODULE__.NativeStepRetryWorkflow
   alias __MODULE__.NativeStepScheduledSuccessWorkflow
   alias __MODULE__.NativeStepWorkflow
   alias __MODULE__.OrderedDependencyWorkflow
-  alias __MODULE__.ApprovalWorkflow
   alias __MODULE__.PauseMappedWorkflow
   alias __MODULE__.PauseWorkflow
   alias __MODULE__.RetrySurfaceWorkflow
@@ -45,9 +45,9 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias SquidMesh.Runtime.StepExecutor.Outcome
   alias SquidMesh.Runtime.StepExecutor.Preparation
   alias SquidMesh.StepRunStore
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
-  alias SquidMesh.Test.StepWorker
   alias SquidMesh.Test.Job
+  alias SquidMesh.Test.StepWorker
+  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   describe "workflow execution through the configured executor" do
     test "enqueues and executes the declared steps through Jido-backed actions" do
@@ -1669,16 +1669,18 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         end)
 
       assert :ok =
-               Outcome.persist_execution_result(
+               Outcome.apply_execution_result(
                  {:ok, %{invoice: %{id: "inv_456", status: "open"}}, []},
-                 :load_invoice,
-                 config,
-                 invalid_definition,
-                 prepared_run,
-                 step_run.id,
-                 attempt.id,
-                 attempt.attempt_number,
-                 System.monotonic_time()
+                 %{
+                   config: config,
+                   definition: invalid_definition,
+                   run: prepared_run,
+                   step_name: :load_invoice,
+                   step_run_id: step_run.id,
+                   attempt_id: attempt.id,
+                   attempt_number: attempt.attempt_number,
+                   started_at: System.monotonic_time()
+                 }
                )
 
       assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
@@ -1734,16 +1736,18 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         end)
 
       assert :ok =
-               Outcome.persist_execution_result(
+               Outcome.apply_execution_result(
                  {:ok, %{invoice: %{id: "inv_456", status: "open"}}, []},
-                 :load_invoice,
-                 config,
-                 invalid_definition,
-                 prepared_run,
-                 step_run.id,
-                 attempt.id,
-                 attempt.attempt_number,
-                 System.monotonic_time()
+                 %{
+                   config: config,
+                   definition: invalid_definition,
+                   run: prepared_run,
+                   step_name: :load_invoice,
+                   step_run_id: step_run.id,
+                   attempt_id: attempt.id,
+                   attempt_number: attempt.attempt_number,
+                   started_at: System.monotonic_time()
+                 }
                )
 
       assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
@@ -2056,7 +2060,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
     test "finalizes pause step history when cancellation wins before pause progression" do
       assert {:ok, config} = Config.load(repo: Repo)
-      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(PauseWorkflow)
+      assert {:ok, definition} = WorkflowDefinition.load(PauseWorkflow)
 
       assert {:ok, run} =
                SquidMesh.start_run(
@@ -2085,14 +2089,16 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert :ok =
                Outcome.apply_execution_result(
                  {:ok, %{}, [pause: true]},
-                 config,
-                 definition,
-                 running_run,
-                 :wait_for_approval,
-                 step_run.id,
-                 attempt.id,
-                 attempt.attempt_number,
-                 started_at
+                 %{
+                   config: config,
+                   definition: definition,
+                   run: running_run,
+                   step_name: :wait_for_approval,
+                   step_run_id: step_run.id,
+                   attempt_id: attempt.id,
+                   attempt_number: attempt.attempt_number,
+                   started_at: started_at
+                 }
                )
 
       assert {:ok, cancelled_run} =
@@ -2118,7 +2124,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
     test "finalizes pause step history when pause progression sees an already-cancelled run" do
       assert {:ok, config} = Config.load(repo: Repo)
-      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(PauseWorkflow)
+      assert {:ok, definition} = WorkflowDefinition.load(PauseWorkflow)
 
       assert {:ok, run} =
                SquidMesh.start_run(
@@ -2150,14 +2156,16 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert :ok =
                Outcome.apply_execution_result(
                  {:ok, %{}, [pause: true]},
-                 config,
-                 definition,
-                 running_run,
-                 :wait_for_approval,
-                 step_run.id,
-                 attempt.id,
-                 attempt.attempt_number,
-                 System.monotonic_time()
+                 %{
+                   config: config,
+                   definition: definition,
+                   run: running_run,
+                   step_name: :wait_for_approval,
+                   step_run_id: step_run.id,
+                   attempt_id: attempt.id,
+                   attempt_number: attempt.attempt_number,
+                   started_at: System.monotonic_time()
+                 }
                )
 
       assert {:ok, current_run} =
@@ -2840,6 +2848,8 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
+    alias SquidMesh.Test.Repo
+
     @impl true
     def run(%{account_id: account_id}, %{run_id: run_id}) do
       write_events!(run_id, account_id, ["reserved", "captured"])
@@ -2861,7 +2871,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
           }
         end)
 
-      {2, nil} = SquidMesh.Test.Repo.insert_all("transactional_events", entries)
+      {2, nil} = Repo.insert_all("transactional_events", entries)
       :ok
     end
   end
@@ -2873,6 +2883,8 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       schema: [
         account_id: [type: :string, required: true]
       ]
+
+    alias SquidMesh.Test.Repo
 
     @impl true
     def run(%{account_id: account_id}, %{run_id: run_id}) do
@@ -2895,7 +2907,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
           }
         end)
 
-      {2, nil} = SquidMesh.Test.Repo.insert_all("transactional_events", entries)
+      {2, nil} = Repo.insert_all("transactional_events", entries)
       :ok
     end
   end

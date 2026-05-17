@@ -7,6 +7,9 @@
     <a href="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml">
       <img alt="CI" src="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml/badge.svg" />
     </a>
+    <a href="https://codecov.io/gh/ccarvalho-eng/squid_mesh">
+      <img alt="Codecov" src="https://codecov.io/gh/ccarvalho-eng/squid_mesh/branch/main/graph/badge.svg" />
+    </a>
     <a href="https://hex.pm/packages/squid_mesh">
       <img alt="Hex" src="https://img.shields.io/hexpm/v/squid_mesh" />
     </a>

@@ -103,6 +103,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
 
   @entry_types @run_entry_types ++ @dispatch_entry_types ++ @run_index_entry_types
 
+  @doc false
   @spec new_entry(entry_type(), map() | keyword()) ::
           {:ok, Entry.t()} | {:error, {:unknown_entry_type, atom()} | {:missing_fields, [atom()]}}
   def new_entry(type, attrs) when is_atom(type) and type in @entry_types do

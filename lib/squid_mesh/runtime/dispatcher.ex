@@ -19,6 +19,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
   @type dispatch_metadata :: SquidMesh.Executor.metadata()
   @type dispatch_event :: {:run_dispatched, Run.t(), dispatch_metadata()}
 
+  @doc false
   @spec dispatch_run(Config.t(), Run.t(), dispatch_opts()) ::
           {:ok, dispatch_metadata() | [dispatch_metadata()]} | {:error, dispatch_error()}
   def dispatch_run(config, run, opts \\ [])
@@ -34,6 +35,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
     end
   end
 
+  @doc false
   @spec dispatch_run_with_events(Config.t(), Run.t(), dispatch_opts()) ::
           {:ok, dispatch_metadata() | [dispatch_metadata()], [dispatch_event()]}
           | {:error, dispatch_error()}
@@ -65,6 +67,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
     {:error, {:invalid_step, current_step}}
   end
 
+  @doc false
   @spec dispatch_steps(Config.t(), Run.t(), [dispatch_target()], keyword()) ::
           {:ok, dispatch_metadata() | [dispatch_metadata()]} | {:error, dispatch_error()}
   def dispatch_steps(%Config{} = config, %Run{} = run, steps, opts \\ []) when is_list(steps) do
@@ -78,6 +81,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
     end
   end
 
+  @doc false
   @spec dispatch_steps_with_events(Config.t(), Run.t(), [dispatch_target()], keyword()) ::
           {:ok, dispatch_metadata() | [dispatch_metadata()], [dispatch_event()]}
           | {:error, dispatch_error()}
@@ -129,28 +133,33 @@ defmodule SquidMesh.Runtime.Dispatcher do
   end
 
   defp dispatch_steps_transaction(config, run, steps, job_opts, schedule_pending?) do
-    if config.repo.in_transaction?() do
-      dispatch_steps_without_transaction(config, run, steps, job_opts, schedule_pending?)
-    else
-      # Pending step rows and executor enqueue are one dispatch unit when the
-      # host executor uses the same repo transaction.
-      case config.repo.transaction(fn ->
-             case dispatch_steps_without_transaction(
-                    config,
-                    run,
-                    steps,
-                    job_opts,
-                    schedule_pending?
-                  ) do
-               {:ok, jobs} -> jobs
-               {:error, reason} -> config.repo.rollback(reason)
-             end
-           end) do
-        {:ok, jobs} -> {:ok, jobs}
-        {:error, reason} -> {:error, reason}
-      end
+    config.repo.in_transaction?()
+    |> dispatch_steps_transaction_mode(config, run, steps, job_opts, schedule_pending?)
+  end
+
+  defp dispatch_steps_transaction_mode(true, config, run, steps, job_opts, schedule_pending?) do
+    dispatch_steps_without_transaction(config, run, steps, job_opts, schedule_pending?)
+  end
+
+  defp dispatch_steps_transaction_mode(false, config, run, steps, job_opts, schedule_pending?) do
+    # Pending step rows and executor enqueue are one dispatch unit when the
+    # host executor uses the same repo transaction.
+    case config.repo.transaction(fn ->
+           do_dispatch_steps_transaction(config, run, steps, job_opts, schedule_pending?)
+         end) do
+      {:ok, jobs} -> {:ok, jobs}
+      {:error, reason} -> {:error, reason}
     end
   end
+
+  defp do_dispatch_steps_transaction(config, run, steps, job_opts, schedule_pending?) do
+    config
+    |> dispatch_steps_without_transaction(run, steps, job_opts, schedule_pending?)
+    |> rollback_dispatch_error(config)
+  end
+
+  defp rollback_dispatch_error({:ok, jobs}, _config), do: jobs
+  defp rollback_dispatch_error({:error, reason}, config), do: config.repo.rollback(reason)
 
   defp dispatch_steps_without_transaction(config, run, steps, job_opts, schedule_pending?) do
     with {:ok, steps_to_dispatch} <- steps_to_dispatch(config, run, steps, schedule_pending?) do
@@ -199,14 +208,12 @@ defmodule SquidMesh.Runtime.Dispatcher do
   defp insert_step_jobs(_config, _run, [], _job_opts), do: {:ok, []}
 
   defp insert_step_jobs(config, %Run{} = run, steps, job_opts) do
-    try do
-      case steps do
-        [step] -> enqueue_single_step(config, run, step, job_opts)
-        multiple_steps -> config.executor.enqueue_steps(config, run, multiple_steps, job_opts)
-      end
-    rescue
-      exception -> {:error, exception}
+    case steps do
+      [step] -> enqueue_single_step(config, run, step, job_opts)
+      multiple_steps -> config.executor.enqueue_steps(config, run, multiple_steps, job_opts)
     end
+  rescue
+    exception -> {:error, exception}
   end
 
   defp enqueue_single_step(config, run, step, opts) do

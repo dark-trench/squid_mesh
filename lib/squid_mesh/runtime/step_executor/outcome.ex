@@ -17,12 +17,13 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   alias SquidMesh.Runtime.Compensation
   alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.RetryPolicy
+  alias SquidMesh.Runtime.StepExecutor.PreparedStep
   alias SquidMesh.Runtime.StepExecutor.Progression
   alias SquidMesh.Runtime.StepExecutor.Progression.Complete
   alias SquidMesh.Runtime.StepExecutor.Progression.DispatchRun
   alias SquidMesh.Runtime.StepExecutor.Progression.DispatchSteps
   alias SquidMesh.Runtime.StepExecutor.Progression.Update
-  alias SquidMesh.Runtime.StepExecutor.PreparedStep
+  alias SquidMesh.Runtime.StepInput
   alias SquidMesh.StepRunStore
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
@@ -40,45 +41,29 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
           | {:unknown_step, atom()}
           | {:missing_config, [atom()]}
 
-  @spec apply_execution_result(
-          {:ok, map(), keyword()} | {:error, term()},
-          Config.t(),
-          WorkflowDefinition.t(),
-          Run.t(),
-          atom(),
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
-          pos_integer(),
-          integer()
-        ) :: :ok | {:error, execution_error() | term()}
-  def apply_execution_result(
-        result,
-        %Config{} = config,
-        definition,
-        %Run{} = run,
-        step_name,
-        step_run_id,
-        attempt_id,
-        attempt_number,
-        started_at
-      ) do
+  @type execution_context :: %{
+          required(:config) => Config.t(),
+          required(:definition) => WorkflowDefinition.t(),
+          required(:run) => Run.t(),
+          required(:step_name) => atom(),
+          required(:step_run_id) => Ecto.UUID.t(),
+          required(:attempt_id) => Ecto.UUID.t(),
+          required(:attempt_number) => pos_integer(),
+          required(:started_at) => integer()
+        }
+
+  @doc false
+  @spec apply_execution_result({:ok, map(), keyword()} | {:error, term()}, execution_context()) ::
+          :ok | {:error, execution_error() | term()}
+  def apply_execution_result(result, context) when is_map(context) do
+    context = Map.put(context, :result, result)
+
     # Persist the attempt, step state, run progression, and successor dispatch
     # as one unit so a crash cannot commit terminal step history ahead of work.
-    case config.repo.transaction(fn ->
-           case do_apply_execution_result(
-                  result,
-                  config,
-                  definition,
-                  run,
-                  step_name,
-                  step_run_id,
-                  attempt_id,
-                  attempt_number,
-                  started_at
-                ) do
-             {:ok, events} -> events
-             {:error, reason} -> config.repo.rollback(reason)
-           end
+    case context.config.repo.transaction(fn ->
+           context
+           |> do_apply_execution_result()
+           |> rollback_execution_error(context.config)
          end) do
       {:ok, events} ->
         emit_post_commit_events(events)
@@ -89,16 +74,16 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     end
   end
 
+  defp rollback_execution_error({:ok, events}, _config), do: events
+  defp rollback_execution_error({:error, reason}, config), do: config.repo.rollback(reason)
+
   defp do_apply_execution_result(
-         {:ok, output, execution_opts},
-         %Config{} = config,
-         definition,
-         %Run{} = run,
-         step_name,
-         step_run_id,
-         attempt_id,
-         attempt_number,
-         started_at
+         %{
+           result: {:ok, output, execution_opts},
+           definition: definition,
+           step_name: step_name,
+           started_at: started_at
+         } = context
        ) do
     duration = System.monotonic_time() - started_at
 
@@ -108,31 +93,22 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       step
       |> pause_kind(execution_opts)
       |> handle_success_result(
-        config,
-        definition,
-        run,
-        step_name,
-        step_run_id,
-        attempt_id,
-        attempt_number,
-        duration,
-        mapped_output,
-        execution_opts
+        Map.merge(context, %{duration: duration, mapped_output: mapped_output})
       )
     end
   end
 
-  defp do_apply_execution_result(
-         {:error, reason},
-         %Config{} = config,
-         definition,
-         %Run{} = run,
-         step_name,
-         step_run_id,
-         attempt_id,
-         attempt_number,
-         started_at
-       ) do
+  defp do_apply_execution_result(%{
+         result: {:error, reason},
+         config: %Config{} = config,
+         definition: definition,
+         run: %Run{} = run,
+         step_name: step_name,
+         step_run_id: step_run_id,
+         attempt_id: attempt_id,
+         attempt_number: attempt_number,
+         started_at: started_at
+       }) do
     error = normalize_error(reason)
     duration = System.monotonic_time() - started_at
 
@@ -213,19 +189,17 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     end
   end
 
-  defp handle_success_result(
-         :pause,
-         %Config{} = config,
-         definition,
-         run,
-         step_name,
-         step_run_id,
-         attempt_id,
-         attempt_number,
-         duration,
-         mapped_output,
-         _execution_opts
-       ) do
+  defp handle_success_result(:pause, %{
+         config: %Config{} = config,
+         definition: definition,
+         run: run,
+         step_name: step_name,
+         step_run_id: step_run_id,
+         attempt_id: attempt_id,
+         attempt_number: attempt_number,
+         duration: duration,
+         mapped_output: mapped_output
+       }) do
     with {:ok, pause_target} <- WorkflowDefinition.transition_target(definition, step_name, :ok),
          {:ok, _step_run} <-
            StepRunStore.persist_pause_resume(
@@ -246,19 +220,16 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     end
   end
 
-  defp handle_success_result(
-         :approval,
-         %Config{} = config,
-         definition,
-         run,
-         step_name,
-         step_run_id,
-         attempt_id,
-         attempt_number,
-         duration,
-         _mapped_output,
-         _execution_opts
-       ) do
+  defp handle_success_result(:approval, %{
+         config: %Config{} = config,
+         definition: definition,
+         run: run,
+         step_name: step_name,
+         step_run_id: step_run_id,
+         attempt_id: attempt_id,
+         attempt_number: attempt_number,
+         duration: duration
+       }) do
     with {:ok, targets} <- WorkflowDefinition.approval_transition_targets(definition, step_name),
          {:ok, output_key} <- WorkflowDefinition.step_output_mapping(definition, step_name),
          {:ok, _step_run} <-
@@ -275,19 +246,18 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     end
   end
 
-  defp handle_success_result(
-         nil,
-         %Config{} = config,
-         definition,
-         run,
-         step_name,
-         step_run_id,
-         attempt_id,
-         attempt_number,
-         duration,
-         mapped_output,
-         execution_opts
-       ) do
+  defp handle_success_result(nil, %{
+         config: %Config{} = config,
+         definition: definition,
+         run: run,
+         step_name: step_name,
+         step_run_id: step_run_id,
+         attempt_id: attempt_id,
+         attempt_number: attempt_number,
+         duration: duration,
+         mapped_output: mapped_output,
+         result: {:ok, _output, execution_opts}
+       }) do
     with {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
          {:ok, _step_run} <- StepRunStore.complete_step(config.repo, step_run_id, mapped_output) do
       with {:ok, events} <-
@@ -323,6 +293,12 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
              last_error: nil
            }
          ) do
+      {:ok, %{terminal_noop?: true, finalized_step?: true, error: error}} ->
+        {:ok, [step_failed_event(run, step_name, attempt_number, duration, error)]}
+
+      {:ok, %{terminal_noop?: true}} ->
+        {:ok, []}
+
       {:ok,
        %{
          run: %Run{status: :cancelled} = cancelled_run,
@@ -344,50 +320,9 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       {:ok, %{run: paused_run, from_status: from_status, to_status: to_status}} ->
         {:ok, [run_transition_event(paused_run, from_status, to_status)]}
 
-      {:ok, %{terminal_noop?: true, finalized_step?: true, error: error}} ->
-        {:ok, [step_failed_event(run, step_name, attempt_number, duration, error)]}
-
-      {:ok, %{terminal_noop?: true}} ->
-        {:ok, []}
-
       {:error, reason} ->
         {:error, reason}
     end
-  end
-
-  @spec persist_execution_result(
-          {:ok, map(), keyword()} | {:error, term()},
-          atom(),
-          Config.t(),
-          WorkflowDefinition.t(),
-          Run.t(),
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
-          pos_integer(),
-          integer()
-        ) :: :ok | {:error, execution_error() | term()}
-  def persist_execution_result(
-        result,
-        step_name,
-        config,
-        definition,
-        run,
-        step_run_id,
-        attempt_id,
-        attempt_number,
-        started_at
-      ) do
-    apply_execution_result(
-      result,
-      config,
-      definition,
-      run,
-      step_name,
-      step_run_id,
-      attempt_id,
-      attempt_number,
-      started_at
-    )
   end
 
   @doc false
@@ -399,7 +334,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         %Run{} = run,
         %PreparedStep{step_name: step_name, step_run: %{output: output}}
       ) do
-    mapped_output = SquidMesh.Runtime.StepInput.normalize_map_keys(output || %{})
+    mapped_output = StepInput.normalize_map_keys(output || %{})
 
     with {:ok, events} <-
            advance_after_completed_step(config, definition, run, step_name, mapped_output, []) do
@@ -554,11 +489,15 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
           resolve_dependency_success(repo, definition, latest_run)
 
         true ->
-          case WorkflowDefinition.transition_target(definition, step_name, :ok) do
-            {:ok, target} -> {:ok, latest_run, target}
-            {:error, reason} -> {:error, latest_run, reason}
-          end
+          success_transition_target(definition, latest_run, step_name)
       end
+    end
+  end
+
+  defp success_transition_target(definition, latest_run, step_name) do
+    case WorkflowDefinition.transition_target(definition, step_name, :ok) do
+      {:ok, target} -> {:ok, latest_run, target}
+      {:error, reason} -> {:error, latest_run, reason}
     end
   end
 
@@ -627,10 +566,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       case WorkflowDefinition.transition_target(definition, step_name, :error) do
         {:ok, target} ->
           Logger.warning("workflow step failed; routing to error transition")
-
-          with :ok <- record_failure_recovery(config.repo, definition, step_name, step_run_id) do
-            advance_after_failure(config, run, target)
-          end
+          record_failure_and_advance(config, definition, run, step_name, step_run_id, target)
 
         {:error, {:unknown_transition, _from_step, :error}} ->
           Logger.error("workflow step failed")
@@ -639,6 +575,13 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         {:error, reason} ->
           {:error, reason}
       end
+    end
+  end
+
+  defp record_failure_and_advance(config, definition, run, step_name, step_run_id, target) do
+    case record_failure_recovery(config.repo, definition, step_name, step_run_id) do
+      :ok -> advance_after_failure(config, run, target)
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -676,7 +619,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     |> apply_progression(
       run.id,
       Progression.dispatch_run(
-        normalize_attrs_fun(attrs),
+        fn _current_run -> attrs end,
         [],
         fn _current_run, reason ->
           dispatch_error = %{
@@ -787,7 +730,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       error
       |> Map.from_struct()
       |> Map.get(:details, %{})
-      |> SquidMesh.Runtime.StepInput.normalize_map_keys()
+      |> StepInput.normalize_map_keys()
 
     base_error = %{message: Exception.message(error)}
 
@@ -872,8 +815,6 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   defp normalize_success_resolution_error({:invalid_dependency_graph, message}) do
     %{reason: :invalid_dependency_graph, message: message}
   end
-
-  defp normalize_success_resolution_error(other), do: %{reason: inspect(other)}
 
   defp normalize_dispatch_cause({:dispatch_failed, reason}), do: normalize_dispatch_cause(reason)
 
@@ -966,7 +907,4 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       :error -> Map.get(context, Atom.to_string(key))
     end
   end
-
-  defp normalize_attrs_fun(attrs_fun) when is_function(attrs_fun, 1), do: attrs_fun
-  defp normalize_attrs_fun(attrs) when is_map(attrs), do: fn _run -> attrs end
 end

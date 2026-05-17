@@ -3,6 +3,8 @@ defmodule Mix.Tasks.SquidMesh.InstallTest do
 
   import ExUnit.CaptureIO
 
+  alias Mix.Tasks.SquidMesh.Install
+
   @task "squid_mesh.install"
 
   setup do
@@ -23,7 +25,7 @@ defmodule Mix.Tasks.SquidMesh.InstallTest do
     output =
       File.cd!(tmp_dir, fn ->
         capture_io(fn ->
-          Mix.Tasks.SquidMesh.Install.run([])
+          Install.run([])
         end)
       end)
 
@@ -54,7 +56,7 @@ defmodule Mix.Tasks.SquidMesh.InstallTest do
     output =
       File.cd!(tmp_dir, fn ->
         capture_io(fn ->
-          Mix.Tasks.SquidMesh.Install.run([])
+          Install.run([])
         end)
       end)
 

@@ -21,6 +21,7 @@ defmodule SquidMesh.Workflow.Definition do
           config: map(),
           payload: [payload_field()]
         }
+  @type payload_contract :: t() | trigger()
   @type step :: %{name: atom(), module: module() | built_in_step_kind(), opts: keyword()}
   @type failure_recovery_strategy :: :compensation | :undo
   @type transition :: %{
@@ -108,7 +109,7 @@ defmodule SquidMesh.Workflow.Definition do
   @doc """
   Validates a payload map against the workflow payload contract.
   """
-  @spec validate_payload(t(), map()) ::
+  @spec validate_payload(payload_contract(), map()) ::
           :ok | {:error, {:invalid_payload, payload_error_details()}}
   def validate_payload(definition, payload) when is_map(payload) do
     declared_fields = definition.payload
@@ -130,19 +131,7 @@ defmodule SquidMesh.Workflow.Definition do
 
     invalid_types =
       declared_fields
-      |> Enum.reduce(%{}, fn field, acc ->
-        case Map.fetch(payload, field.name) do
-          {:ok, value} ->
-            if input_matches_type?(value, field.type) do
-              acc
-            else
-              Map.put(acc, field.name, field.type)
-            end
-
-          :error ->
-            acc
-        end
-      end)
+      |> Enum.reduce(%{}, &invalid_payload_type(payload, &1, &2))
 
     errors =
       %{}
@@ -159,26 +148,36 @@ defmodule SquidMesh.Workflow.Definition do
   @doc """
   Resolves payload defaults and validates the final payload for a new run.
   """
-  @spec resolve_payload(t(), map()) ::
+  @spec resolve_payload(payload_contract(), map()) ::
           {:ok, map()} | {:error, {:invalid_payload, payload_error_details()}}
   def resolve_payload(definition, payload) when is_map(payload) do
-    resolved_payload =
-      Enum.reduce(definition.payload, payload, fn field, acc ->
-        case Map.has_key?(acc, field.name) do
-          true ->
-            acc
-
-          false ->
-            case Keyword.fetch(field.opts, :default) do
-              {:ok, default} -> Map.put(acc, field.name, resolve_default!(default))
-              :error -> acc
-            end
-        end
-      end)
+    resolved_payload = Enum.reduce(definition.payload, payload, &put_payload_default/2)
 
     case validate_payload(definition, resolved_payload) do
       :ok -> {:ok, resolved_payload}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp invalid_payload_type(payload, field, acc) do
+    case Map.fetch(payload, field.name) do
+      {:ok, value} -> maybe_put_invalid_payload_type(acc, field, value)
+      :error -> acc
+    end
+  end
+
+  defp maybe_put_invalid_payload_type(acc, field, value) do
+    if input_matches_type?(value, field.type), do: acc, else: Map.put(acc, field.name, field.type)
+  end
+
+  defp put_payload_default(field, acc) do
+    if Map.has_key?(acc, field.name), do: acc, else: fetch_payload_default(field, acc)
+  end
+
+  defp fetch_payload_default(field, acc) do
+    case Keyword.fetch(field.opts, :default) do
+      {:ok, default} -> Map.put(acc, field.name, resolve_default!(default))
+      :error -> acc
     end
   end
 
@@ -322,32 +321,9 @@ defmodule SquidMesh.Workflow.Definition do
   @spec normalize_recovery_policy(map()) :: recovery_policy()
   def normalize_recovery_policy(policy) when is_map(policy) do
     irreversible? = boolean_recovery_value(policy, :irreversible?, false)
-
-    compensatable? =
-      if irreversible? do
-        false
-      else
-        boolean_recovery_value(policy, :compensatable?, true)
-      end
-
-    replay =
-      case recovery_value(policy, :replay, nil) do
-        :manual_review_required ->
-          :manual_review_required
-
-        "manual_review_required" ->
-          :manual_review_required
-
-        _other ->
-          if irreversible? or not compensatable?, do: :manual_review_required, else: :allowed
-      end
-
-    recovery =
-      case recovery_value(policy, :recovery, nil) do
-        :manual_intervention -> :manual_intervention
-        "manual_intervention" -> :manual_intervention
-        _other -> if replay == :manual_review_required, do: :manual_intervention, else: :automatic
-      end
+    compensatable? = recovery_compensatable?(policy, irreversible?)
+    replay = recovery_replay(policy, irreversible?, compensatable?)
+    recovery = recovery_mode(policy, replay)
 
     %{
       irreversible?: irreversible?,
@@ -357,6 +333,31 @@ defmodule SquidMesh.Workflow.Definition do
     }
     |> maybe_put_compensation(normalize_compensation(recovery_value(policy, :compensation, nil)))
     |> maybe_put(:failure, normalize_failure_recovery(recovery_value(policy, :failure, nil)))
+  end
+
+  defp recovery_compensatable?(_policy, true), do: false
+
+  defp recovery_compensatable?(policy, false),
+    do: boolean_recovery_value(policy, :compensatable?, true)
+
+  defp recovery_replay(policy, irreversible?, compensatable?) do
+    case recovery_value(policy, :replay, nil) do
+      value when value in [:manual_review_required, "manual_review_required"] ->
+        :manual_review_required
+
+      _other ->
+        if irreversible? or not compensatable?, do: :manual_review_required, else: :allowed
+    end
+  end
+
+  defp recovery_mode(policy, replay) do
+    case recovery_value(policy, :recovery, nil) do
+      value when value in [:manual_intervention, "manual_intervention"] ->
+        :manual_intervention
+
+      _other ->
+        if replay == :manual_review_required, do: :manual_intervention, else: :automatic
+    end
   end
 
   @doc """
@@ -435,7 +436,9 @@ defmodule SquidMesh.Workflow.Definition do
   Resolves the next step after a successful execution.
   """
   @spec next_step_after_success(t(), atom(), [atom() | String.t()]) ::
-          {:ok, transition_target()} | {:error, {:no_runnable_step, [atom()]}}
+          {:ok, transition_target()}
+          | {:error, {:no_runnable_step, [atom()]}}
+          | {:error, {:unknown_transition, atom(), atom()}}
   def next_step_after_success(definition, from_step, completed_steps)
       when is_atom(from_step) and is_list(completed_steps) do
     if dependency_mode?(definition) do
@@ -758,21 +761,19 @@ defmodule SquidMesh.Workflow.Definition do
         MapSet.member?(completed_steps, serialize_step(step_name))
       end)
 
-    cond do
-      pending_steps == [] ->
-        {:ok, :complete}
-
-      true ->
-        definition
-        |> dependency_step_order()
-        |> Enum.find(fn step_name ->
-          step_name in pending_steps and
-            dependencies_satisfied?(definition, step_name, completed_steps)
-        end)
-        |> case do
-          nil -> {:error, {:no_runnable_step, pending_steps}}
-          step_name -> {:ok, step_name}
-        end
+    if pending_steps == [] do
+      {:ok, :complete}
+    else
+      definition
+      |> dependency_step_order()
+      |> Enum.find(fn step_name ->
+        step_name in pending_steps and
+          dependencies_satisfied?(definition, step_name, completed_steps)
+      end)
+      |> case do
+        nil -> {:error, {:no_runnable_step, pending_steps}}
+        step_name -> {:ok, step_name}
+      end
     end
   end
 
@@ -918,11 +919,9 @@ defmodule SquidMesh.Workflow.Definition do
   defp deserialize_inspect_step_status("waiting"), do: :waiting
 
   defp deserialize_workflow_name(workflow_name) do
-    try do
-      {:ok, String.to_existing_atom(workflow_name)}
-    rescue
-      ArgumentError -> {:error, {:invalid_workflow, workflow_name}}
-    end
+    {:ok, String.to_existing_atom(workflow_name)}
+  rescue
+    ArgumentError -> {:error, {:invalid_workflow, workflow_name}}
   end
 
   defp resolve_default!({:today, :iso8601}), do: Date.utc_today() |> Date.to_iso8601()

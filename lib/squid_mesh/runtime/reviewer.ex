@@ -13,13 +13,14 @@ defmodule SquidMesh.Runtime.Reviewer do
   alias SquidMesh.AttemptStore
   alias SquidMesh.Config
   alias SquidMesh.Observability
-  alias SquidMesh.Run
-  alias SquidMesh.Runtime.ManualAction
-  alias SquidMesh.RunStore.Persistence
-  alias SquidMesh.RunStore.Serialization
   alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Persistence.StepAttempt
   alias SquidMesh.Persistence.StepRun
+  alias SquidMesh.Run
+  alias SquidMesh.RunStore.Persistence
+  alias SquidMesh.RunStore.Serialization
+  alias SquidMesh.Runtime.Dispatcher
+  alias SquidMesh.Runtime.ManualAction
   alias SquidMesh.StepRunStore
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
@@ -30,62 +31,66 @@ defmodule SquidMesh.Runtime.Reviewer do
           optional(:metadata) => map()
         }
 
+  @doc false
   @spec review(Config.t(), Run.t(), decision(), map()) :: :ok | {:error, term()}
   def review(%Config{} = config, %Run{workflow: workflow} = run, decision, attrs)
       when is_atom(workflow) and decision in [:approved, :rejected] and is_map(attrs) do
     with :ok <- validate_review_attrs(attrs) do
-      case config.repo.transaction(fn ->
-             with {:ok, {paused_run, run_record}} <- locked_paused_run(config.repo, run.id),
-                  {:ok, step_name} <- paused_step_name(paused_run),
-                  {:ok, definition} <- WorkflowDefinition.load(workflow),
-                  {:ok, _approval_step} <- approval_step_definition(definition, step_name),
-                  {:ok, step_run} <- running_step_run(config.repo, paused_run.id, step_name),
-                  {:ok, mapped_output, target} <-
-                    review_metadata(step_run, definition, step_name, decision, attrs),
-                  manual_event = ManualAction.build(decision, attrs),
-                  {:ok, attempt} <- running_attempt(config.repo, step_run.id),
-                  {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt.id),
-                  {:ok, _step_run} <-
-                    StepRunStore.complete_manual_step(
-                      config.repo,
-                      step_run.id,
-                      mapped_output,
-                      manual_event
-                    ),
-                  {:ok, resumed_run, from_status, to_status} <-
-                    resume_reviewed_run(
-                      config,
-                      config.repo,
-                      run_record,
-                      paused_run,
-                      target,
-                      mapped_output
-                    ) do
-               {paused_run, step_name, attempt, resumed_run, from_status, to_status}
-             else
-               {:error, reason} -> config.repo.rollback(reason)
-             end
-           end) do
-        {:ok, {paused_run, step_name, attempt, resumed_run, from_status, to_status}} ->
-          Observability.emit_step_completed(
-            paused_run,
-            step_name,
-            attempt.attempt_number,
-            Observability.duration_since(attempt.inserted_at)
-          )
-
-          Observability.emit_run_transition(resumed_run, from_status, to_status)
-          :ok
-
-        {:error, reason} ->
-          {:error, reason}
-      end
+      config
+      |> run_review_transaction(run, workflow, decision, attrs)
+      |> emit_review_events()
     end
   end
 
   def review(%Config{}, %Run{workflow: workflow}, _decision, _attrs) do
     {:error, {:invalid_workflow, workflow}}
   end
+
+  defp run_review_transaction(config, run, workflow, decision, attrs) do
+    config.repo.transaction(fn -> do_review(config, run, workflow, decision, attrs) end)
+  end
+
+  defp do_review(config, run, workflow, decision, attrs) do
+    with {:ok, {paused_run, run_record}} <- locked_paused_run(config.repo, run.id),
+         {:ok, step_name} <- paused_step_name(paused_run),
+         {:ok, definition} <- WorkflowDefinition.load(workflow),
+         {:ok, _approval_step} <- approval_step_definition(definition, step_name),
+         {:ok, step_run} <- running_step_run(config.repo, paused_run.id, step_name),
+         {:ok, mapped_output, target} <-
+           review_metadata(step_run, definition, step_name, decision, attrs),
+         manual_event = ManualAction.build(decision, attrs),
+         {:ok, attempt} <- running_attempt(config.repo, step_run.id),
+         {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt.id),
+         {:ok, _step_run} <-
+           StepRunStore.complete_manual_step(
+             config.repo,
+             step_run.id,
+             mapped_output,
+             manual_event
+           ),
+         {:ok, resumed_run, from_status, to_status} <-
+           resume_reviewed_run(config, config.repo, run_record, paused_run, target, mapped_output) do
+      {paused_run, step_name, attempt, resumed_run, from_status, to_status}
+    else
+      {:error, reason} -> config.repo.rollback(reason)
+    end
+  end
+
+  defp emit_review_events(
+         {:ok, {paused_run, step_name, attempt, resumed_run, from_status, to_status}}
+       ) do
+    Observability.emit_step_completed(
+      paused_run,
+      step_name,
+      attempt.attempt_number,
+      Observability.duration_since(attempt.inserted_at)
+    )
+
+    Observability.emit_run_transition(resumed_run, from_status, to_status)
+    :ok
+  end
+
+  defp emit_review_events({:error, reason}), do: {:error, reason}
 
   defp validate_review_attrs(%{actor: actor} = attrs)
        when (is_binary(actor) and actor != "") or is_map(actor) do
@@ -199,29 +204,27 @@ defmodule SquidMesh.Runtime.Reviewer do
         end
 
       next_step when is_atom(next_step) ->
-        with {:ok, updated_run} <-
-               Persistence.update_run_record(
-                 repo,
-                 run_record,
-                 Persistence.transition_changeset_attrs(
-                   :running,
-                   Map.put(attrs, :current_step, next_step)
-                 )
-               ) do
-          case SquidMesh.Runtime.Dispatcher.dispatch_run(config, updated_run, []) do
-            {:ok, _job} ->
-              {:ok, updated_run, :paused, :running}
-
-            {:error, reason} ->
-              {:error, {:dispatch_failed, reason}}
-          end
-        end
-
-      {:error, reason} ->
-        {:error, reason}
+        dispatch_resumed_run(config, repo, run_record, attrs, next_step)
 
       _other ->
         {:error, {:invalid_step, paused_run.current_step}}
+    end
+  end
+
+  defp dispatch_resumed_run(config, repo, run_record, attrs, next_step) do
+    with {:ok, updated_run} <-
+           Persistence.update_run_record(
+             repo,
+             run_record,
+             Persistence.transition_changeset_attrs(
+               :running,
+               Map.put(attrs, :current_step, next_step)
+             )
+           ) do
+      case Dispatcher.dispatch_run(config, updated_run, []) do
+        {:ok, _job} -> {:ok, updated_run, :paused, :running}
+        {:error, reason} -> {:error, {:dispatch_failed, reason}}
+      end
     end
   end
 

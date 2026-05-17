@@ -1,0 +1,18 @@
+{
+  "coverage_options": {
+    "minimum_coverage": 80,
+    "output_dir": "cover/",
+    "treat_no_relevant_lines_as_covered": true
+  },
+  "terminal_options": {
+    "file_column_width": 40
+  },
+  "skip_files": [
+    "deps/",
+    "test/",
+    "priv/",
+    "lib/squid_mesh/application.ex",
+    "_build/",
+    "cover/"
+  ]
+}

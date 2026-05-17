@@ -5,7 +5,7 @@ defmodule SquidMesh.MixProject do
     [
       app: :squid_mesh,
       version: "0.1.0-alpha.7",
-      elixir: "~> 1.17",
+      elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       description: description(),
@@ -13,7 +13,20 @@ defmodule SquidMesh.MixProject do
       homepage_url: "https://github.com/ccarvalho-eng/squid_mesh",
       docs: docs(),
       package: package(),
-      deps: deps()
+      aliases: aliases(),
+      deps: deps(),
+      test_coverage: [tool: ExCoveralls],
+      preferred_cli_env: [
+        coveralls: :test,
+        "coveralls.detail": :test,
+        "coveralls.html": :test,
+        "coveralls.json": :test,
+        precommit: :test
+      ],
+      dialyzer: [
+        plt_add_apps: [:mix, :ex_unit],
+        plt_file: {:no_warn, "priv/plts/dialyzer.plt"}
+      ]
     ]
   end
 
@@ -21,6 +34,12 @@ defmodule SquidMesh.MixProject do
     [
       extra_applications: [:logger],
       mod: {SquidMesh.Application, []}
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [precommit: :test]
     ]
   end
 
@@ -76,7 +95,27 @@ defmodule SquidMesh.MixProject do
       {:runic, "~> 0.1.0-alpha"},
       {:spark, "~> 2.7"},
       {:postgrex, "~> 0.20", only: :test},
-      {:ex_doc, "~> 0.34", only: :dev, runtime: false}
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:doctor, "~> 0.22.0", only: [:dev, :test], runtime: false},
+      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
+      {:excoveralls, "~> 0.18", only: :test}
+    ]
+  end
+
+  defp aliases do
+    [
+      precommit: [
+        "compile --warnings-as-errors",
+        "xref graph --format cycles --label compile-connected --fail-above 0",
+        "deps.unlock --check-unused",
+        "format --check-formatted",
+        "credo --strict",
+        "doctor",
+        "deps.audit --ignore-file config/deps_audit.ignore",
+        "test"
+      ]
     ]
   end
 end

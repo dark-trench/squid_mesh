@@ -8,9 +8,11 @@ defmodule SquidMesh.Runtime.StepExecutor.Execution do
   """
 
   alias SquidMesh.Run
+  alias SquidMesh.Runtime.BuiltInStep
   alias SquidMesh.Runtime.StepExecutor.PreparedStep
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
+  @doc false
   @spec execute(PreparedStep.t(), pos_integer()) :: {:ok, map(), keyword()} | {:error, term()}
   def execute(
         %PreparedStep{
@@ -22,7 +24,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Execution do
         _attempt_number
       )
       when built_in_kind in [:wait, :log, :pause, :approval] do
-    SquidMesh.Runtime.BuiltInStep.execute(built_in_kind, opts, input, run)
+    BuiltInStep.execute(built_in_kind, opts, input, run)
   end
 
   def execute(
@@ -53,10 +55,9 @@ defmodule SquidMesh.Runtime.StepExecutor.Execution do
 
   defp execute_action(repo, :repo, action, input, context) do
     case repo.transaction(fn ->
-           case run_action_with_jido(action, input, context, timeout: 0) do
-             {:ok, _output, _opts} = ok -> ok
-             {:error, reason} -> repo.rollback(reason)
-           end
+           action
+           |> run_action_with_jido(input, context, timeout: 0)
+           |> rollback_action_error(repo)
          end) do
       {:ok, result} -> result
       {:error, reason} -> {:error, reason}
@@ -66,6 +67,9 @@ defmodule SquidMesh.Runtime.StepExecutor.Execution do
   defp execute_action(_repo, nil, action, input, context) do
     run_action_with_jido(action, input, context, [])
   end
+
+  defp rollback_action_error({:ok, _output, _opts} = ok, _repo), do: ok
+  defp rollback_action_error({:error, reason}, repo), do: repo.rollback(reason)
 
   defp step_context(%Run{} = run, step_name, attempt_number) do
     %{

@@ -8,35 +8,37 @@ defmodule SquidMesh.Runtime.StepInput do
 
   alias SquidMesh.Run
   alias SquidMesh.StepRunStore
+  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type expected_step :: atom() | String.t() | nil
   @type input_mapping :: [atom()] | nil
 
+  @doc false
   @spec deserialize_expected_step(expected_step()) ::
           {:ok, atom() | nil} | {:error, {:invalid_step, String.t()}}
   def deserialize_expected_step(nil), do: {:ok, nil}
   def deserialize_expected_step(step) when is_atom(step), do: {:ok, step}
 
   def deserialize_expected_step(step) when is_binary(step) do
-    try do
-      {:ok, String.to_existing_atom(step)}
-    rescue
-      ArgumentError -> {:error, {:invalid_step, step}}
-    end
+    {:ok, String.to_existing_atom(step)}
+  rescue
+    ArgumentError -> {:error, {:invalid_step, step}}
   end
 
+  @doc false
   @spec deserialize_expected_step(expected_step(), map()) ::
           {:ok, atom() | nil} | {:error, {:invalid_step, String.t()}}
   def deserialize_expected_step(nil, _definition), do: {:ok, nil}
   def deserialize_expected_step(step, _definition) when is_atom(step), do: {:ok, step}
 
   def deserialize_expected_step(step, definition) when is_binary(step) do
-    case SquidMesh.Workflow.Definition.deserialize_step(definition, step) do
+    case WorkflowDefinition.deserialize_step(definition, step) do
       resolved_step when is_atom(resolved_step) -> {:ok, resolved_step}
       _other -> {:error, {:invalid_step, step}}
     end
   end
 
+  @doc false
   @spec build_step_input(Run.t(), input_mapping()) :: map()
   def build_step_input(%Run{payload: payload, context: context}, input_mapping \\ nil) do
     payload
@@ -46,6 +48,7 @@ defmodule SquidMesh.Runtime.StepInput do
     |> apply_input_mapping(input_mapping)
   end
 
+  @doc false
   @spec build_dependency_step_input(module(), Run.t(), input_mapping()) :: map()
   def build_dependency_step_input(repo, %Run{id: run_id} = run, input_mapping \\ nil) do
     run
@@ -54,6 +57,7 @@ defmodule SquidMesh.Runtime.StepInput do
     |> apply_input_mapping(input_mapping)
   end
 
+  @doc false
   @spec normalize_map_keys(map()) :: map()
   def normalize_map_keys(map) when is_map(map) do
     Map.new(map, fn
@@ -80,10 +84,8 @@ defmodule SquidMesh.Runtime.StepInput do
     do: Map.take(input, input_mapping)
 
   defp to_existing_atom(key) do
-    try do
-      String.to_existing_atom(key)
-    rescue
-      ArgumentError -> key
-    end
+    String.to_existing_atom(key)
+  rescue
+    ArgumentError -> key
   end
 end

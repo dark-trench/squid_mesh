@@ -33,8 +33,14 @@ defmodule SquidMesh.Workflow do
     optional: [:transition]
   }
 
+  alias SquidMesh.Workflow.Info, as: WorkflowInfo
+  alias SquidMesh.Workflow.StepSpec
   alias SquidMesh.Workflow.Validation
 
+  @doc """
+  Injects the workflow DSL and compile-time collectors into a workflow module.
+  """
+  @spec __using__(keyword()) :: Macro.t()
   defmacro __using__(_opts) do
     quote do
       use SquidMesh.Workflow.Dsl
@@ -198,42 +204,17 @@ defmodule SquidMesh.Workflow do
     end
   end
 
+  @doc """
+  Validates the collected workflow declarations and emits runtime accessors.
+  """
+  @spec __before_compile__(Macro.Env.t()) :: Macro.t()
   defmacro __before_compile__(env) do
-    triggers =
-      env.module
-      |> Module.get_attribute(:squid_mesh_triggers)
-      |> Enum.reverse()
+    env
+    |> build_definition!()
+    |> quoted_definition()
+  end
 
-    steps = spark_steps(env.module)
-
-    transitions =
-      env.module
-      |> Module.get_attribute(:squid_mesh_transitions)
-      |> Enum.reverse()
-
-    definition = %{
-      triggers: triggers,
-      steps: steps,
-      transitions: transitions,
-      retries: Validation.derive_retries(steps)
-    }
-
-    Validation.validate!(definition, env)
-
-    triggers = Validation.normalize_triggers!(definition)
-    payload = Validation.workflow_payload!(triggers)
-    entry_steps = Validation.entry_steps!(definition, env)
-    initial_step = Validation.initial_step!(definition, env)
-    entry_step = Validation.entry_step!(definition, env)
-
-    definition =
-      definition
-      |> Map.put(:triggers, triggers)
-      |> Map.put(:payload, payload)
-      |> Map.put(:entry_steps, entry_steps)
-      |> Map.put(:initial_step, initial_step)
-      |> Map.put(:entry_step, entry_step)
-
+  defp quoted_definition(definition) do
     quote do
       @doc false
       def workflow_definition do
@@ -247,35 +228,56 @@ defmodule SquidMesh.Workflow do
       def __workflow__(:contract), do: unquote(Macro.escape(@contract))
 
       @doc false
-      def __workflow__(:payload), do: unquote(Macro.escape(definition.payload))
-
-      @doc false
-      def __workflow__(:triggers), do: unquote(Macro.escape(definition.triggers))
-
-      @doc false
       def __workflow__(:steps), do: workflow_definition().steps
 
       @doc false
-      def __workflow__(:transitions), do: unquote(Macro.escape(definition.transitions))
-
-      @doc false
-      def __workflow__(:retries), do: unquote(Macro.escape(definition.retries))
-
-      @doc false
-      def __workflow__(:entry_step), do: unquote(Macro.escape(definition.entry_step))
-
-      @doc false
-      def __workflow__(:entry_steps), do: unquote(Macro.escape(definition.entry_steps))
-
-      @doc false
-      def __workflow__(:initial_step), do: unquote(Macro.escape(definition.initial_step))
+      def __workflow__(key)
+          when key in [
+                 :entry_step,
+                 :entry_steps,
+                 :initial_step,
+                 :payload,
+                 :retries,
+                 :transitions,
+                 :triggers
+               ] do
+        Map.fetch!(workflow_definition(), key)
+      end
     end
+  end
+
+  defp build_definition!(env) do
+    steps = spark_steps(env.module)
+
+    definition = %{
+      triggers: module_attribute(env.module, :squid_mesh_triggers),
+      steps: steps,
+      transitions: module_attribute(env.module, :squid_mesh_transitions),
+      retries: Validation.derive_retries(steps)
+    }
+
+    Validation.validate!(definition, env)
+
+    triggers = Validation.normalize_triggers!(definition)
+
+    definition
+    |> Map.put(:triggers, triggers)
+    |> Map.put(:payload, Validation.workflow_payload!(triggers))
+    |> Map.put(:entry_steps, Validation.entry_steps!(definition, env))
+    |> Map.put(:initial_step, Validation.initial_step!(definition, env))
+    |> Map.put(:entry_step, Validation.entry_step!(definition, env))
+  end
+
+  defp module_attribute(module, attribute) do
+    module
+    |> Module.get_attribute(attribute)
+    |> Enum.reverse()
   end
 
   defp spark_steps(module) do
     module
-    |> SquidMesh.Workflow.Info.steps()
-    |> Enum.map(fn %SquidMesh.Workflow.StepSpec{} = step ->
+    |> WorkflowInfo.steps()
+    |> Enum.map(fn %StepSpec{} = step ->
       step
       |> Map.from_struct()
       |> Map.take([:name, :module, :opts, :metadata])
@@ -287,7 +289,14 @@ defmodule SquidMesh.Workflow do
   defp maybe_drop_interop_metadata(%{metadata: %{contract: :squid_mesh_step}} = step), do: step
   defp maybe_drop_interop_metadata(step), do: Map.delete(step, :metadata)
 
-  @doc false
+  @doc """
+  Resolves late-bound runtime metadata for generated workflow definitions.
+
+  Workflow modules store a compile-time definition, but step modules may expose
+  Squid Mesh step metadata that should be read when the workflow definition is
+  consumed. This keeps generated workflow modules small while preserving the
+  runtime contract used by dispatch and inspection.
+  """
   @spec __resolve_runtime_definition__(map()) :: map()
   def __resolve_runtime_definition__(definition) when is_map(definition) do
     Map.update!(definition, :steps, fn steps ->
@@ -302,7 +311,9 @@ defmodule SquidMesh.Workflow do
     end
   end
 
-  @doc false
+  @doc """
+  Adds one trigger definition to the workflow module currently being compiled.
+  """
   @spec __push_current_trigger_definition__(module(), map()) :: :ok
   def __push_current_trigger_definition__(module, definition)
       when is_atom(module) and is_map(definition) do
@@ -315,7 +326,9 @@ defmodule SquidMesh.Workflow do
     :ok
   end
 
-  @doc false
+  @doc """
+  Adds one payload field to the trigger currently being compiled.
+  """
   @spec __push_current_trigger_payload_field__(module(), map()) :: :ok
   def __push_current_trigger_payload_field__(module, field)
       when is_atom(module) and is_map(field) do

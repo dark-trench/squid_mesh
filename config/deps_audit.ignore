@@ -1,0 +1,6 @@
+# Decimal 3.x contains the fix for GHSA-rhv4-8758-jx7v, but the current
+# dependency graph still requires Decimal 2.x. Zoi released Decimal 3 support in
+# v0.18.4, and Jido Signal has merged the Zoi 0.18.x update on main, but no
+# Jido Signal release contains that update yet. Ecto and Postgrex latest Hex
+# releases still constrain Decimal to 2.x.
+GHSA-rhv4-8758-jx7v

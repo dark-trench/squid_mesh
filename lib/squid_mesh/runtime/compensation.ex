@@ -10,6 +10,7 @@ defmodule SquidMesh.Runtime.Compensation do
   metadata.
   """
 
+  alias Jido.Instruction
   alias SquidMesh.Config
   alias SquidMesh.Run
   alias SquidMesh.Runtime.StepInput
@@ -79,7 +80,6 @@ defmodule SquidMesh.Runtime.Compensation do
          :ok <- persist_compensation_result(config, step_run, recovery, result) do
       result_status(result)
     else
-      nil -> :ok
       {:ok, nil} -> :ok
       :already_completed -> :ok
       {:error, _reason} = error -> error
@@ -130,13 +130,29 @@ defmodule SquidMesh.Runtime.Compensation do
     }
 
     {callback, input} = callback_input(callback, input)
+    run_callback_instruction(callback, input, context)
+  end
 
-    case Jido.Exec.run(callback, input, context, max_retries: 0) do
-      {:ok, output} when is_map(output) -> {:ok, output}
-      {:ok, output, _extras} when is_map(output) -> {:ok, output}
-      {:error, reason} -> {:error, normalize_error(reason)}
+  defp run_callback_instruction(callback, input, context) do
+    case Instruction.new(
+           action: callback,
+           params: input,
+           context: context,
+           opts: [max_retries: 0]
+         ) do
+      {:ok, instruction} ->
+        instruction
+        |> Jido.Exec.run()
+        |> normalize_callback_result()
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
     end
   end
+
+  defp normalize_callback_result({:ok, output}) when is_map(output), do: {:ok, output}
+  defp normalize_callback_result({:ok, output, _extras}) when is_map(output), do: {:ok, output}
+  defp normalize_callback_result({:error, reason}), do: {:error, normalize_error(reason)}
 
   defp callback_input(callback, input) do
     if SquidMesh.Step.native_step?(callback) do
@@ -192,6 +208,5 @@ defmodule SquidMesh.Runtime.Compensation do
     end
   end
 
-  defp normalize_error(%{} = error), do: error
   defp normalize_error(error), do: %{message: inspect(error)}
 end

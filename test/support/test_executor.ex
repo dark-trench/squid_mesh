@@ -6,8 +6,8 @@ defmodule SquidMesh.Test.Executor do
   use Agent
 
   alias SquidMesh.Executor.Payload
-  alias SquidMesh.Test.Job
   alias SquidMesh.Runtime.Runner
+  alias SquidMesh.Test.Job
 
   def start_link(_opts \\ []) do
     Agent.start_link(fn -> %{jobs: [], fail?: false} end, name: __MODULE__)
@@ -137,20 +137,20 @@ defmodule SquidMesh.Test.Executor do
 
   defp pop_job do
     Agent.get_and_update(__MODULE__, fn %{jobs: jobs} = state ->
-      case jobs do
-        [] ->
-          {nil, state}
-
-        jobs ->
-          case Enum.split_while(jobs, &(not available?(&1))) do
-            {_scheduled_jobs, []} ->
-              {nil, state}
-
-            {scheduled_jobs, [job | remaining]} ->
-              {job, %{state | jobs: scheduled_jobs ++ remaining}}
-          end
-      end
+      pop_available_job(jobs, state)
     end)
+  end
+
+  defp pop_available_job([], state), do: {nil, state}
+
+  defp pop_available_job(jobs, state) do
+    case Enum.split_while(jobs, &(not available?(&1))) do
+      {_scheduled_jobs, []} ->
+        {nil, state}
+
+      {scheduled_jobs, [job | remaining]} ->
+        {job, %{state | jobs: scheduled_jobs ++ remaining}}
+    end
   end
 
   defp perform(%Job{args: args}) do

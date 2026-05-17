@@ -13,6 +13,7 @@ defmodule SquidMesh.Runtime.StepRecovery do
   @type reclaim_status :: :reclaimed | :fresh | :not_running
   @type reclaim_result :: {:ok, reclaim_status()} | {:error, term()}
 
+  @doc false
   @spec reclaim_stale_running_step(module(), StepRun.t(), non_neg_integer()) :: reclaim_result()
   def reclaim_stale_running_step(repo, %StepRun{id: step_run_id}, timeout_ms)
       when is_integer(timeout_ms) and timeout_ms >= 0 do

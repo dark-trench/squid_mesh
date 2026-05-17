@@ -9,8 +9,8 @@ defmodule SquidMesh.RunStore.Serialization do
 
   import Ecto.Query
 
-  alias SquidMesh.Persistence.StepAttempt, as: StepAttemptRecord
   alias SquidMesh.Persistence.Run, as: RunRecord
+  alias SquidMesh.Persistence.StepAttempt, as: StepAttemptRecord
   alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.Run
   alias SquidMesh.RunAuditEvent
@@ -23,6 +23,7 @@ defmodule SquidMesh.RunStore.Serialization do
           {:workflow, module()} | {:status, Run.status()} | {:limit, pos_integer()}
   @type list_filters :: [list_filter()]
 
+  @doc false
   @spec to_public_run(RunRecord.t()) :: Run.t()
   def to_public_run(run) do
     {workflow, definition} = deserialize_workflow(run.workflow)
@@ -46,6 +47,7 @@ defmodule SquidMesh.RunStore.Serialization do
     }
   end
 
+  @doc false
   @spec serialize_filters(list_filters()) :: keyword()
   def serialize_filters(filters) do
     filters
@@ -56,9 +58,11 @@ defmodule SquidMesh.RunStore.Serialization do
     end)
   end
 
+  @doc false
   @spec serialize_status(Run.status()) :: String.t()
   def serialize_status(status) when is_atom(status), do: Atom.to_string(status)
 
+  @doc false
   @spec maybe_preload_history(Ecto.Queryable.t(), boolean()) :: Ecto.Query.t()
   def maybe_preload_history(query, true) do
     preload(query, [run], step_runs: ^step_runs_preload_query())
@@ -66,6 +70,7 @@ defmodule SquidMesh.RunStore.Serialization do
 
   def maybe_preload_history(query, false), do: query
 
+  @doc false
   @spec deserialize_status(String.t()) :: Run.status()
   def deserialize_status("pending"), do: :pending
   def deserialize_status("running"), do: :running
@@ -76,6 +81,7 @@ defmodule SquidMesh.RunStore.Serialization do
   def deserialize_status("cancelling"), do: :cancelling
   def deserialize_status("cancelled"), do: :cancelled
 
+  @doc false
   @spec deserialize_map(map() | nil) :: map() | nil
   def deserialize_map(nil), do: nil
 
@@ -89,6 +95,7 @@ defmodule SquidMesh.RunStore.Serialization do
     end)
   end
 
+  @doc false
   @spec deserialize_step(WorkflowDefinition.t() | nil, String.t() | nil) ::
           atom() | String.t() | nil
   def deserialize_step(nil, step_name), do: step_name
@@ -97,6 +104,7 @@ defmodule SquidMesh.RunStore.Serialization do
     WorkflowDefinition.deserialize_step(definition, step_name)
   end
 
+  @doc false
   @spec deserialize_workflow(String.t()) :: {module() | String.t(), WorkflowDefinition.t() | nil}
   def deserialize_workflow(workflow_name) do
     case WorkflowDefinition.load_serialized(workflow_name) do
@@ -105,6 +113,7 @@ defmodule SquidMesh.RunStore.Serialization do
     end
   end
 
+  @doc false
   @spec deserialize_run_error(WorkflowDefinition.t() | nil, map() | nil) :: map() | nil
   def deserialize_run_error(_definition, nil), do: nil
 
@@ -226,7 +235,6 @@ defmodule SquidMesh.RunStore.Serialization do
   end
 
   defp to_public_audit_events(_definition, %Ecto.Association.NotLoaded{}), do: nil
-  defp to_public_audit_events(_definition, nil), do: nil
 
   defp to_public_audit_events(definition, step_runs) when is_list(step_runs) do
     step_runs
@@ -501,10 +509,8 @@ defmodule SquidMesh.RunStore.Serialization do
   end
 
   defp deserialize_key(key) do
-    try do
-      String.to_existing_atom(key)
-    rescue
-      ArgumentError -> key
-    end
+    String.to_existing_atom(key)
+  rescue
+    ArgumentError -> key
   end
 end

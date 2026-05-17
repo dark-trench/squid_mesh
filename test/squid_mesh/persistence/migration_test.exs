@@ -1,23 +1,28 @@
 defmodule SquidMesh.Persistence.MigrationTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.Postgres
+  alias Ecto.Adapters.SQL
+
   defmodule MigrationRepo do
+    alias Ecto.Adapters.Postgres
+
     use Ecto.Repo,
       otp_app: :squid_mesh,
-      adapter: Ecto.Adapters.Postgres
+      adapter: Postgres
   end
 
   test "the schema migration rolls up and down" do
     repo_config = repo_config()
 
-    assert :ok = Ecto.Adapters.Postgres.storage_up(repo_config)
+    assert :ok = Postgres.storage_up(repo_config)
 
     {:ok, repo_pid} = MigrationRepo.start_link(repo_config)
     Process.unlink(repo_pid)
 
     on_exit(fn ->
       if Process.alive?(repo_pid), do: GenServer.stop(repo_pid, :normal, 5_000)
-      Ecto.Adapters.Postgres.storage_down(repo_config)
+      Postgres.storage_down(repo_config)
     end)
 
     migrations_path = Application.app_dir(:squid_mesh, "priv/repo/migrations")
@@ -51,7 +56,7 @@ defmodule SquidMesh.Persistence.MigrationTest do
   defp table_exists?(table_name) do
     query = "select to_regclass($1)::text"
 
-    %{rows: [[result]]} = Ecto.Adapters.SQL.query!(MigrationRepo, query, ["public.#{table_name}"])
+    %{rows: [[result]]} = SQL.query!(MigrationRepo, query, ["public.#{table_name}"])
 
     result == table_name
   end

@@ -1,12 +1,13 @@
 defmodule SquidMesh.Runtime.JournalTest do
   use ExUnit.Case, async: false
 
+  alias Jido.Storage.ETS
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.DispatchProtocol.Projection
   alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.Journal.Checkpoint
 
-  @storage {Jido.Storage.ETS, table: :squid_mesh_journal_test}
+  @storage {ETS, table: :squid_mesh_journal_test}
   @run_id "run_123"
   @runnable_key "run_123:charge_card:1"
   @idempotency_key "run_123:charge_card:payment_456"
@@ -158,7 +159,7 @@ defmodule SquidMesh.Runtime.JournalTest do
 
   test "returns structured errors for incompatible persisted thread entries" do
     assert {:ok, _thread} =
-             Jido.Storage.ETS.append_thread(
+             ETS.append_thread(
                Journal.thread_id({:dispatch, "default"}),
                [%{kind: :note, payload: %{}}],
                table: :squid_mesh_journal_test
@@ -170,7 +171,7 @@ defmodule SquidMesh.Runtime.JournalTest do
 
   test "returns structured errors for invalid persisted timestamps" do
     assert {:ok, _thread} =
-             Jido.Storage.ETS.append_thread(
+             ETS.append_thread(
                Journal.thread_id({:dispatch, "default"}),
                [
                  %{

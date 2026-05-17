@@ -4,6 +4,7 @@ defmodule SquidMesh.Workflow.RunicPlanner do
   alias Runic.Workflow
   alias Runic.Workflow.Events.{ActivationConsumed, FactProduced}
   alias Runic.Workflow.{Fact, Invokable}
+  alias Runic.Workflow.Step, as: RunicStep
   alias SquidMesh.Workflow.Info
   alias SquidMesh.Workflow.RunicPlanner.Runnable
   alias SquidMesh.Workflow.Spec
@@ -102,7 +103,7 @@ defmodule SquidMesh.Workflow.RunicPlanner do
   end
 
   defp runic_step(spec, step) do
-    Runic.Workflow.Step.new(
+    RunicStep.new(
       work: &__MODULE__.external_step_result/1,
       name: step.name,
       hash: stable_step_hash(spec, step),
@@ -121,11 +122,7 @@ defmodule SquidMesh.Workflow.RunicPlanner do
     transition_parents =
       Enum.reduce(spec.transitions, %{}, fn
         %{from: from, to: to}, acc when is_atom(to) ->
-          if MapSet.member?(step_names, to) do
-            Map.update(acc, to, [from], fn parents -> parents ++ [from] end)
-          else
-            acc
-          end
+          put_transition_parent(acc, step_names, from, to)
 
         _transition, acc ->
           acc
@@ -140,6 +137,14 @@ defmodule SquidMesh.Workflow.RunicPlanner do
 
       {step.name, parents}
     end)
+  end
+
+  defp put_transition_parent(acc, step_names, from, to) do
+    if MapSet.member?(step_names, to) do
+      Map.update(acc, to, [from], fn parents -> parents ++ [from] end)
+    else
+      acc
+    end
   end
 
   defp ordered_steps(%Spec{} = spec, parent_map, step_map) do

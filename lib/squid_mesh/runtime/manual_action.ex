@@ -14,28 +14,54 @@ defmodule SquidMesh.Runtime.ManualAction do
   @type type :: :resumed | :approved | :rejected
   @type persisted :: map()
 
+  @doc false
   @spec validate(attrs(), keyword()) :: :ok | {:error, {:invalid_manual_action, map()}}
   def validate(attrs, opts \\ []) when is_map(attrs) and is_list(opts) do
-    required_actor? = Keyword.get(opts, :require_actor, false)
-
-    cond do
-      required_actor? and not valid_actor?(Map.get(attrs, :actor)) ->
-        {:error, {:invalid_manual_action, %{actor: :required}}}
-
-      Map.has_key?(attrs, :actor) and not valid_actor?(Map.get(attrs, :actor)) ->
-        {:error, {:invalid_manual_action, %{actor: :invalid}}}
-
-      Map.has_key?(attrs, :comment) and not valid_comment?(Map.get(attrs, :comment)) ->
-        {:error, {:invalid_manual_action, %{comment: :string}}}
-
-      Map.has_key?(attrs, :metadata) and not is_map(Map.get(attrs, :metadata)) ->
-        {:error, {:invalid_manual_action, %{metadata: :map}}}
-
-      true ->
-        :ok
+    attrs
+    |> validation_errors(Keyword.get(opts, :require_actor, false))
+    |> Enum.reverse()
+    |> case do
+      [] -> :ok
+      [{field, reason} | _rest] -> {:error, {:invalid_manual_action, %{field => reason}}}
     end
   end
 
+  defp validation_errors(attrs, required_actor?) do
+    []
+    |> validate_actor(attrs, required_actor?)
+    |> validate_comment(attrs)
+    |> validate_metadata(attrs)
+  end
+
+  defp validate_actor(errors, attrs, true) do
+    if valid_actor?(Map.get(attrs, :actor)), do: errors, else: [{:actor, :required} | errors]
+  end
+
+  defp validate_actor(errors, attrs, false) do
+    if Map.has_key?(attrs, :actor) and not valid_actor?(Map.get(attrs, :actor)) do
+      [{:actor, :invalid} | errors]
+    else
+      errors
+    end
+  end
+
+  defp validate_comment(errors, attrs) do
+    if Map.has_key?(attrs, :comment) and not valid_comment?(Map.get(attrs, :comment)) do
+      [{:comment, :string} | errors]
+    else
+      errors
+    end
+  end
+
+  defp validate_metadata(errors, attrs) do
+    if Map.has_key?(attrs, :metadata) and not is_map(Map.get(attrs, :metadata)) do
+      [{:metadata, :map} | errors]
+    else
+      errors
+    end
+  end
+
+  @doc false
   @spec build(type(), attrs()) :: persisted()
   def build(type, attrs) when type in [:resumed, :approved, :rejected] and is_map(attrs) do
     %{

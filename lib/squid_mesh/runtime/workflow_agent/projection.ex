@@ -16,12 +16,14 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
           optional(:run_id) => String.t()
         }
 
+  @type string_set :: MapSet.t(String.t()) | %MapSet{}
+
   @type t :: %__MODULE__{
           run_id: String.t() | nil,
           workflow: String.t() | nil,
           status: atom(),
           planned_runnables: %{optional(String.t()) => map()},
-          applied_runnable_keys: MapSet.t(String.t()),
+          applied_runnable_keys: string_set(),
           applied_results: %{optional(String.t()) => map() | nil},
           terminal_status: atom() | nil,
           anomalies: [anomaly()]
@@ -36,23 +38,34 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
             terminal_status: nil,
             anomalies: []
 
-  @spec rebuild([Entry.t()]) :: t()
-  def rebuild(entries) when is_list(entries) do
-    replay(%__MODULE__{}, entries)
+  @doc false
+  @spec new() :: t()
+  def new do
+    %__MODULE__{applied_runnable_keys: MapSet.new()}
   end
 
+  @doc false
+  @spec rebuild([Entry.t()]) :: t()
+  def rebuild(entries) when is_list(entries) do
+    replay(new(), entries)
+  end
+
+  @doc false
   @spec replay(t(), [Entry.t()]) :: t()
   def replay(%__MODULE__{} = projection, entries) when is_list(entries) do
     Enum.reduce(entries, projection, &apply_entry/2)
   end
 
+  @doc false
   @spec status(t()) :: atom()
   def status(%__MODULE__{status: status}), do: status
 
+  @doc false
   @spec terminal?(t()) :: boolean()
   def terminal?(%__MODULE__{terminal_status: nil}), do: false
   def terminal?(%__MODULE__{}), do: true
 
+  @doc false
   @spec planned_runnable_keys(t()) :: [String.t()]
   def planned_runnable_keys(%__MODULE__{planned_runnables: planned_runnables}) do
     planned_runnables
@@ -60,6 +73,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
     |> Enum.sort()
   end
 
+  @doc false
   @spec planned_runnables(t()) :: [map()]
   def planned_runnables(%__MODULE__{planned_runnables: planned_runnables}) do
     planned_runnables
@@ -67,22 +81,26 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
     |> Enum.sort_by(&runnable_key/1)
   end
 
+  @doc false
   @spec planned_runnable_key?(t(), String.t()) :: boolean()
   def planned_runnable_key?(%__MODULE__{planned_runnables: planned_runnables}, runnable_key)
       when is_binary(runnable_key) do
     Map.has_key?(planned_runnables, runnable_key)
   end
 
+  @doc false
   @spec applied_runnable_keys(t()) :: MapSet.t(String.t())
   def applied_runnable_keys(%__MODULE__{applied_runnable_keys: applied_runnable_keys}) do
     applied_runnable_keys
   end
 
+  @doc false
   @spec applied_result(t(), String.t()) :: {:ok, map() | nil} | :error
   def applied_result(%__MODULE__{} = projection, runnable_key) when is_binary(runnable_key) do
     Map.fetch(applied_results(projection), runnable_key)
   end
 
+  @doc false
   @spec anomalies(t()) :: [anomaly()]
   def anomalies(%__MODULE__{anomalies: anomalies}), do: Enum.reverse(anomalies)
 
@@ -102,18 +120,8 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
          %__MODULE__{} = projection
        ) do
     if required_present?(data, [:run_id, :runnables]) and is_list(Map.fetch!(data, :runnables)) do
-      planned_runnables =
-        data
-        |> Map.fetch!(:runnables)
-        |> Enum.reduce(projection.planned_runnables, fn runnable, acc ->
-          case runnable_key(runnable) do
-            key when is_binary(key) -> Map.put_new(acc, key, normalize_runnable(runnable))
-            _missing_key -> acc
-          end
-        end)
-
       projection
-      |> Map.put(:planned_runnables, planned_runnables)
+      |> Map.put(:planned_runnables, add_planned_runnables(projection.planned_runnables, data))
       |> Map.put(:run_id, projection.run_id || Map.fetch!(data, :run_id))
       |> refresh_status()
     else
@@ -127,21 +135,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
        ) do
     if required_present?(data, [:run_id, :runnable_key]) do
       runnable_key = Map.fetch!(data, :runnable_key)
-
-      if Map.has_key?(projection.planned_runnables, runnable_key) do
-        projection
-        |> Map.put(
-          :applied_runnable_keys,
-          MapSet.put(projection.applied_runnable_keys, runnable_key)
-        )
-        |> Map.put(
-          :applied_results,
-          Map.put(applied_results(projection), runnable_key, Map.get(data, :result))
-        )
-        |> refresh_status()
-      else
-        add_anomaly(projection, entry, :unknown_runnable_intent)
-      end
+      apply_runnable_result(projection, entry, data, runnable_key)
     else
       add_anomaly(projection, entry, :malformed_entry)
     end
@@ -163,6 +157,36 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   end
 
   defp apply_entry(%Entry{}, %__MODULE__{} = projection), do: projection
+
+  defp add_planned_runnables(planned_runnables, data) do
+    data
+    |> Map.fetch!(:runnables)
+    |> Enum.reduce(planned_runnables, &put_planned_runnable/2)
+  end
+
+  defp put_planned_runnable(runnable, acc) do
+    case runnable_key(runnable) do
+      key when is_binary(key) -> Map.put_new(acc, key, normalize_runnable(runnable))
+      _missing_key -> acc
+    end
+  end
+
+  defp apply_runnable_result(projection, entry, data, runnable_key) do
+    if Map.has_key?(projection.planned_runnables, runnable_key) do
+      projection
+      |> Map.put(
+        :applied_runnable_keys,
+        MapSet.put(projection.applied_runnable_keys, runnable_key)
+      )
+      |> Map.put(
+        :applied_results,
+        Map.put(applied_results(projection), runnable_key, Map.get(data, :result))
+      )
+      |> refresh_status()
+    else
+      add_anomaly(projection, entry, :unknown_runnable_intent)
+    end
+  end
 
   defp applied_results(%__MODULE__{} = projection) do
     Map.get(projection, :applied_results, %{})

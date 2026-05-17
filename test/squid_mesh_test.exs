@@ -1,18 +1,20 @@
 defmodule SquidMeshTest do
   use SquidMesh.DataCase
 
-  alias SquidMesh.Persistence.Run, as: RunRecord
+  alias SquidMesh.Executor.Payload
   alias SquidMesh.Persistence.Run, as: PersistedRun
+  alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.Run
+  alias SquidMesh.RunStepState
   alias SquidMesh.RunStore
+  alias SquidMesh.Runtime.Runner
   alias SquidMesh.Runtime.Unblocker
   alias SquidMesh.StepAttempt, as: PublicStepAttempt
   alias SquidMesh.StepRun, as: PublicStepRun
-  alias SquidMesh.RunStepState
-  alias SquidMesh.TestSupport.LazyWorkflow
-  alias SquidMesh.Test.StepWorker
   alias SquidMesh.Test.Job
+  alias SquidMesh.Test.StepWorker
+  alias SquidMesh.TestSupport.LazyWorkflow
 
   defmodule InvoiceReminderWorkflow do
     use SquidMesh.Workflow
@@ -580,7 +582,7 @@ defmodule SquidMeshTest do
   describe "cron trigger activation" do
     test "starts a cron workflow run from the neutral runner" do
       assert :ok =
-               SquidMesh.Runtime.Runner.start_cron_trigger(
+               Runner.start_cron_trigger(
                  "Elixir.SquidMeshTest.DailyStandupWorkflow",
                  "daily_standup",
                  repo: Repo
@@ -602,7 +604,7 @@ defmodule SquidMeshTest do
 
     test "starts a selected cron trigger from a multi-trigger workflow" do
       assert :ok =
-               SquidMesh.Runtime.Runner.start_cron_trigger(
+               Runner.start_cron_trigger(
                  "Elixir.SquidMeshTest.ManualAndScheduledDigestWorkflow",
                  "scheduled_digest",
                  repo: Repo
@@ -620,7 +622,7 @@ defmodule SquidMeshTest do
 
     test "persists explicit scheduled signal id before workflow step execution" do
       payload =
-        SquidMesh.Executor.Payload.cron(
+        Payload.cron(
           ScheduledContextWorkflow,
           :scheduled_capture,
           signal_id: "signal_123",
@@ -630,7 +632,7 @@ defmodule SquidMeshTest do
           }
         )
 
-      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+      assert :ok = Runner.perform(payload, repo: Repo)
 
       assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
 
@@ -668,7 +670,7 @@ defmodule SquidMeshTest do
 
     test "derives stable signal ids from intended schedule windows" do
       payload =
-        SquidMesh.Executor.Payload.cron(
+        Payload.cron(
           ScheduledContextWorkflow,
           :scheduled_capture,
           intended_window: %{
@@ -677,8 +679,8 @@ defmodule SquidMeshTest do
           }
         )
 
-      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
-      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+      assert :ok = Runner.perform(payload, repo: Repo)
+      assert :ok = Runner.perform(payload, repo: Repo)
 
       assert [%PersistedRun{}, %PersistedRun{}] = persisted_runs = Repo.all(PersistedRun)
 
@@ -695,7 +697,7 @@ defmodule SquidMeshTest do
 
     test "omits derived signal ids when schedule windows are incomplete" do
       payload =
-        SquidMesh.Executor.Payload.cron(
+        Payload.cron(
           ScheduledContextWorkflow,
           :scheduled_capture,
           intended_window: %{
@@ -703,7 +705,7 @@ defmodule SquidMeshTest do
           }
         )
 
-      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+      assert :ok = Runner.perform(payload, repo: Repo)
 
       assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
 
@@ -717,21 +719,21 @@ defmodule SquidMeshTest do
       }
 
       payload =
-        SquidMesh.Executor.Payload.cron(
+        Payload.cron(
           ScheduledContextWorkflow,
           :scheduled_capture,
           intended_window: intended_window
         )
 
       other_payload =
-        SquidMesh.Executor.Payload.cron(
+        Payload.cron(
           AnotherScheduledContextWorkflow,
           :scheduled_capture,
           intended_window: intended_window
         )
 
-      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
-      assert :ok = SquidMesh.Runtime.Runner.perform(other_payload, repo: Repo)
+      assert :ok = Runner.perform(payload, repo: Repo)
+      assert :ok = Runner.perform(other_payload, repo: Repo)
 
       signal_ids =
         PersistedRun
@@ -744,11 +746,11 @@ defmodule SquidMeshTest do
     test "rejects malformed scheduler signal ids" do
       payload =
         ScheduledContextWorkflow
-        |> SquidMesh.Executor.Payload.cron(:scheduled_capture)
+        |> Payload.cron(:scheduled_capture)
         |> Map.put("signal_id", 123)
 
       assert {:error, {:invalid_schedule_signal_id, 123}} =
-               SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+               Runner.perform(payload, repo: Repo)
 
       assert [] = Repo.all(PersistedRun)
     end
@@ -756,14 +758,14 @@ defmodule SquidMeshTest do
     test "preserves atom-keyed scheduler metadata from delivered cron payloads" do
       payload =
         ScheduledContextWorkflow
-        |> SquidMesh.Executor.Payload.cron(:scheduled_capture)
+        |> Payload.cron(:scheduled_capture)
         |> Map.put(:signal_id, "signal_123")
         |> Map.put(:intended_window, %{
           start_at: "2026-05-15T09:00:00Z",
           end_at: "2026-05-15T10:00:00Z"
         })
 
-      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+      assert :ok = Runner.perform(payload, repo: Repo)
 
       assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
 

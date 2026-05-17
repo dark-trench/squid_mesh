@@ -12,10 +12,10 @@ defmodule SquidMesh.Runtime.StepExecutor do
   alias SquidMesh.Run
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Compensation
-  alias SquidMesh.Runtime.StepInput
   alias SquidMesh.Runtime.StepExecutor.Execution
   alias SquidMesh.Runtime.StepExecutor.Outcome
   alias SquidMesh.Runtime.StepExecutor.Preparation
+  alias SquidMesh.Runtime.StepInput
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type execution_error ::
@@ -32,6 +32,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
 
   @type expected_step :: atom() | String.t() | nil
 
+  @doc false
   @spec execute(Ecto.UUID.t(), expected_step(), keyword()) ::
           :ok | {:error, execution_error() | term()}
   def execute(run_id, expected_step \\ nil, overrides \\ []) when is_binary(run_id) do
@@ -55,31 +56,30 @@ defmodule SquidMesh.Runtime.StepExecutor do
          {:ok, %Run{} = run} <- RunStore.get_run(config.repo, run_id),
          :ok <- ensure_failed_compensation_run(run),
          {:ok, definition} <- WorkflowDefinition.load(run.workflow) do
-      case Compensation.compensate_completed_steps(config, definition, run, run.last_error || %{}) do
-        :ok ->
-          :ok
+      config
+      |> Compensation.compensate_completed_steps(definition, run, run.last_error || %{})
+      |> persist_compensation_failure(config, run)
+    end
+  end
 
-        {:error, {:compensation_failed, failures}} ->
-          compensation_error = %{
-            message: "workflow step failed and compensation failed",
-            failed_step: run.current_step,
-            cause: run.last_error,
-            compensation_failures: failures
-          }
+  defp persist_compensation_failure(:ok, _config, _run), do: :ok
 
-          _result =
-            RunStore.update_run(config.repo, run.id, %{
-              current_step: run.current_step,
-              last_error: compensation_error
-            })
-            |> case do
-              {:ok, _run} -> :ok
-              {:error, reason} -> {:error, reason}
-            end
+  defp persist_compensation_failure({:error, {:compensation_failed, failures}}, config, run) do
+    compensation_error = %{
+      message: "workflow step failed and compensation failed",
+      failed_step: run.current_step,
+      cause: run.last_error,
+      compensation_failures: failures
+    }
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+    config.repo
+    |> RunStore.update_run(run.id, %{
+      current_step: run.current_step,
+      last_error: compensation_error
+    })
+    |> case do
+      {:ok, _run} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -174,16 +174,16 @@ defmodule SquidMesh.Runtime.StepExecutor do
 
         prepared
         |> Execution.execute(attempt_number)
-        |> Outcome.apply_execution_result(
-          prepared.config,
-          prepared.definition,
-          prepared.run,
-          prepared.step_name,
-          prepared.step_run.id,
-          attempt.id,
-          attempt_number,
-          started_at
-        )
+        |> Outcome.apply_execution_result(%{
+          config: prepared.config,
+          definition: prepared.definition,
+          run: prepared.run,
+          step_name: prepared.step_name,
+          step_run_id: prepared.step_run.id,
+          attempt_id: attempt.id,
+          attempt_number: attempt_number,
+          started_at: started_at
+        })
       end)
     end
   end

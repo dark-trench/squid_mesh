@@ -7,6 +7,7 @@ defmodule SquidMesh.Workflow.Info do
   normalized workflow specification produced by the workflow DSL.
   """
 
+  alias Spark.Dsl.Extension
   alias SquidMesh.Workflow.Definition
   alias SquidMesh.Workflow.Spec
 
@@ -61,7 +62,7 @@ defmodule SquidMesh.Workflow.Info do
   @spec steps(module()) :: [SquidMesh.Workflow.StepSpec.t()]
   def steps(workflow) when is_atom(workflow) do
     workflow
-    |> Spark.Dsl.Extension.get_entities([:workflow])
+    |> Extension.get_entities([:workflow])
     |> Enum.map(&resolve_step_metadata/1)
   end
 

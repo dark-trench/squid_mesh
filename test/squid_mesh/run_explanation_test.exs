@@ -12,8 +12,9 @@ defmodule SquidMesh.RunExplanationTest do
   alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.RunExplanation
   alias SquidMesh.StepRunStore
-  alias SquidMesh.Test.StepWorker
+  alias SquidMesh.Test.Executor
   alias SquidMesh.Test.Job
+  alias SquidMesh.Test.StepWorker
 
   describe "explain_run/2" do
     test "returns not found when the run does not exist" do
@@ -39,7 +40,7 @@ defmodule SquidMesh.RunExplanationTest do
                SquidMesh.start_run(RetryExhaustedWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
       assert %{success: success, failure: 0} =
-               SquidMesh.Test.Executor.drain()
+               Executor.drain()
 
       assert success >= 2
 
@@ -157,7 +158,7 @@ defmodule SquidMesh.RunExplanationTest do
       assert {:ok, run} =
                SquidMesh.start_run(BackoffWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
-      assert %{success: 1, failure: 0} = SquidMesh.Test.Executor.drain()
+      assert %{success: 1, failure: 0} = Executor.drain()
 
       assert {:ok, explanation} = SquidMesh.explain_run(run.id, repo: Repo)
 
@@ -281,7 +282,7 @@ defmodule SquidMesh.RunExplanationTest do
                SquidMesh.start_run(SuccessfulWorkflow, %{account_id: "acct_999"}, repo: Repo)
 
       assert %{success: success, failure: 0} =
-               SquidMesh.Test.Executor.drain()
+               Executor.drain()
 
       assert success >= 2
 
@@ -297,7 +298,7 @@ defmodule SquidMesh.RunExplanationTest do
                SquidMesh.start_run(SuccessfulWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
       assert %{success: success, failure: 0} =
-               SquidMesh.Test.Executor.drain()
+               Executor.drain()
 
       assert success >= 2
 
@@ -322,7 +323,7 @@ defmodule SquidMesh.RunExplanationTest do
                SquidMesh.start_run(IrreversibleWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
       assert %{success: 2, failure: 0} =
-               SquidMesh.Test.Executor.drain()
+               Executor.drain()
 
       assert {:ok, explanation} = SquidMesh.explain_run(completed_run.id, repo: Repo)
 
