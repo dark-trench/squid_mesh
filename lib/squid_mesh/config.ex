@@ -29,6 +29,13 @@ defmodule SquidMesh.Config do
 
   @type config_error :: {:missing_config, [atom()]} | {:invalid_config, keyword()}
 
+  @doc """
+  Loads Squid Mesh configuration from the host application environment.
+
+  Optional overrides are merged after application configuration so tests and
+  embedding applications can supply runtime-specific repositories or executors
+  without mutating global application state.
+  """
   @spec load(keyword()) :: {:ok, t()} | {:error, config_error()}
   def load(overrides \\ []) do
     config =
@@ -51,6 +58,9 @@ defmodule SquidMesh.Config do
     end
   end
 
+  @doc """
+  Loads configuration or raises an `ArgumentError` with the validation details.
+  """
   @spec load!(keyword()) :: t()
   def load!(overrides \\ []) do
     case load(overrides) do

@@ -28,6 +28,7 @@ defmodule SquidMesh.RunStore.Persistence do
           idempotency_key: String.t()
         }
 
+  @doc false
   @spec build_run_attrs(module(), atom(), WorkflowDefinition.t(), map(), keyword()) :: map()
   def build_run_attrs(workflow, trigger, definition, resolved_payload, opts \\ []) do
     %{
@@ -40,6 +41,7 @@ defmodule SquidMesh.RunStore.Persistence do
     }
   end
 
+  @doc false
   @spec replay_run_attrs(RunRecord.t(), WorkflowDefinition.t()) :: map()
   def replay_run_attrs(source_run, definition) do
     %{
@@ -53,6 +55,7 @@ defmodule SquidMesh.RunStore.Persistence do
     }
   end
 
+  @doc false
   @spec transition_changeset_attrs(Run.status(), transition_attrs()) :: map()
   def transition_changeset_attrs(to_status, attrs) do
     attrs
@@ -61,6 +64,7 @@ defmodule SquidMesh.RunStore.Persistence do
     |> Map.put(:status, Serialization.serialize_status(to_status))
   end
 
+  @doc false
   @spec serialize_transition_attrs(map()) :: map()
   def serialize_transition_attrs(attrs) do
     Map.update(attrs, :current_step, nil, fn
@@ -70,6 +74,7 @@ defmodule SquidMesh.RunStore.Persistence do
     end)
   end
 
+  @doc false
   @spec insert_run_record(module(), map()) ::
           {:ok, Run.t()}
           | {:error, {:invalid_run, Ecto.Changeset.t()}}
@@ -91,6 +96,7 @@ defmodule SquidMesh.RunStore.Persistence do
     end
   end
 
+  @doc false
   @spec update_run_record(module(), RunRecord.t(), map()) ::
           {:ok, Run.t()} | {:error, {:invalid_run, Ecto.Changeset.t()}}
   def update_run_record(repo, run, attrs) do
@@ -103,6 +109,7 @@ defmodule SquidMesh.RunStore.Persistence do
     end
   end
 
+  @doc false
   @spec insert_run_with_dispatch(module(), map(), (Run.t() -> {:ok, term()} | {:error, term()})) ::
           {:ok, Run.t()}
           | {:error,
@@ -111,21 +118,29 @@ defmodule SquidMesh.RunStore.Persistence do
              | term()}
   def insert_run_with_dispatch(repo, attrs, dispatch_fun) do
     case repo.transaction(fn ->
-           with {:ok, run} <- insert_run_record(repo, attrs),
-                {:ok, _result} <- dispatch_fun.(run) do
-             run
-           else
-             {:error, reason} -> repo.rollback(reason)
-           end
+           repo
+           |> insert_run_record(attrs)
+           |> dispatch_inserted_run(repo, dispatch_fun)
          end) do
       {:ok, run} -> {:ok, run}
       {:error, _reason} = error -> error
     end
   end
 
+  defp dispatch_inserted_run({:ok, run}, repo, dispatch_fun) do
+    case dispatch_fun.(run) do
+      {:ok, _result} -> run
+      {:error, reason} -> repo.rollback(reason)
+    end
+  end
+
+  defp dispatch_inserted_run({:error, reason}, repo, _dispatch_fun), do: repo.rollback(reason)
+
+  @doc false
   @spec noop_dispatch(Run.t()) :: {:ok, :noop}
   def noop_dispatch(_run), do: {:ok, :noop}
 
+  @doc false
   @spec cancellation_target_status(Run.status()) ::
           {:ok, Run.status()} | {:error, {:invalid_transition, Run.status(), Run.status()}}
   def cancellation_target_status(:pending), do: {:ok, :cancelled}

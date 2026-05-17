@@ -24,6 +24,7 @@ defmodule SquidMesh.Runtime.Journal do
 
   @namespace "squid_mesh"
 
+  @doc false
   @spec append_entries(storage_config(), [Entry.t()], keyword()) ::
           {:ok, Thread.t()} | {:error, append_error()}
   def append_entries(storage, entries, opts \\ [])
@@ -47,6 +48,7 @@ defmodule SquidMesh.Runtime.Journal do
     end
   end
 
+  @doc false
   @spec load_entries(storage_config(), Entry.thread()) ::
           {:ok, [Entry.t()]} | {:error, term()}
   def load_entries(storage, thread) do
@@ -55,6 +57,7 @@ defmodule SquidMesh.Runtime.Journal do
     end
   end
 
+  @doc false
   @spec load_thread(storage_config(), Entry.thread()) :: {:ok, loaded_thread()} | {:error, term()}
   def load_thread(storage, thread) do
     {adapter, opts} = Jido.Storage.normalize_storage(storage)
@@ -73,6 +76,7 @@ defmodule SquidMesh.Runtime.Journal do
     end
   end
 
+  @doc false
   @spec rebuild_dispatch_projection(storage_config(), String.t()) ::
           {:ok, Projection.t()} | {:error, term()}
   def rebuild_dispatch_projection(storage, queue) do
@@ -81,6 +85,7 @@ defmodule SquidMesh.Runtime.Journal do
     end
   end
 
+  @doc false
   @spec put_checkpoint(storage_config(), Entry.thread(), term(), non_neg_integer(), keyword()) ::
           :ok | {:error, term()}
   def put_checkpoint(storage, thread, projection, thread_rev, opts \\ [])
@@ -99,6 +104,7 @@ defmodule SquidMesh.Runtime.Journal do
     adapter.put_checkpoint(checkpoint_key(thread_id), checkpoint, storage_opts)
   end
 
+  @doc false
   @spec fetch_checkpoint(storage_config(), Entry.thread()) ::
           {:ok, Checkpoint.t()} | {:error, term()}
   def fetch_checkpoint(storage, thread) do
@@ -106,6 +112,7 @@ defmodule SquidMesh.Runtime.Journal do
     Jido.Storage.fetch_checkpoint(adapter, checkpoint_key(thread_id(thread)), opts)
   end
 
+  @doc false
   @spec thread_id(Entry.thread()) :: String.t()
   def thread_id({:run, run_id}), do: encode_thread_id("run", run_id)
   def thread_id({:dispatch, queue}), do: encode_thread_id("dispatch", queue)

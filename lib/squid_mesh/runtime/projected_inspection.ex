@@ -158,6 +158,13 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
       visible_attempts != [] ->
         :attempt_visible
 
+      true ->
+        idle_snapshot_reason(workflow_projection, attempts)
+    end
+  end
+
+  defp idle_snapshot_reason(workflow_projection, attempts) do
+    cond do
       Enum.any?(attempts, &(&1.status == :claimed)) ->
         :attempt_claimed
 

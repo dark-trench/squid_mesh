@@ -6,6 +6,9 @@ defmodule SquidMesh.WorkflowTest do
   alias __MODULE__.MalformedSchemaStep
   alias __MODULE__.NativeStepContractWorkflow
   alias __MODULE__.NativeStepStructError
+  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
+  alias SquidMesh.Workflow.Info, as: WorkflowInfo
+  alias SquidMesh.Workflow.Validation, as: WorkflowValidation
 
   defmodule NativeStepContractWorkflow.LoadAccount do
     use SquidMesh.Step,
@@ -179,7 +182,7 @@ defmodule SquidMesh.WorkflowTest do
                  input_schema: [account_id: [type: :string, required: true]]
                }
              }
-           ] = SquidMesh.Workflow.Info.steps(NativeStepContractWorkflow)
+           ] = WorkflowInfo.steps(NativeStepContractWorkflow)
   end
 
   test "resolves native step metadata when a step module is compiled after the workflow" do
@@ -277,7 +280,7 @@ defmodule SquidMesh.WorkflowTest do
 
     definition = module.workflow_definition()
 
-    assert SquidMesh.Workflow.Definition.step_recovery_policy(definition, :capture_payment) ==
+    assert WorkflowDefinition.step_recovery_policy(definition, :capture_payment) ==
              {:ok,
               %{
                 irreversible?: true,
@@ -286,7 +289,7 @@ defmodule SquidMesh.WorkflowTest do
                 recovery: :manual_intervention
               }}
 
-    assert SquidMesh.Workflow.Definition.step_recovery_policy(definition, :send_receipt) ==
+    assert WorkflowDefinition.step_recovery_policy(definition, :send_receipt) ==
              {:ok,
               %{
                 irreversible?: false,
@@ -318,7 +321,7 @@ defmodule SquidMesh.WorkflowTest do
 
     definition = module.workflow_definition()
 
-    assert SquidMesh.Workflow.Definition.step_compensation_callback(
+    assert WorkflowDefinition.step_compensation_callback(
              definition,
              :reserve_inventory
            ) ==
@@ -355,7 +358,7 @@ defmodule SquidMesh.WorkflowTest do
              }
            ] = definition.steps
 
-    assert SquidMesh.Workflow.Definition.step_transaction_boundary(
+    assert WorkflowDefinition.step_transaction_boundary(
              definition,
              :write_local_records
            ) == {:ok, :repo}
@@ -399,7 +402,7 @@ defmodule SquidMesh.WorkflowTest do
   end
 
   test "normalizes persisted irreversible policy as non-compensatable" do
-    assert SquidMesh.Workflow.Definition.normalize_recovery_policy(%{
+    assert WorkflowDefinition.normalize_recovery_policy(%{
              "irreversible?" => true,
              "compensatable?" => true,
              "replay" => "manual_review_required",
@@ -413,7 +416,7 @@ defmodule SquidMesh.WorkflowTest do
   end
 
   test "normalizes persisted failure recovery decisions" do
-    assert SquidMesh.Workflow.Definition.normalize_recovery_policy(%{
+    assert WorkflowDefinition.normalize_recovery_policy(%{
              "irreversible?" => false,
              "compensatable?" => true,
              "replay" => "allowed",
@@ -452,7 +455,7 @@ defmodule SquidMesh.WorkflowTest do
     definition = DependencyWorkflow.workflow_definition()
 
     assert {:wait, [:load_invoice]} =
-             SquidMesh.Workflow.Definition.dependency_progress(definition, %{
+             WorkflowDefinition.dependency_progress(definition, %{
                load_account: :completed,
                load_invoice: :failed
              })
@@ -932,7 +935,7 @@ defmodule SquidMesh.WorkflowTest do
     assert_raise CompileError,
                  ~r/dependency-based workflow must define at least one root step/,
                  fn ->
-                   SquidMesh.Workflow.Validation.entry_steps!(definition, __ENV__)
+                   WorkflowValidation.entry_steps!(definition, __ENV__)
                  end
   end
 

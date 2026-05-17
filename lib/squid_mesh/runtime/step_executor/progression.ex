@@ -49,12 +49,15 @@ defmodule SquidMesh.Runtime.StepExecutor.Progression do
 
   @type t :: Complete.t() | Update.t() | DispatchRun.t() | DispatchSteps.t()
 
+  @doc false
   @spec complete(attrs_fun()) :: Complete.t()
   def complete(attrs_fun), do: %Complete{attrs_fun: attrs_fun}
 
+  @doc false
   @spec update(attrs_fun()) :: Update.t()
   def update(attrs_fun), do: %Update{attrs_fun: attrs_fun}
 
+  @doc false
   @spec dispatch_run(attrs_fun(), keyword(), dispatch_error_handler()) :: DispatchRun.t()
   def dispatch_run(attrs_fun, dispatch_opts, dispatch_error_handler) do
     %DispatchRun{
@@ -64,6 +67,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Progression do
     }
   end
 
+  @doc false
   @spec dispatch_steps(attrs_fun(), [atom()], keyword(), dispatch_error_handler()) ::
           DispatchSteps.t()
   def dispatch_steps(attrs_fun, steps, dispatch_opts, dispatch_error_handler) do

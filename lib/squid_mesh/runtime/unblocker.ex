@@ -11,69 +11,29 @@ defmodule SquidMesh.Runtime.Unblocker do
   alias SquidMesh.AttemptStore
   alias SquidMesh.Config
   alias SquidMesh.Observability
-  alias SquidMesh.RunStore.Persistence
   alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Persistence.StepAttempt
   alias SquidMesh.Persistence.StepRun
   alias SquidMesh.Run
-  alias SquidMesh.Runtime.ManualAction
+  alias SquidMesh.RunStore.Persistence
   alias SquidMesh.RunStore.Serialization
+  alias SquidMesh.Runtime.Dispatcher
+  alias SquidMesh.Runtime.ManualAction
   alias SquidMesh.StepRunStore
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
+  @doc false
   @spec unblock(Config.t(), Run.t(), map()) :: :ok | {:error, term()}
   def unblock(config, run, attrs \\ %{})
 
   def unblock(%Config{} = config, %Run{workflow: workflow} = run, attrs)
       when is_atom(workflow) and is_map(attrs) do
-    with :ok <- ManualAction.validate(attrs) do
-      case config.repo.transaction(fn ->
-             with {:ok, {paused_run, run_record}} <- locked_paused_run(config.repo, run.id),
-                  {:ok, step_name} <- paused_step_name(paused_run),
-                  {:ok, definition} <- WorkflowDefinition.load(workflow),
-                  {:ok, _pause_step} <- paused_step_definition(definition, step_name),
-                  {:ok, step_run} <- running_step_run(config.repo, paused_run.id, step_name),
-                  {:ok, mapped_output, target} <-
-                    resume_metadata(step_run, definition, step_name),
-                  manual_event = ManualAction.build(:resumed, attrs),
-                  {:ok, attempt} <- running_attempt(config.repo, step_run.id),
-                  {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt.id),
-                  {:ok, _step_run} <-
-                    StepRunStore.complete_manual_step(
-                      config.repo,
-                      step_run.id,
-                      mapped_output,
-                      manual_event
-                    ),
-                  {:ok, resumed_run, from_status, to_status} <-
-                    resume_paused_run(
-                      config,
-                      config.repo,
-                      run_record,
-                      paused_run,
-                      target,
-                      mapped_output
-                    ) do
-               {paused_run, step_name, attempt, resumed_run, from_status, to_status}
-             else
-               {:error, reason} -> config.repo.rollback(reason)
-             end
-           end) do
-        {:ok, {paused_run, step_name, attempt, resumed_run, from_status, to_status}} ->
-          Observability.emit_step_completed(
-            paused_run,
-            step_name,
-            attempt.attempt_number,
-            Observability.duration_since(attempt.inserted_at)
-          )
+    case ManualAction.validate(attrs) do
+      :ok ->
+        config
+        |> run_unblock_transaction(run, attrs, workflow)
+        |> emit_unblock_events()
 
-          Observability.emit_run_transition(resumed_run, from_status, to_status)
-          :ok
-
-        {:error, reason} ->
-          {:error, reason}
-      end
-    else
       {:error, {:invalid_manual_action, details}} ->
         {:error, {:invalid_resume, details}}
     end
@@ -82,6 +42,51 @@ defmodule SquidMesh.Runtime.Unblocker do
   def unblock(%Config{}, %Run{workflow: workflow}, _attrs) do
     {:error, {:invalid_workflow, workflow}}
   end
+
+  defp run_unblock_transaction(config, run, attrs, workflow) do
+    config.repo.transaction(fn -> do_unblock(config, run, attrs, workflow) end)
+  end
+
+  defp do_unblock(config, run, attrs, workflow) do
+    with {:ok, {paused_run, run_record}} <- locked_paused_run(config.repo, run.id),
+         {:ok, step_name} <- paused_step_name(paused_run),
+         {:ok, definition} <- WorkflowDefinition.load(workflow),
+         {:ok, _pause_step} <- paused_step_definition(definition, step_name),
+         {:ok, step_run} <- running_step_run(config.repo, paused_run.id, step_name),
+         {:ok, mapped_output, target} <- resume_metadata(step_run, definition, step_name),
+         manual_event = ManualAction.build(:resumed, attrs),
+         {:ok, attempt} <- running_attempt(config.repo, step_run.id),
+         {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt.id),
+         {:ok, _step_run} <-
+           StepRunStore.complete_manual_step(
+             config.repo,
+             step_run.id,
+             mapped_output,
+             manual_event
+           ),
+         {:ok, resumed_run, from_status, to_status} <-
+           resume_paused_run(config, config.repo, run_record, paused_run, target, mapped_output) do
+      {paused_run, step_name, attempt, resumed_run, from_status, to_status}
+    else
+      {:error, reason} -> config.repo.rollback(reason)
+    end
+  end
+
+  defp emit_unblock_events(
+         {:ok, {paused_run, step_name, attempt, resumed_run, from_status, to_status}}
+       ) do
+    Observability.emit_step_completed(
+      paused_run,
+      step_name,
+      attempt.attempt_number,
+      Observability.duration_since(attempt.inserted_at)
+    )
+
+    Observability.emit_run_transition(resumed_run, from_status, to_status)
+    :ok
+  end
+
+  defp emit_unblock_events({:error, reason}), do: {:error, reason}
 
   defp locked_paused_run(repo, run_id) do
     case locked_run_record(repo, run_id) do
@@ -171,29 +176,27 @@ defmodule SquidMesh.Runtime.Unblocker do
         end
 
       next_step when is_atom(next_step) ->
-        with {:ok, updated_run} <-
-               Persistence.update_run_record(
-                 repo,
-                 run_record,
-                 Persistence.transition_changeset_attrs(
-                   :running,
-                   Map.put(attrs, :current_step, next_step)
-                 )
-               ) do
-          case SquidMesh.Runtime.Dispatcher.dispatch_run(config, updated_run, []) do
-            {:ok, _job} ->
-              {:ok, updated_run, :paused, :running}
-
-            {:error, reason} ->
-              {:error, {:dispatch_failed, reason}}
-          end
-        end
-
-      {:error, reason} ->
-        {:error, reason}
+        dispatch_resumed_run(config, repo, run_record, attrs, next_step)
 
       _other ->
         {:error, {:invalid_step, paused_run.current_step}}
+    end
+  end
+
+  defp dispatch_resumed_run(config, repo, run_record, attrs, next_step) do
+    with {:ok, updated_run} <-
+           Persistence.update_run_record(
+             repo,
+             run_record,
+             Persistence.transition_changeset_attrs(
+               :running,
+               Map.put(attrs, :current_step, next_step)
+             )
+           ) do
+      case Dispatcher.dispatch_run(config, updated_run, []) do
+        {:ok, _job} -> {:ok, updated_run, :paused, :running}
+        {:error, reason} -> {:error, {:dispatch_failed, reason}}
+      end
     end
   end
 

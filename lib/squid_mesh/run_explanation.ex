@@ -12,8 +12,8 @@ defmodule SquidMesh.RunExplanation do
   alias SquidMesh.Config
   alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.Run
-  alias SquidMesh.RunStore
   alias SquidMesh.RunStepState
+  alias SquidMesh.RunStore
   alias SquidMesh.Runtime.RetryPolicy
   alias SquidMesh.StepAttempt
   alias SquidMesh.StepRun
@@ -373,8 +373,6 @@ defmodule SquidMesh.RunExplanation do
   defp dependency_wait?(_run), do: false
 
   defp dependency_join_scheduled?(%Run{} = run), do: not is_nil(scheduled_dependency_join(run))
-
-  defp dependency_join_scheduled?(_run), do: false
 
   defp scheduled_dependency_join(%Run{steps: steps}) when is_list(steps) do
     Enum.find(steps, fn

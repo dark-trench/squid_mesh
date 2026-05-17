@@ -1,0 +1,19 @@
+# Codecov configuration
+
+coverage:
+  precision: 1
+  round: down
+  status:
+    project:
+      default:
+        target: 80%
+        threshold: 2%
+    patch:
+      default:
+        target: 75%
+        threshold: 10%
+
+comment:
+  layout: "reach,diff,flags,tree"
+  behavior: default
+  require_changes: false

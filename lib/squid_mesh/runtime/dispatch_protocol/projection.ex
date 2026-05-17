@@ -20,24 +20,35 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
           optional(:claim_token_hash) => String.t()
         }
 
+  @type string_set :: MapSet.t(String.t()) | %MapSet{}
+
   @type t :: %__MODULE__{
           attempts: %{optional(String.t()) => ActionAttempt.t()},
           anomalies: [anomaly()],
-          terminal_runs: MapSet.t(String.t())
+          terminal_runs: string_set()
         }
 
   defstruct attempts: %{}, anomalies: [], terminal_runs: MapSet.new()
 
-  @spec rebuild([Entry.t()]) :: t()
-  def rebuild(entries) when is_list(entries) do
-    replay(%__MODULE__{}, entries)
+  @doc false
+  @spec new() :: t()
+  def new do
+    %__MODULE__{terminal_runs: MapSet.new()}
   end
 
+  @doc false
+  @spec rebuild([Entry.t()]) :: t()
+  def rebuild(entries) when is_list(entries) do
+    replay(new(), entries)
+  end
+
+  @doc false
   @spec replay(t(), [Entry.t()]) :: t()
   def replay(%__MODULE__{} = projection, entries) when is_list(entries) do
     Enum.reduce(entries, projection, &apply_entry/2)
   end
 
+  @doc false
   @spec visible_attempts(t(), DateTime.t()) :: [ActionAttempt.t()]
   def visible_attempts(%__MODULE__{} = projection, %DateTime{} = at) do
     projection
@@ -48,6 +59,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
     |> Enum.reject(&terminal_run?(projection, &1.run_id))
   end
 
+  @doc false
   @spec expired_claims(t(), DateTime.t()) :: [ActionAttempt.t()]
   def expired_claims(%__MODULE__{} = projection, %DateTime{} = at) do
     projection
@@ -59,6 +71,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
     |> Enum.reject(&terminal_run?(projection, &1.run_id))
   end
 
+  @doc false
   @spec completed_results(t()) :: [ActionAttempt.t()]
   def completed_results(%__MODULE__{} = projection) do
     projection
@@ -66,6 +79,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
     |> Enum.filter(&(&1.status == :completed))
   end
 
+  @doc false
   @spec attempt_runnable_keys(t()) :: MapSet.t(String.t())
   def attempt_runnable_keys(%__MODULE__{attempts: attempts}) do
     attempts
@@ -73,14 +87,15 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
     |> MapSet.new()
   end
 
+  @doc false
   @spec results_ready_to_apply(t()) :: [ActionAttempt.t()]
   def results_ready_to_apply(%__MODULE__{} = projection) do
     projection
     |> completed_results()
-    |> Enum.reject(& &1.applied?)
-    |> Enum.reject(&terminal_run?(projection, &1.run_id))
+    |> Enum.reject(&(&1.applied? or terminal_run?(projection, &1.run_id)))
   end
 
+  @doc false
   @spec anomalies(t()) :: [anomaly()]
   def anomalies(%__MODULE__{anomalies: anomalies}), do: Enum.reverse(anomalies)
 
@@ -201,15 +216,10 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
   defp update_matching_claim(projection, entry, fun) when is_function(fun, 1) do
     case Map.fetch(projection.attempts, entry.data.runnable_key) do
       {:ok, %ActionAttempt{status: :claimed} = attempt} ->
-        cond do
-          terminal_attempt?(projection, attempt) ->
-            add_anomaly(projection, entry, :terminal_run)
-
-          true ->
-            case claim_fence(attempt, entry.data) do
-              :current -> put_attempt(projection, fun.(attempt))
-              {:error, reason} -> add_anomaly(projection, entry, reason)
-            end
+        if terminal_attempt?(projection, attempt) do
+          add_anomaly(projection, entry, :terminal_run)
+        else
+          update_current_claim(projection, entry, attempt, fun)
         end
 
       {:ok, %ActionAttempt{}} ->
@@ -217,6 +227,13 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
 
       :error ->
         add_anomaly(projection, entry, :unknown_runnable_intent)
+    end
+  end
+
+  defp update_current_claim(projection, entry, attempt, fun) do
+    case claim_fence(attempt, entry.data) do
+      :current -> put_attempt(projection, fun.(attempt))
+      {:error, reason} -> add_anomaly(projection, entry, reason)
     end
   end
 

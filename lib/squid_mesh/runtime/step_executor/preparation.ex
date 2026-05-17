@@ -8,6 +8,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
   """
 
   alias SquidMesh.Config
+  alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.Run
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.StepExecutor.PreparedStep
@@ -23,17 +24,15 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
           | {:cancel, Run.t()}
           | :skip
           | {:error, term()}
+  @doc false
   @spec prepare(Config.t(), WorkflowDefinition.t(), Run.t(), atom() | nil) :: prepare_result()
   def prepare(%Config{} = config, definition, %Run{} = run, expected_step) do
     # Lock the run before claiming a step so stale workers cannot start side
     # effects after cancellation or another terminal transition wins the race.
     case config.repo.transaction(fn ->
-           with {:ok, locked_run} <- RunStore.get_run_for_update(config.repo, run.id) do
-             {result, events} = do_prepare(config, definition, locked_run, expected_step)
-             {:prepared, result, events}
-           else
-             {:error, reason} -> config.repo.rollback(reason)
-           end
+           config
+           |> lock_prepare_run(run.id)
+           |> prepare_locked_run(config, definition, expected_step)
          end) do
       {:ok, {:prepared, {:recover_stale, prepared}, events}} ->
         emit_post_commit_events(events)
@@ -48,41 +47,22 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
     end
   end
 
+  defp lock_prepare_run(config, run_id), do: RunStore.get_run_for_update(config.repo, run_id)
+
+  defp prepare_locked_run({:ok, locked_run}, config, definition, expected_step) do
+    {result, events} = do_prepare(config, definition, locked_run, expected_step)
+    {:prepared, result, events}
+  end
+
+  defp prepare_locked_run({:error, reason}, config, _definition, _expected_step) do
+    config.repo.rollback(reason)
+  end
+
   defp do_prepare(%Config{} = config, definition, %Run{status: status} = run, expected_step)
        when status in [:pending, :running, :retrying] do
     case resolve_execution_step(config.repo, definition, run, expected_step) do
       {:ok, execution_step} ->
-        with {:ok, step} <- WorkflowDefinition.step(definition, execution_step),
-             {:ok, input_mapping} <-
-               WorkflowDefinition.step_input_mapping(definition, execution_step),
-             {:ok, running_run, events} <-
-               ensure_running(config.repo, run, definition, execution_step),
-             candidate_input = StepInput.build_step_input(running_run, input_mapping),
-             {:ok, recovery_policy} <-
-               WorkflowDefinition.step_recovery_policy(definition, execution_step),
-             {:ok, step_run, execution_mode} <-
-               StepRunStore.begin_step(
-                 config.repo,
-                 running_run.id,
-                 execution_step,
-                 candidate_input,
-                 recovery_policy
-               ) do
-          prepared = %PreparedStep{
-            config: config,
-            definition: definition,
-            run: running_run,
-            step_name: execution_step,
-            step: step,
-            step_run: step_run,
-            input: execution_input(step_run, candidate_input)
-          }
-
-          case execution_mode do
-            :execute -> {{:execute, prepared}, events}
-            :skip -> {prepare_existing_step(config, prepared), events}
-          end
-        end
+        prepare_execution_step(config, definition, run, execution_step)
 
       :skip ->
         {:skip, []}
@@ -97,6 +77,56 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
   end
 
   defp do_prepare(_config, _definition, %Run{}, _expected_step), do: {:skip, []}
+
+  defp prepare_execution_step(config, definition, run, execution_step) do
+    with {:ok, step} <- WorkflowDefinition.step(definition, execution_step),
+         {:ok, input_mapping} <- WorkflowDefinition.step_input_mapping(definition, execution_step),
+         {:ok, running_run, events} <-
+           ensure_running(config.repo, run, definition, execution_step),
+         candidate_input = StepInput.build_step_input(running_run, input_mapping),
+         {:ok, recovery_policy} <-
+           WorkflowDefinition.step_recovery_policy(definition, execution_step),
+         {:ok, step_run, execution_mode} <-
+           StepRunStore.begin_step(
+             config.repo,
+             running_run.id,
+             execution_step,
+             candidate_input,
+             recovery_policy
+           ) do
+      prepared =
+        prepared_step(
+          config,
+          definition,
+          running_run,
+          execution_step,
+          step,
+          step_run,
+          candidate_input
+        )
+
+      prepare_execution_mode(config, prepared, execution_mode, events)
+    end
+  end
+
+  defp prepared_step(config, definition, running_run, execution_step, step, step_run, input) do
+    %PreparedStep{
+      config: config,
+      definition: definition,
+      run: running_run,
+      step_name: execution_step,
+      step: step,
+      step_run: step_run,
+      input: execution_input(step_run, input)
+    }
+  end
+
+  defp prepare_execution_mode(_config, prepared, :execute, events),
+    do: {{:execute, prepared}, events}
+
+  defp prepare_execution_mode(config, prepared, :skip, events) do
+    {prepare_existing_step(config, prepared), events}
+  end
 
   @spec ensure_running(module(), Run.t(), WorkflowDefinition.t(), atom()) ::
           {:ok, Run.t(), [tuple()]} | {:error, term()}
@@ -150,27 +180,34 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
          %Run{current_step: current_step, id: run_id},
          expected_step
        ) do
+    resolve_execution_step_mode(
+      WorkflowDefinition.dependency_mode?(definition),
+      repo,
+      run_id,
+      current_step,
+      expected_step
+    )
+  end
+
+  defp resolve_execution_step_mode(true, repo, run_id, _current_step, expected_step)
+       when is_atom(expected_step) do
+    resolve_dependency_execution_step(repo, run_id, expected_step)
+  end
+
+  defp resolve_execution_step_mode(_dependency_mode?, _repo, _run_id, current_step, expected_step) do
     cond do
-      WorkflowDefinition.dependency_mode?(definition) and is_atom(expected_step) ->
-        resolve_dependency_execution_step(repo, run_id, expected_step)
-
-      is_atom(current_step) and (is_nil(expected_step) or expected_step == current_step) ->
-        {:ok, current_step}
-
-      not is_nil(expected_step) and is_atom(expected_step) and current_step != expected_step ->
-        :skip
-
-      true ->
-        {:error, {:invalid_step, current_step}}
+      is_atom(current_step) and expected_step in [nil, current_step] -> {:ok, current_step}
+      is_atom(expected_step) and current_step != expected_step -> :skip
+      true -> {:error, {:invalid_step, current_step}}
     end
   end
 
   defp resolve_dependency_execution_step(repo, run_id, expected_step) do
     case StepRunStore.get_step_run(repo, run_id, expected_step) do
-      %SquidMesh.Persistence.StepRun{status: status} when status in ["pending", "failed"] ->
+      %StepRunRecord{status: status} when status in ["pending", "failed"] ->
         {:ok, expected_step}
 
-      %SquidMesh.Persistence.StepRun{} ->
+      %StepRunRecord{} ->
         :skip
 
       nil ->

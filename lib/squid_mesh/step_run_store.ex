@@ -215,27 +215,26 @@ defmodule SquidMesh.StepRunStore do
       when strategy in [:compensation, :undo] and (is_atom(target) or is_binary(target)) do
     case repo.get(StepRun, step_run_id) do
       %StepRun{status: "failed", recovery: recovery} ->
-        updated_recovery =
-          (recovery || %{})
-          |> Map.put("failure", serialize_recovery_value(failure))
-
-        updates = [recovery: updated_recovery, updated_at: now_utc()]
-
-        {count, _rows} =
-          StepRun
-          |> where([step_run], step_run.id == ^step_run_id and step_run.status == "failed")
-          |> repo.update_all(set: updates)
-
-        case count do
-          1 -> {:ok, repo.get!(StepRun, step_run_id)}
-          0 -> stale_step_run_error(repo, step_run_id)
-        end
+        update_failure_recovery(repo, step_run_id, recovery, failure)
 
       %StepRun{status: status} ->
         {:error, {:stale_step_run, status}}
 
       nil ->
         {:error, :not_found}
+    end
+  end
+
+  defp update_failure_recovery(repo, step_run_id, recovery, failure) do
+    updated_recovery = Map.put(recovery || %{}, "failure", serialize_recovery_value(failure))
+    updates = [recovery: updated_recovery, updated_at: now_utc()]
+
+    StepRun
+    |> where([step_run], step_run.id == ^step_run_id and step_run.status == "failed")
+    |> repo.update_all(set: updates)
+    |> case do
+      {1, _rows} -> {:ok, repo.get!(StepRun, step_run_id)}
+      {0, _rows} -> stale_step_run_error(repo, step_run_id)
     end
   end
 
@@ -430,23 +429,28 @@ defmodule SquidMesh.StepRunStore do
         {:ok, step_run, :execute}
 
       :not_updated ->
-        case transition_failed_step_to_running(repo, run_id, step, attrs) do
-          {:ok, %StepRun{} = step_run} ->
-            {:ok, step_run, :execute}
+        claim_failed_or_existing_step(repo, run_id, step, attrs)
+    end
+  end
 
-          :not_updated ->
-            case get_step_run(repo, run_id, step) do
-              %StepRun{} = step_run ->
-                {:ok, step_run, :skip}
+  defp claim_failed_or_existing_step(repo, run_id, step, attrs) do
+    case transition_failed_step_to_running(repo, run_id, step, attrs) do
+      {:ok, %StepRun{} = step_run} -> {:ok, step_run, :execute}
+      :not_updated -> existing_or_inserted_step(repo, run_id, step, attrs)
+    end
+  end
 
-              nil ->
-                insert_step_run(repo, attrs)
-                |> case do
-                  {:ok, step_run} -> {:ok, step_run, :execute}
-                  :duplicate -> claim_existing_step(repo, run_id, step, attrs)
-                end
-            end
-        end
+  defp existing_or_inserted_step(repo, run_id, step, attrs) do
+    case get_step_run(repo, run_id, step) do
+      %StepRun{} = step_run -> {:ok, step_run, :skip}
+      nil -> insert_or_reclaim_step(repo, run_id, step, attrs)
+    end
+  end
+
+  defp insert_or_reclaim_step(repo, run_id, step, attrs) do
+    case insert_step_run(repo, attrs) do
+      {:ok, step_run} -> {:ok, step_run, :execute}
+      :duplicate -> claim_existing_step(repo, run_id, step, attrs)
     end
   end
 

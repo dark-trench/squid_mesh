@@ -49,33 +49,10 @@ defmodule SquidMesh do
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, payload, overrides) when is_map(payload) and is_list(overrides) do
     with :ok <- reject_public_start_options(overrides),
-         {:ok, config} <- Config.load(overrides),
-         {:ok, run} <-
-           RunStore.create_and_dispatch_run(
-             config.repo,
-             workflow,
-             payload,
-             fn run ->
-               Dispatcher.dispatch_run(config, run)
-             end
-           ) do
-      SquidMesh.Observability.emit_run_created(run)
-      {:ok, run}
+         {:ok, config} <- Config.load(overrides) do
+      start_default_run(config, workflow, payload)
     else
-      {:error, reason} when is_tuple(reason) and elem(reason, 0) == :invalid_run ->
-        {:error, reason}
-
-      {:error, reason} = error when reason in [:not_found] ->
-        error
-
-      {:error, %_{} = reason} ->
-        {:error, {:dispatch_failed, reason}}
-
-      {:error, reason} when is_tuple(reason) ->
-        {:error, reason}
-
-      {:error, reason} ->
-        {:error, {:dispatch_failed, reason}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -96,6 +73,13 @@ defmodule SquidMesh do
     start_run(workflow, trigger_name, payload, [])
   end
 
+  @doc """
+  Starts a named trigger while applying runtime configuration overrides.
+
+  Overrides are intended for host-app test and integration boundaries. Runtime
+  context injection is kept out of this public API so scheduled starts and other
+  internal callers can keep their idempotency metadata isolated.
+  """
   @spec start_run(module(), atom(), map(), keyword()) ::
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
@@ -105,32 +89,10 @@ defmodule SquidMesh do
   def start_run(workflow, trigger_name, payload, overrides)
       when is_atom(trigger_name) and is_map(payload) and is_list(overrides) do
     with :ok <- reject_public_start_options(overrides),
-         {:ok, config} <- Config.load(overrides),
-         {:ok, run} <-
-           RunStore.create_and_dispatch_run(
-             config.repo,
-             workflow,
-             trigger_name,
-             payload,
-             fn run -> Dispatcher.dispatch_run(config, run) end
-           ) do
-      SquidMesh.Observability.emit_run_created(run)
-      {:ok, run}
+         {:ok, config} <- Config.load(overrides) do
+      start_triggered_run(config, workflow, trigger_name, payload)
     else
-      {:error, reason} when is_tuple(reason) and elem(reason, 0) == :invalid_run ->
-        {:error, reason}
-
-      {:error, reason} = error when reason in [:not_found] ->
-        error
-
-      {:error, %_{} = reason} ->
-        {:error, {:dispatch_failed, reason}}
-
-      {:error, reason} when is_tuple(reason) ->
-        {:error, reason}
-
-      {:error, reason} ->
-        {:error, {:dispatch_failed, reason}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -147,41 +109,9 @@ defmodule SquidMesh do
              is_list(overrides) do
     with :ok <- reject_public_start_options(overrides),
          {:ok, config} <- Config.load(overrides) do
-      case RunStore.create_and_dispatch_run(
-             config.repo,
-             workflow,
-             trigger_name,
-             payload,
-             fn run -> Dispatcher.dispatch_run(config, run) end,
-             initial_context: initial_context
-           ) do
-        {:ok, run} ->
-          SquidMesh.Observability.emit_run_created(run)
-          {:ok, run}
-
-        {:error, {:duplicate_schedule_start, identity}} ->
-          with {:ok, run} <- RunStore.get_run_by_schedule_idempotency(config.repo, identity) do
-            {:ok, {:duplicate_schedule_start, run}}
-          end
-
-        {:error, reason} ->
-          normalize_start_error(reason)
-      end
+      start_initial_context_run(config, workflow, trigger_name, payload, initial_context)
     else
-      {:error, reason} when is_tuple(reason) and elem(reason, 0) == :invalid_run ->
-        {:error, reason}
-
-      {:error, reason} = error when reason in [:not_found] ->
-        error
-
-      {:error, %_{} = reason} ->
-        {:error, {:dispatch_failed, reason}}
-
-      {:error, reason} when is_tuple(reason) ->
-        {:error, reason}
-
-      {:error, reason} ->
-        {:error, {:dispatch_failed, reason}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -192,6 +122,55 @@ defmodule SquidMesh do
   defp normalize_start_error(%_{} = reason), do: {:error, {:dispatch_failed, reason}}
   defp normalize_start_error(reason) when is_tuple(reason), do: {:error, reason}
   defp normalize_start_error(reason), do: {:error, {:dispatch_failed, reason}}
+
+  defp start_default_run(config, workflow, payload) do
+    config.repo
+    |> RunStore.create_and_dispatch_run(workflow, payload, fn run ->
+      Dispatcher.dispatch_run(config, run)
+    end)
+    |> normalize_created_run()
+  end
+
+  defp start_triggered_run(config, workflow, trigger_name, payload) do
+    config.repo
+    |> RunStore.create_and_dispatch_run(workflow, trigger_name, payload, fn run ->
+      Dispatcher.dispatch_run(config, run)
+    end)
+    |> normalize_created_run()
+  end
+
+  defp normalize_created_run({:ok, %Run{} = run}) do
+    SquidMesh.Observability.emit_run_created(run)
+    {:ok, run}
+  end
+
+  defp normalize_created_run({:error, reason}), do: normalize_start_error(reason)
+
+  defp start_initial_context_run(config, workflow, trigger_name, payload, initial_context) do
+    config.repo
+    |> RunStore.create_and_dispatch_run(
+      workflow,
+      trigger_name,
+      payload,
+      fn run -> Dispatcher.dispatch_run(config, run) end,
+      initial_context: initial_context
+    )
+    |> normalize_initial_context_run(config)
+  end
+
+  defp normalize_initial_context_run({:ok, %Run{} = run}, _config) do
+    SquidMesh.Observability.emit_run_created(run)
+    {:ok, run}
+  end
+
+  defp normalize_initial_context_run({:error, {:duplicate_schedule_start, identity}}, config) do
+    case RunStore.get_run_by_schedule_idempotency(config.repo, identity) do
+      {:ok, run} -> {:ok, {:duplicate_schedule_start, run}}
+      {:error, reason} -> normalize_start_error(reason)
+    end
+  end
+
+  defp normalize_initial_context_run({:error, reason}, _config), do: normalize_start_error(reason)
 
   defp reject_public_start_options(overrides) do
     cond do
@@ -276,6 +255,15 @@ defmodule SquidMesh do
              | term()}
   def unblock_run(run_id), do: unblock_run(run_id, %{}, [])
 
+  @doc """
+  Resumes a paused run with either configuration overrides or manual action
+  attributes.
+
+  Pass a keyword list to override runtime configuration, or a map to provide
+  manual action attributes. Attribute maps are validated against the paused
+  step's manual action contract before the runtime appends resume events or
+  dispatches successor work.
+  """
   @spec unblock_run(Ecto.UUID.t(), keyword()) ::
           {:ok, Run.t()}
           | {:error,
@@ -300,6 +288,9 @@ defmodule SquidMesh do
     unblock_run(run_id, attrs, [])
   end
 
+  @doc """
+  Resumes a paused run with manual action attributes and configuration overrides.
+  """
   @spec unblock_run(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, Run.t()}
           | {:error,

@@ -11,10 +11,10 @@ defmodule SquidMesh.RunStore do
   import Ecto.Query
 
   alias SquidMesh.AttemptStore
+  alias SquidMesh.Observability
   alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Persistence.StepAttempt
   alias SquidMesh.Persistence.StepRun
-  alias SquidMesh.Observability
   alias SquidMesh.Run
   alias SquidMesh.RunStore.Persistence
   alias SquidMesh.RunStore.Serialization
@@ -262,36 +262,41 @@ defmodule SquidMesh.RunStore do
   @spec transition_run_silent(module(), Ecto.UUID.t(), Run.status(), transition_attrs()) ::
           {:ok, {Run.t(), Run.status(), Run.status()}} | {:error, transition_error()}
   def transition_run_silent(repo, run_id, to_status, attrs \\ %{}) when is_map(attrs) do
-    case repo.transaction(fn ->
-           case get_run_record_for_update(repo, run_id) do
-             %RunRecord{} = run ->
-               transition_locked_run(repo, run, to_status, attrs)
-
-             nil ->
-               repo.rollback(:not_found)
-           end
-         end) do
+    case repo.transaction(fn -> transition_for_update(repo, run_id, to_status, attrs) end) do
       {:ok, {_run, _from_status, _to_status}} = ok -> ok
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp transition_for_update(repo, run_id, to_status, attrs) do
+    case get_run_record_for_update(repo, run_id) do
+      %RunRecord{} = run -> transition_locked_run(repo, run, to_status, attrs)
+      nil -> repo.rollback(:not_found)
     end
   end
 
   defp transition_locked_run(repo, run, to_status, attrs) do
     from_status = Serialization.deserialize_status(run.status)
 
-    with {:ok, _next_status} <- StateMachine.transition(from_status, to_status) do
-      run
-      |> RunRecord.changeset(Persistence.transition_changeset_attrs(to_status, attrs))
-      |> repo.update()
-      |> case do
-        {:ok, updated_run} ->
-          {Serialization.to_public_run(updated_run), from_status, to_status}
+    case StateMachine.transition(from_status, to_status) do
+      {:ok, _next_status} ->
+        update_transition_locked_run(repo, run, from_status, to_status, attrs)
 
-        {:error, changeset} ->
-          repo.rollback({:invalid_run, changeset})
-      end
-    else
-      {:error, reason} -> repo.rollback(reason)
+      {:error, reason} ->
+        repo.rollback(reason)
+    end
+  end
+
+  defp update_transition_locked_run(repo, run, from_status, to_status, attrs) do
+    run
+    |> RunRecord.changeset(Persistence.transition_changeset_attrs(to_status, attrs))
+    |> repo.update()
+    |> case do
+      {:ok, updated_run} ->
+        {Serialization.to_public_run(updated_run), from_status, to_status}
+
+      {:error, changeset} ->
+        repo.rollback({:invalid_run, changeset})
     end
   end
 
@@ -306,26 +311,7 @@ defmodule SquidMesh.RunStore do
   def transition_and_dispatch_run(repo, run_id, to_status, attrs, dispatch_fun)
       when is_map(attrs) and is_function(dispatch_fun, 1) do
     case repo.transaction(fn ->
-           case get_run_record_for_update(repo, run_id) do
-             %RunRecord{} = run ->
-               from_status = Serialization.deserialize_status(run.status)
-
-               with {:ok, _next_status} <- StateMachine.transition(from_status, to_status),
-                    {:ok, updated_run} <-
-                      Persistence.update_run_record(
-                        repo,
-                        run,
-                        Persistence.transition_changeset_attrs(to_status, attrs)
-                      ),
-                    {:ok, _result} <- dispatch_fun.(updated_run) do
-                 {updated_run, from_status}
-               else
-                 {:error, reason} -> repo.rollback(reason)
-               end
-
-             nil ->
-               repo.rollback(:not_found)
-           end
+           transition_and_dispatch_for_update(repo, run_id, to_status, attrs, dispatch_fun)
          end) do
       {:ok, {run, from_status}} ->
         Observability.emit_run_transition(run, from_status, to_status)
@@ -333,6 +319,33 @@ defmodule SquidMesh.RunStore do
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp transition_and_dispatch_for_update(repo, run_id, to_status, attrs, dispatch_fun) do
+    case get_run_record_for_update(repo, run_id) do
+      %RunRecord{} = run ->
+        dispatch_transitioned_run(repo, run, to_status, attrs, dispatch_fun)
+
+      nil ->
+        repo.rollback(:not_found)
+    end
+  end
+
+  defp dispatch_transitioned_run(repo, run, to_status, attrs, dispatch_fun) do
+    from_status = Serialization.deserialize_status(run.status)
+
+    with {:ok, _next_status} <- StateMachine.transition(from_status, to_status),
+         {:ok, updated_run} <-
+           Persistence.update_run_record(
+             repo,
+             run,
+             Persistence.transition_changeset_attrs(to_status, attrs)
+           ),
+         {:ok, _result} <- dispatch_fun.(updated_run) do
+      {updated_run, from_status}
+    else
+      {:error, reason} -> repo.rollback(reason)
     end
   end
 
@@ -401,25 +414,7 @@ defmodule SquidMesh.RunStore do
   @spec update_run(module(), Ecto.UUID.t(), transition_attrs()) ::
           {:ok, Run.t()} | {:error, update_error()}
   def update_run(repo, run_id, attrs) when is_map(attrs) do
-    repo.transaction(fn ->
-      case get_run_record_for_update(repo, run_id) do
-        %RunRecord{} = run ->
-          run
-          |> RunRecord.changeset(
-            Persistence.serialize_transition_attrs(
-              Map.take(attrs, [:context, :current_step, :last_error])
-            )
-          )
-          |> repo.update()
-          |> case do
-            {:ok, updated_run} -> Serialization.to_public_run(updated_run)
-            {:error, changeset} -> repo.rollback({:invalid_run, changeset})
-          end
-
-        nil ->
-          repo.rollback(:not_found)
-      end
-    end)
+    repo.transaction(fn -> update_run_for_update(repo, run_id, attrs) end)
   end
 
   @doc false
@@ -427,27 +422,41 @@ defmodule SquidMesh.RunStore do
           {:ok, Run.t()} | {:error, update_error()}
   def update_run_with(repo, run_id, attrs_fun) when is_function(attrs_fun, 1) do
     repo.transaction(fn ->
-      case get_run_record_for_update(repo, run_id) do
-        %RunRecord{} = run ->
-          current_run = Serialization.to_public_run(run)
-          attrs = attrs_fun.(current_run)
-
-          run
-          |> RunRecord.changeset(
-            Persistence.serialize_transition_attrs(
-              Map.take(attrs, [:context, :current_step, :last_error])
-            )
-          )
-          |> repo.update()
-          |> case do
-            {:ok, updated_run} -> Serialization.to_public_run(updated_run)
-            {:error, changeset} -> repo.rollback({:invalid_run, changeset})
-          end
-
-        nil ->
-          repo.rollback(:not_found)
-      end
+      update_run_for_update(repo, run_id, fn run ->
+        run
+        |> Serialization.to_public_run()
+        |> attrs_fun.()
+      end)
     end)
+  end
+
+  defp update_run_for_update(repo, run_id, attrs) when is_map(attrs) do
+    update_run_for_update(repo, run_id, fn _run -> attrs end)
+  end
+
+  defp update_run_for_update(repo, run_id, attrs_fun) when is_function(attrs_fun, 1) do
+    case get_run_record_for_update(repo, run_id) do
+      %RunRecord{} = run ->
+        attrs = attrs_fun.(run)
+        update_locked_run_record(repo, run, attrs)
+
+      nil ->
+        repo.rollback(:not_found)
+    end
+  end
+
+  defp update_locked_run_record(repo, run, attrs) do
+    run
+    |> RunRecord.changeset(
+      Persistence.serialize_transition_attrs(
+        Map.take(attrs, [:context, :current_step, :last_error])
+      )
+    )
+    |> repo.update()
+    |> case do
+      {:ok, updated_run} -> Serialization.to_public_run(updated_run)
+      {:error, changeset} -> repo.rollback({:invalid_run, changeset})
+    end
   end
 
   @doc false
@@ -565,25 +574,7 @@ defmodule SquidMesh.RunStore do
   def update_and_dispatch_run(repo, run_id, attrs, dispatch_fun)
       when is_map(attrs) and is_function(dispatch_fun, 1) do
     case repo.transaction(fn ->
-           case get_run_record_for_update(repo, run_id) do
-             %RunRecord{} = run ->
-               with {:ok, updated_run} <-
-                      Persistence.update_run_record(
-                        repo,
-                        run,
-                        Persistence.serialize_transition_attrs(
-                          Map.take(attrs, [:context, :current_step, :last_error])
-                        )
-                      ),
-                    {:ok, _result} <- dispatch_fun.(updated_run) do
-                 updated_run
-               else
-                 {:error, reason} -> repo.rollback(reason)
-               end
-
-             nil ->
-               repo.rollback(:not_found)
-           end
+           update_and_dispatch_for_update(repo, run_id, constant_attrs_fun(attrs), dispatch_fun)
          end) do
       {:ok, run} -> {:ok, run}
       {:error, _reason} = error -> error
@@ -596,31 +587,48 @@ defmodule SquidMesh.RunStore do
   def update_and_dispatch_run_with(repo, run_id, attrs_fun, dispatch_fun)
       when is_function(attrs_fun, 1) and is_function(dispatch_fun, 1) do
     case repo.transaction(fn ->
-           case get_run_record_for_update(repo, run_id) do
-             %RunRecord{} = run ->
-               current_run = Serialization.to_public_run(run)
-               attrs = attrs_fun.(current_run)
-
-               with {:ok, updated_run} <-
-                      Persistence.update_run_record(
-                        repo,
-                        run,
-                        Persistence.serialize_transition_attrs(
-                          Map.take(attrs, [:context, :current_step, :last_error])
-                        )
-                      ),
-                    {:ok, _result} <- dispatch_fun.(updated_run) do
-                 updated_run
-               else
-                 {:error, reason} -> repo.rollback(reason)
-               end
-
-             nil ->
-               repo.rollback(:not_found)
-           end
+           update_and_dispatch_for_update(
+             repo,
+             run_id,
+             public_attrs_fun(attrs_fun),
+             dispatch_fun
+           )
          end) do
       {:ok, run} -> {:ok, run}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp constant_attrs_fun(attrs), do: fn _run -> attrs end
+
+  defp public_attrs_fun(attrs_fun),
+    do: fn run -> run |> Serialization.to_public_run() |> attrs_fun.() end
+
+  defp update_and_dispatch_for_update(repo, run_id, attrs_fun, dispatch_fun) do
+    case get_run_record_for_update(repo, run_id) do
+      %RunRecord{} = run ->
+        run
+        |> attrs_fun.()
+        |> update_and_dispatch_locked_run(repo, run, dispatch_fun)
+
+      nil ->
+        repo.rollback(:not_found)
+    end
+  end
+
+  defp update_and_dispatch_locked_run(attrs, repo, run, dispatch_fun) do
+    with {:ok, updated_run} <-
+           Persistence.update_run_record(
+             repo,
+             run,
+             Persistence.serialize_transition_attrs(
+               Map.take(attrs, [:context, :current_step, :last_error])
+             )
+           ),
+         {:ok, _result} <- dispatch_fun.(updated_run) do
+      updated_run
+    else
+      {:error, reason} -> repo.rollback(reason)
     end
   end
 
@@ -646,70 +654,7 @@ defmodule SquidMesh.RunStore do
     cancellation_error = pause_cancellation_error()
 
     case repo.transaction(fn ->
-           case get_run_record_for_update(repo, run_id) do
-             %RunRecord{} = run ->
-               current_run = Serialization.to_public_run(run)
-
-               case current_run.status do
-                 status when status in [:failed, :completed, :cancelled] ->
-                   terminal_error = terminal_pause_error(status)
-
-                   with {:ok, finalized_step?} <-
-                          finalize_terminal_pause_history(
-                            repo,
-                            step_run_id,
-                            attempt_id,
-                            terminal_error
-                          ) do
-                     %{
-                       run: current_run,
-                       from_status: status,
-                       to_status: status,
-                       terminal_noop?: true,
-                       finalized_step?: finalized_step?,
-                       error: terminal_error
-                     }
-                   else
-                     {:error, reason} -> repo.rollback(reason)
-                   end
-
-                 :cancelling ->
-                   with {:ok, _attempt} <-
-                          AttemptStore.fail_attempt(repo, attempt_id, cancellation_error),
-                        {:ok, _step_run} <-
-                          StepRunStore.fail_step(repo, step_run_id, cancellation_error),
-                        {:ok, _next_status} <- StateMachine.transition(:cancelling, :cancelled),
-                        {:ok, updated_run} <-
-                          Persistence.update_run_record(
-                            repo,
-                            run,
-                            Persistence.transition_changeset_attrs(
-                              :cancelled,
-                              cancellation_progress_attrs(attrs)
-                            )
-                          ) do
-                     %{run: updated_run, from_status: :cancelling, to_status: :cancelled}
-                   else
-                     {:error, reason} -> repo.rollback(reason)
-                   end
-
-                 from_status ->
-                   with {:ok, _next_status} <- StateMachine.transition(from_status, :paused),
-                        {:ok, updated_run} <-
-                          Persistence.update_run_record(
-                            repo,
-                            run,
-                            Persistence.transition_changeset_attrs(:paused, attrs)
-                          ) do
-                     %{run: updated_run, from_status: from_status, to_status: :paused}
-                   else
-                     {:error, reason} -> repo.rollback(reason)
-                   end
-               end
-
-             nil ->
-               repo.rollback(:not_found)
-           end
+           pause_run_for_update(repo, run_id, step_run_id, attempt_id, attrs, cancellation_error)
          end) do
       {:ok, %{} = result} ->
         {:ok, result}
@@ -719,40 +664,140 @@ defmodule SquidMesh.RunStore do
     end
   end
 
+  defp pause_run_for_update(repo, run_id, step_run_id, attempt_id, attrs, cancellation_error) do
+    case get_run_record_for_update(repo, run_id) do
+      %RunRecord{} = run ->
+        run
+        |> Serialization.to_public_run()
+        |> pause_locked_run(repo, run, step_run_id, attempt_id, attrs, cancellation_error)
+
+      nil ->
+        repo.rollback(:not_found)
+    end
+  end
+
+  defp pause_locked_run(
+         %Run{status: status} = run,
+         repo,
+         _record,
+         step_run_id,
+         attempt_id,
+         _attrs,
+         _error
+       )
+       when status in [:failed, :completed, :cancelled] do
+    terminal_error = terminal_pause_error(status)
+
+    case finalize_terminal_pause_history(repo, step_run_id, attempt_id, terminal_error) do
+      {:ok, finalized_step?} ->
+        %{
+          run: run,
+          from_status: status,
+          to_status: status,
+          terminal_noop?: true,
+          finalized_step?: finalized_step?,
+          error: terminal_error
+        }
+
+      {:error, reason} ->
+        repo.rollback(reason)
+    end
+  end
+
+  defp pause_locked_run(
+         %Run{status: :cancelling},
+         repo,
+         record,
+         step_run_id,
+         attempt_id,
+         attrs,
+         error
+       ) do
+    with {:ok, _attempt} <- AttemptStore.fail_attempt(repo, attempt_id, error),
+         {:ok, _step_run} <- StepRunStore.fail_step(repo, step_run_id, error),
+         {:ok, _next_status} <- StateMachine.transition(:cancelling, :cancelled),
+         {:ok, updated_run} <-
+           Persistence.update_run_record(
+             repo,
+             record,
+             Persistence.transition_changeset_attrs(
+               :cancelled,
+               cancellation_progress_attrs(attrs)
+             )
+           ) do
+      %{run: updated_run, from_status: :cancelling, to_status: :cancelled}
+    else
+      {:error, reason} -> repo.rollback(reason)
+    end
+  end
+
+  defp pause_locked_run(
+         %Run{status: from_status},
+         repo,
+         record,
+         _step_run_id,
+         _attempt_id,
+         attrs,
+         _error
+       ) do
+    with {:ok, _next_status} <- StateMachine.transition(from_status, :paused),
+         {:ok, updated_run} <-
+           Persistence.update_run_record(
+             repo,
+             record,
+             Persistence.transition_changeset_attrs(:paused, attrs)
+           ) do
+      %{run: updated_run, from_status: from_status, to_status: :paused}
+    else
+      {:error, reason} -> repo.rollback(reason)
+    end
+  end
+
   @doc false
   @spec transition_run_with(module(), Ecto.UUID.t(), Run.status(), attrs_fun()) ::
           {:ok, Run.t()} | {:error, transition_error()}
   def transition_run_with(repo, run_id, to_status, attrs_fun)
       when is_function(attrs_fun, 1) do
-    repo.transaction(fn ->
-      case get_run_record_for_update(repo, run_id) do
-        %RunRecord{} = run ->
-          from_status = Serialization.deserialize_status(run.status)
-          current_run = Serialization.to_public_run(run)
+    repo.transaction(fn -> transition_run_with_for_update(repo, run_id, to_status, attrs_fun) end)
+  end
 
-          with {:ok, _next_status} <- StateMachine.transition(from_status, to_status) do
-            attrs = attrs_fun.(current_run)
+  defp transition_run_with_for_update(repo, run_id, to_status, attrs_fun) do
+    case get_run_record_for_update(repo, run_id) do
+      %RunRecord{} = run ->
+        transition_locked_run_with(repo, run, to_status, attrs_fun)
 
-            run
-            |> RunRecord.changeset(Persistence.transition_changeset_attrs(to_status, attrs))
-            |> repo.update()
-            |> case do
-              {:ok, updated_run} ->
-                public_run = Serialization.to_public_run(updated_run)
-                Observability.emit_run_transition(public_run, from_status, to_status)
-                public_run
+      nil ->
+        repo.rollback(:not_found)
+    end
+  end
 
-              {:error, changeset} ->
-                repo.rollback({:invalid_run, changeset})
-            end
-          else
-            {:error, reason} -> repo.rollback(reason)
-          end
+  defp transition_locked_run_with(repo, run, to_status, attrs_fun) do
+    from_status = Serialization.deserialize_status(run.status)
 
-        nil ->
-          repo.rollback(:not_found)
-      end
-    end)
+    case StateMachine.transition(from_status, to_status) do
+      {:ok, _next_status} ->
+        current_run = Serialization.to_public_run(run)
+        attrs = attrs_fun.(current_run)
+        update_locked_run_transition_with(repo, run, from_status, to_status, attrs)
+
+      {:error, reason} ->
+        repo.rollback(reason)
+    end
+  end
+
+  defp update_locked_run_transition_with(repo, run, from_status, to_status, attrs) do
+    run
+    |> RunRecord.changeset(Persistence.transition_changeset_attrs(to_status, attrs))
+    |> repo.update()
+    |> case do
+      {:ok, updated_run} ->
+        public_run = Serialization.to_public_run(updated_run)
+        Observability.emit_run_transition(public_run, from_status, to_status)
+        public_run
+
+      {:error, changeset} ->
+        repo.rollback({:invalid_run, changeset})
+    end
   end
 
   @doc """
@@ -876,10 +921,12 @@ defmodule SquidMesh.RunStore do
          attrs,
          {:dispatch_or_fail, dispatch_fun, failure_attrs_fun}
        ) do
-    with {:ok, updated_run} <- update_run_progress(repo, run, attrs) do
-      dispatch_or_fail(repo, updated_run, from_status, dispatch_fun, failure_attrs_fun)
-    else
-      {:error, reason} -> repo.rollback(reason)
+    case update_run_progress(repo, run, attrs) do
+      {:ok, updated_run} ->
+        dispatch_or_fail(repo, updated_run, from_status, dispatch_fun, failure_attrs_fun)
+
+      {:error, reason} ->
+        repo.rollback(reason)
     end
   end
 

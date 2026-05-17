@@ -6,6 +6,7 @@ defmodule SquidMesh.DataCase do
   import ExUnit.Assertions
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias SquidMesh.Test.Executor
 
   using do
     quote do
@@ -20,7 +21,7 @@ defmodule SquidMesh.DataCase do
   end
 
   def all_enqueued(_opts \\ []) do
-    SquidMesh.Test.Executor.jobs()
+    Executor.jobs()
   end
 
   def assert_enqueued(opts) do
@@ -32,7 +33,7 @@ defmodule SquidMesh.DataCase do
   end
 
   setup tags do
-    SquidMesh.Test.Executor.reset!()
+    Executor.reset!()
 
     pid = Sandbox.start_owner!(SquidMesh.Test.Repo, shared: not tags[:async])
     on_exit(fn -> Sandbox.stop_owner(pid) end)

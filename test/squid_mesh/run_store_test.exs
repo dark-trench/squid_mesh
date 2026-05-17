@@ -10,6 +10,7 @@ defmodule SquidMesh.RunStoreTest do
     import Ecto.Query
 
     alias SquidMesh.Persistence.Run, as: RunRecord
+    alias SquidMesh.Test.Repo
 
     @scenario_key {__MODULE__, :scenario}
 
@@ -27,16 +28,16 @@ defmodule SquidMesh.RunStoreTest do
       :persistent_term.erase(@scenario_key)
     end
 
-    def transaction(fun), do: SquidMesh.Test.Repo.transaction(fun)
-    def transaction(fun, opts), do: SquidMesh.Test.Repo.transaction(fun, opts)
-    def rollback(reason), do: SquidMesh.Test.Repo.rollback(reason)
-    def update(changeset), do: SquidMesh.Test.Repo.update(changeset)
-    def update(changeset, opts), do: SquidMesh.Test.Repo.update(changeset, opts)
+    def transaction(fun), do: Repo.transaction(fun)
+    def transaction(fun, opts), do: Repo.transaction(fun, opts)
+    def rollback(reason), do: Repo.rollback(reason)
+    def update(changeset), do: Repo.update(changeset)
+    def update(changeset, opts), do: Repo.update(changeset, opts)
 
-    def one(query), do: maybe_flip_locked_run(query, fn -> SquidMesh.Test.Repo.one(query) end)
+    def one(query), do: maybe_flip_locked_run(query, fn -> Repo.one(query) end)
 
     def one(query, opts),
-      do: maybe_flip_locked_run(query, fn -> SquidMesh.Test.Repo.one(query, opts) end)
+      do: maybe_flip_locked_run(query, fn -> Repo.one(query, opts) end)
 
     defp maybe_flip_locked_run(%Ecto.Query{lock: "FOR UPDATE"}, fetch_fun) do
       case :persistent_term.get(@scenario_key, nil) do
@@ -47,10 +48,10 @@ defmodule SquidMesh.RunStoreTest do
           attrs: attrs,
           fired: false
         } = scenario ->
-          current_run = SquidMesh.Test.Repo.get(RunRecord, run_id)
+          current_run = Repo.get(RunRecord, run_id)
 
           if current_run && current_run.status == Atom.to_string(from_status) do
-            SquidMesh.Test.Repo.update_all(
+            Repo.update_all(
               from(run_record in RunRecord, where: run_record.id == ^run_id),
               set: locked_transition_attrs(to_status, attrs)
             )

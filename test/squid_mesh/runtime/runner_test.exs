@@ -4,6 +4,7 @@ defmodule SquidMesh.Runtime.RunnerTest do
   alias SquidMesh.Executor.Payload
   alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Runtime.Runner
+  alias SquidMesh.Test.Executor
 
   defmodule IdempotentCronWorkflow do
     use SquidMesh.Workflow
@@ -112,7 +113,7 @@ defmodule SquidMesh.Runtime.RunnerTest do
     payload = cron_payload(__MODULE__.ScheduleClobberWorkflow)
 
     assert :ok = Runner.perform(payload)
-    assert %{success: 1, failure: 0} = SquidMesh.Test.Executor.drain()
+    assert %{success: 1, failure: 0} = Executor.drain()
 
     assert [%RunRecord{context: context}] = Repo.all(RunRecord)
     assert get_in(context, ["schedule", "idempotency"]) == "return_existing_run"

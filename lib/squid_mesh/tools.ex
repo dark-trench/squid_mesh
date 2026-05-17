@@ -31,9 +31,6 @@ defmodule SquidMesh.Tools do
          adapter_result <- adapter.invoke(request, context, opts) do
       normalize_adapter_result(adapter, adapter_result)
     else
-      {:error, %Error{} = error} ->
-        {:error, error}
-
       {:error, reason} ->
         {:error, invalid_contract_error(adapter, reason)}
     end

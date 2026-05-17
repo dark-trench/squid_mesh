@@ -1,12 +1,13 @@
 defmodule SquidMesh.Runtime.DispatchAgentTest do
   use ExUnit.Case, async: false
 
+  alias Jido.Storage.ETS
   alias SquidMesh.Runtime.DispatchAgent
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.DispatchProtocol.Projection
   alias SquidMesh.Runtime.Journal
 
-  @storage {Jido.Storage.ETS, table: :squid_mesh_dispatch_agent_test}
+  @storage {ETS, table: :squid_mesh_dispatch_agent_test}
   @run_id "run_123"
   @runnable_key "run_123:charge_card:1"
   @idempotency_key "run_123:charge_card:payment_456"
@@ -745,7 +746,7 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
     assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
 
     assert {:ok, _thread} =
-             Jido.Storage.ETS.append_thread(
+             ETS.append_thread(
                Journal.thread_id({:run, @run_id}),
                [%{kind: :note, payload: %{}}],
                table: :squid_mesh_dispatch_agent_test
