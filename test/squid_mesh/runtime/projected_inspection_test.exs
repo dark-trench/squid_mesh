@@ -91,6 +91,22 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     assert snapshot.expired_claims == []
   end
 
+  test "derives idle reason from applied run-thread facts" do
+    append_run_entries([run_started(), runnables_planned(), runnable_applied()])
+    append_dispatch_entries([attempt_scheduled(), attempt_claimed(), attempt_completed()])
+
+    assert {:ok, %Snapshot{} = snapshot} =
+             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @completed_at)
+
+    assert snapshot.status == :idle
+    assert snapshot.reason == :idle
+    assert snapshot.applied_runnable_keys == [@runnable_key]
+    assert snapshot.pending_results == []
+
+    assert [%{runnable_key: @runnable_key, status: :completed, applied?: false}] =
+             snapshot.attempts
+  end
+
   test "uses terminal run facts to suppress dispatch redelivery views" do
     append_run_entries([run_started(), runnables_planned(), run_terminal(:completed)])
     append_dispatch_entries([attempt_scheduled(), attempt_claimed()])
@@ -114,7 +130,7 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
              )
   end
 
-  test "returns an invalid option error for unsupported snapshot options" do
+  test "returns invalid option errors for invalid option values" do
     assert {:error, {:invalid_option, {:now, :soon}}} =
              ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: :soon)
 
@@ -123,6 +139,17 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
                queue: %{name: @queue},
                now: @visible_at
              )
+  end
+
+  test "returns invalid option errors for malformed or unsupported options" do
+    assert {:error, {:invalid_option, {:opts, %{queue: @queue}}}} =
+             ProjectedInspection.snapshot(@storage, @run_id, %{queue: @queue})
+
+    assert {:error, {:invalid_option, {:opts, [:bad]}}} =
+             ProjectedInspection.snapshot(@storage, @run_id, [:bad])
+
+    assert {:error, {:invalid_option, {:option, :unknown}}} =
+             ProjectedInspection.snapshot(@storage, @run_id, unknown: true)
   end
 
   defp append_run_entries(entries) do
@@ -146,6 +173,15 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
       run_id: @run_id,
       runnables: [planned_runnable()],
       occurred_at: @visible_at
+    })
+  end
+
+  defp runnable_applied do
+    entry!(:runnable_applied, %{
+      run_id: @run_id,
+      runnable_key: @runnable_key,
+      result: %{"status" => "captured"},
+      occurred_at: @completed_at
     })
   end
 

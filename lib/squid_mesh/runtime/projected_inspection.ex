@@ -26,7 +26,10 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
   @type storage_config :: Journal.storage_config()
   @type snapshot_option :: {:queue, atom() | String.t()} | {:now, DateTime.t()}
   @type snapshot_error ::
-          :not_found | {:invalid_option, {:now, term()} | {:queue, term()}} | term()
+          :not_found
+          | {:invalid_option,
+             {:now, term()} | {:queue, term()} | {:opts, term()} | {:option, atom()}}
+          | term()
 
   @doc """
   Builds a projection-backed inspection snapshot for one workflow run.
@@ -44,13 +47,20 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
   """
   @spec snapshot(storage_config(), WorkflowAgent.run_id(), [snapshot_option()]) ::
           {:ok, Snapshot.t()} | {:error, snapshot_error()}
-  def snapshot(storage, run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
-    with {:ok, queue} <- snapshot_queue(opts),
+  def snapshot(storage, run_id, opts \\ [])
+
+  def snapshot(storage, run_id, opts) when is_binary(run_id) and is_list(opts) do
+    with {:ok, opts} <- snapshot_options(opts),
+         {:ok, queue} <- snapshot_queue(opts),
          {:ok, now} <- snapshot_time(opts),
          {:ok, workflow_agent} <- WorkflowAgent.rebuild(storage, run_id),
          {:ok, dispatch_agent} <- DispatchAgent.rebuild(storage, queue) do
       {:ok, build_snapshot(workflow_agent, dispatch_agent, queue, now)}
     end
+  end
+
+  def snapshot(_storage, run_id, opts) when is_binary(run_id) do
+    {:error, {:invalid_option, {:opts, opts}}}
   end
 
   defp build_snapshot(
@@ -151,11 +161,11 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
       Enum.any?(attempts, &(&1.status == :claimed)) ->
         :attempt_claimed
 
+      WorkflowProjection.status(workflow_projection) == :idle ->
+        :idle
+
       attempts == [] ->
         :run_started
-
-      Enum.all?(attempts, & &1.applied?) ->
-        :idle
 
       true ->
         :waiting_for_dispatch
@@ -230,6 +240,19 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
     case Keyword.get(opts, :now, DateTime.utc_now()) do
       %DateTime{} = now -> {:ok, now}
       invalid -> {:error, {:invalid_option, {:now, invalid}}}
+    end
+  end
+
+  defp snapshot_options(opts) when is_list(opts) do
+    cond do
+      not Keyword.keyword?(opts) ->
+        {:error, {:invalid_option, {:opts, opts}}}
+
+      unsupported = Enum.find(Keyword.keys(opts), &(&1 not in [:queue, :now])) ->
+        {:error, {:invalid_option, {:option, unsupported}}}
+
+      true ->
+        {:ok, opts}
     end
   end
 

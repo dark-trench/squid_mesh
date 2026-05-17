@@ -26,7 +26,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection.Snapshot do
           required(:step) => String.t(),
           required(:input) => map(),
           required(:visible_at) => DateTime.t(),
-          optional(:idempotency_key) => String.t(),
+          required(:idempotency_key) => String.t(),
           optional(:claim_id) => String.t(),
           optional(:owner_id) => String.t(),
           optional(:lease_until) => DateTime.t(),
