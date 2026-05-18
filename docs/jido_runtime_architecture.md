@@ -143,7 +143,7 @@ erDiagram
         string type
         string run_id
         string runnable_key
-        string manual_step
+        string step
         datetime occurred_at
     }
     DISPATCH_ENTRY {
