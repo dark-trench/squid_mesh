@@ -69,15 +69,15 @@ host-executor path until the journal-backed execution path is wired through.
 | Host executor boundary | Supported | Squid Mesh delegates queueing, delayed scheduling, redelivery, and cron activation to `SquidMesh.Executor`. |
 | Human approval workflows | Supported | Pause and approval flows are durable for transition-based workflows. |
 | Replay and cancellation | Supported | Replay respects irreversible and non-compensatable steps; cancellation converges through persisted run state. |
-| Inspection and explanation | Supported, evolving | Current inspection reads persisted runtime tables. The new core will rebuild views from durable journals and checkpoints in [#163](https://github.com/ccarvalho-eng/squid_mesh/issues/163). |
+| Inspection and explanation | Supported, evolving | Current inspection reads persisted runtime tables. The new core will rebuild views from durable journals and checkpoints in [#163](https://github.com/dark-trench/squid_mesh/issues/163). |
 | Durable dispatch protocol | In progress | The pure protocol, projection, and `Jido.Storage` journal boundary define runnable intent, claims, leases, heartbeats, completion, failure, retries, terminal-run fencing, and checkpoint pointers. It is implemented as a foundation, but not yet the full live execution path. |
-| Jido.Storage-backed core | In progress | Protocol entries and projection checkpoints can be persisted through `Jido.Storage`; live runtime adoption remains follow-up work after [#162](https://github.com/ccarvalho-eng/squid_mesh/issues/162). |
-| Jido-native runtime agents | In progress | Workflow and dispatch agents can rebuild from durable journals and checkpoints; [#164](https://github.com/ccarvalho-eng/squid_mesh/issues/164) covers the completed agent foundation. |
+| Jido.Storage-backed core | In progress | Protocol entries and projection checkpoints can be persisted through `Jido.Storage`; live runtime adoption remains follow-up work after [#162](https://github.com/dark-trench/squid_mesh/issues/162). |
+| Jido-native runtime agents | In progress | Workflow and dispatch agents can rebuild from durable journals and checkpoints; [#164](https://github.com/dark-trench/squid_mesh/issues/164) covers the completed agent foundation. |
 | IntentLedger executor | Planned | IntentLedger is the preferred durable executor direction for leases, retries, queue delivery, and worker recovery while Squid Mesh keeps custom executor support. |
 | Scheduled-start metadata | Supported | Intended schedule windows are stored in durable run context for cron starts. Cron triggers can opt into duplicate-start protection with stable scheduler signal ids or complete intended windows. |
-| Conditional and deferred continuation | Planned | Durable planner facts and deferred wakeups are tracked in [#140](https://github.com/ccarvalho-eng/squid_mesh/issues/140). |
-| Fan-out and fan-in contract | Planned | Runic-backed join and sibling behavior are tracked in [#142](https://github.com/ccarvalho-eng/squid_mesh/issues/142). |
-| Dynamic graph expansion | Planned | Runtime-safe dynamic subflows are deferred until after the core runtime and tracked in [#141](https://github.com/ccarvalho-eng/squid_mesh/issues/141). |
+| Conditional and deferred continuation | Planned | Durable planner facts and deferred wakeups are tracked in [#140](https://github.com/dark-trench/squid_mesh/issues/140). |
+| Fan-out and fan-in contract | Planned | Runic-backed join and sibling behavior are tracked in [#142](https://github.com/dark-trench/squid_mesh/issues/142). |
+| Dynamic graph expansion | Planned | Runtime-safe dynamic subflows are deferred until after the core runtime and tracked in [#141](https://github.com/dark-trench/squid_mesh/issues/141). |
 | Oban-specific core | Out of scope | Host apps may choose Oban behind the executor boundary, but Squid Mesh core is not Oban-centric. |
 | Exactly-once external side effects | Out of scope | Squid Mesh can provide durable workflow state and fencing semantics, but external systems still require idempotency. |
 | Bundled workflow dashboard | Out of scope | Squid Mesh exposes inspection data; host apps own their operator UI. |
@@ -155,10 +155,10 @@ path yet.
 
 Track the linked issues for the larger runtime transition:
 
-- [#170](https://github.com/ccarvalho-eng/squid_mesh/issues/170) covers the
+- [#170](https://github.com/dark-trench/squid_mesh/issues/170) covers the
   lease, heartbeat, and fencing guarantees expected from the durable executor
   integration.
-- [#163](https://github.com/ccarvalho-eng/squid_mesh/issues/163) covers
+- [#163](https://github.com/dark-trench/squid_mesh/issues/163) covers
   journal-backed inspection and explanation projections.
 Oban can still be a practical executor choice in a host application. It is an
 executor implementation detail, not the core Squid Mesh runtime model.

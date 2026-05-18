@@ -9,8 +9,8 @@ defmodule SquidMesh.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       description: description(),
-      source_url: "https://github.com/ccarvalho-eng/squid_mesh",
-      homepage_url: "https://github.com/ccarvalho-eng/squid_mesh",
+      source_url: "https://github.com/dark-trench/squid_mesh",
+      homepage_url: "https://github.com/dark-trench/squid_mesh",
       docs: docs(),
       package: package(),
       aliases: aliases(),
@@ -57,7 +57,7 @@ defmodule SquidMesh.MixProject do
       licenses: ["Apache-2.0"],
       files:
         ~w(lib priv docs .formatter.exs mix.exs mix.lock README* CHANGELOG* LICENSE* CONTRIBUTING* CODE_OF_CONDUCT*),
-      links: %{"GitHub" => "https://github.com/ccarvalho-eng/squid_mesh"}
+      links: %{"GitHub" => "https://github.com/dark-trench/squid_mesh"}
     ]
   end
 
