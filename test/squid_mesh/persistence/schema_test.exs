@@ -1,5 +1,5 @@
 defmodule SquidMesh.Persistence.SchemaTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   alias SquidMesh.Persistence.Run
   alias SquidMesh.Persistence.StepAttempt

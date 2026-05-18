@@ -7,10 +7,8 @@ defmodule SquidMesh.RunStore.Persistence do
   public lifecycle API.
   """
 
-  alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Run
   alias SquidMesh.RunStore.Serialization
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   # Replays intentionally drop step-derived context. Only reserved run-level
   # facts that describe how the run was started are copied into the new run.
@@ -29,11 +27,12 @@ defmodule SquidMesh.RunStore.Persistence do
         }
 
   @doc false
-  @spec build_run_attrs(module(), atom(), WorkflowDefinition.t(), map(), keyword()) :: map()
+  @spec build_run_attrs(module(), atom(), SquidMesh.Workflow.Definition.t(), map(), keyword()) ::
+          map()
   def build_run_attrs(workflow, trigger, definition, resolved_payload, opts \\ []) do
     %{
-      workflow: WorkflowDefinition.serialize_workflow(workflow),
-      trigger: WorkflowDefinition.serialize_trigger(trigger),
+      workflow: SquidMesh.Workflow.Definition.serialize_workflow(workflow),
+      trigger: SquidMesh.Workflow.Definition.serialize_trigger(trigger),
       status: "pending",
       input: resolved_payload,
       context: initial_context(opts),
@@ -42,7 +41,8 @@ defmodule SquidMesh.RunStore.Persistence do
   end
 
   @doc false
-  @spec replay_run_attrs(RunRecord.t(), WorkflowDefinition.t()) :: map()
+  @spec replay_run_attrs(SquidMesh.Persistence.Run.t(), SquidMesh.Workflow.Definition.t()) ::
+          map()
   def replay_run_attrs(source_run, definition) do
     %{
       workflow: source_run.workflow,
@@ -80,8 +80,8 @@ defmodule SquidMesh.RunStore.Persistence do
           | {:error, {:invalid_run, Ecto.Changeset.t()}}
           | {:error, {:duplicate_schedule_start, schedule_start_identity()}}
   def insert_run_record(repo, attrs) do
-    %RunRecord{}
-    |> RunRecord.changeset(attrs)
+    %SquidMesh.Persistence.Run{}
+    |> SquidMesh.Persistence.Run.changeset(attrs)
     |> repo.insert()
     |> case do
       {:ok, run} ->
@@ -97,11 +97,11 @@ defmodule SquidMesh.RunStore.Persistence do
   end
 
   @doc false
-  @spec update_run_record(module(), RunRecord.t(), map()) ::
+  @spec update_run_record(module(), SquidMesh.Persistence.Run.t(), map()) ::
           {:ok, Run.t()} | {:error, {:invalid_run, Ecto.Changeset.t()}}
   def update_run_record(repo, run, attrs) do
     run
-    |> RunRecord.changeset(attrs)
+    |> SquidMesh.Persistence.Run.changeset(attrs)
     |> repo.update()
     |> case do
       {:ok, updated_run} -> {:ok, Serialization.to_public_run(updated_run)}
@@ -150,10 +150,12 @@ defmodule SquidMesh.RunStore.Persistence do
   def cancellation_target_status(state), do: {:error, {:invalid_transition, state, :cancelling}}
 
   defp initial_current_step(definition) do
-    if WorkflowDefinition.dependency_mode?(definition) do
+    if SquidMesh.Workflow.Definition.dependency_mode?(definition) do
       nil
     else
-      WorkflowDefinition.serialize_step(WorkflowDefinition.initial_step(definition))
+      SquidMesh.Workflow.Definition.serialize_step(
+        SquidMesh.Workflow.Definition.initial_step(definition)
+      )
     end
   end
 
@@ -184,10 +186,12 @@ defmodule SquidMesh.RunStore.Persistence do
   end
 
   defp pick_reserved_context(context) do
-    Map.new(@reserved_run_context_keys, fn key ->
-      {key, replay_context_value(context, key)}
-    end)
-    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+    reserved_context =
+      Map.new(@reserved_run_context_keys, fn key ->
+        {key, replay_context_value(context, key)}
+      end)
+
+    Map.reject(reserved_context, fn {_key, value} -> is_nil(value) end)
   end
 
   defp schedule_start_duplicate?(changeset) do
@@ -202,7 +206,7 @@ defmodule SquidMesh.RunStore.Persistence do
   end
 
   defp schedule_start_identity(attrs) do
-    schedule = Map.get(attrs, :context, %{}) |> replay_context_value(:schedule)
+    schedule = replay_context_value(Map.get(attrs, :context, %{}), :schedule)
 
     %{
       workflow: Map.fetch!(attrs, :workflow),

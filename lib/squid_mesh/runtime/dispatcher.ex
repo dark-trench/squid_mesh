@@ -11,7 +11,6 @@ defmodule SquidMesh.Runtime.Dispatcher do
   alias SquidMesh.Run
   alias SquidMesh.Runtime.StepInput
   alias SquidMesh.StepRunStore
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type dispatch_error :: Ecto.Changeset.t() | term()
   @type dispatch_opts :: [schedule_in: pos_integer()]
@@ -47,12 +46,14 @@ defmodule SquidMesh.Runtime.Dispatcher do
         opts
       )
       when is_atom(workflow) do
-    with {:ok, definition} <- WorkflowDefinition.load(workflow),
-         true <- WorkflowDefinition.dependency_mode?(definition) || {:error, {:invalid_step, nil}} do
+    with {:ok, definition} <- SquidMesh.Workflow.Definition.load(workflow),
+         true <-
+           SquidMesh.Workflow.Definition.dependency_mode?(definition) ||
+             {:error, {:invalid_step, nil}} do
       dispatch_steps_with_events(
         config,
         run,
-        WorkflowDefinition.entry_steps(definition),
+        SquidMesh.Workflow.Definition.entry_steps(definition),
         Keyword.put(opts, :schedule_pending, true)
       )
     end
@@ -133,8 +134,14 @@ defmodule SquidMesh.Runtime.Dispatcher do
   end
 
   defp dispatch_steps_transaction(config, run, steps, job_opts, schedule_pending?) do
-    config.repo.in_transaction?()
-    |> dispatch_steps_transaction_mode(config, run, steps, job_opts, schedule_pending?)
+    dispatch_steps_transaction_mode(
+      config.repo.in_transaction?(),
+      config,
+      run,
+      steps,
+      job_opts,
+      schedule_pending?
+    )
   end
 
   defp dispatch_steps_transaction_mode(true, config, run, steps, job_opts, schedule_pending?) do
@@ -181,10 +188,12 @@ defmodule SquidMesh.Runtime.Dispatcher do
   defp cleanup_scheduled_steps(_config, _run, _steps, false), do: :ok
 
   defp steps_to_dispatch(config, run, steps, true) do
-    steps
-    |> Enum.uniq()
-    |> build_scheduled_step_inputs(config, run)
-    |> case do
+    step_inputs_result =
+      steps
+      |> Enum.uniq()
+      |> build_scheduled_step_inputs(config, run)
+
+    case step_inputs_result do
       {:ok, step_inputs} -> StepRunStore.schedule_steps(config.repo, run.id, step_inputs)
       {:error, _reason} = error -> error
     end
@@ -193,13 +202,15 @@ defmodule SquidMesh.Runtime.Dispatcher do
   defp steps_to_dispatch(_config, _run, steps, false), do: {:ok, Enum.uniq(steps)}
 
   defp build_scheduled_step_inputs(steps, config, run) do
-    Enum.reduce_while(steps, {:ok, []}, fn step, {:ok, step_inputs} ->
-      case scheduled_step_input(config, run, step) do
-        {:ok, input, recovery} -> {:cont, {:ok, [{step, input, recovery} | step_inputs]}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-    |> case do
+    result =
+      Enum.reduce_while(steps, {:ok, []}, fn step, {:ok, step_inputs} ->
+        case scheduled_step_input(config, run, step) do
+          {:ok, input, recovery} -> {:cont, {:ok, [{step, input, recovery} | step_inputs]}}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+
+    case result do
       {:ok, step_inputs} -> {:ok, Enum.reverse(step_inputs)}
       {:error, _reason} = error -> error
     end
@@ -239,9 +250,11 @@ defmodule SquidMesh.Runtime.Dispatcher do
 
   defp scheduled_step_input(%Config{repo: repo}, %Run{workflow: workflow} = run, step_name)
        when is_atom(workflow) do
-    with {:ok, definition} <- WorkflowDefinition.load(workflow),
-         {:ok, input_mapping} <- WorkflowDefinition.step_input_mapping(definition, step_name),
-         {:ok, recovery} <- WorkflowDefinition.step_recovery_policy(definition, step_name) do
+    with {:ok, definition} <- SquidMesh.Workflow.Definition.load(workflow),
+         {:ok, input_mapping} <-
+           SquidMesh.Workflow.Definition.step_input_mapping(definition, step_name),
+         {:ok, recovery} <-
+           SquidMesh.Workflow.Definition.step_recovery_policy(definition, step_name) do
       {:ok, build_scheduled_step_input(definition, repo, run, input_mapping), recovery}
     end
   end
@@ -250,7 +263,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
     do: {:ok, StepInput.build_step_input(run), nil}
 
   defp build_scheduled_step_input(definition, repo, run, input_mapping) do
-    if WorkflowDefinition.dependency_mode?(definition) do
+    if SquidMesh.Workflow.Definition.dependency_mode?(definition) do
       StepInput.build_dependency_step_input(repo, run, input_mapping)
     else
       StepInput.build_step_input(run, input_mapping)

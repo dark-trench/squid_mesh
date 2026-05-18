@@ -16,7 +16,6 @@ defmodule SquidMesh.Runtime.StepExecutor do
   alias SquidMesh.Runtime.StepExecutor.Outcome
   alias SquidMesh.Runtime.StepExecutor.Preparation
   alias SquidMesh.Runtime.StepInput
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type execution_error ::
           :not_found
@@ -55,7 +54,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
     with {:ok, config} <- Config.load(overrides),
          {:ok, %Run{} = run} <- RunStore.get_run(config.repo, run_id),
          :ok <- ensure_failed_compensation_run(run),
-         {:ok, definition} <- WorkflowDefinition.load(run.workflow) do
+         {:ok, definition} <- SquidMesh.Workflow.Definition.load(run.workflow) do
       config
       |> Compensation.compensate_completed_steps(definition, run, run.last_error || %{})
       |> persist_compensation_failure(config, run)
@@ -106,7 +105,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
 
   defp execute_run(config, %Run{workflow: workflow} = run, expected_step)
        when is_atom(workflow) do
-    with {:ok, definition} <- WorkflowDefinition.load(workflow) do
+    with {:ok, definition} <- SquidMesh.Workflow.Definition.load(workflow) do
       case StepInput.deserialize_expected_step(expected_step, definition) do
         {:ok, normalized_expected_step} ->
           prepare_and_execute(config, definition, run, normalized_expected_step)

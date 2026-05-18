@@ -1,14 +1,13 @@
 defmodule SquidMesh.StepRunStoreTest do
-  use SquidMesh.DataCase
+  use SquidMesh.DataCase, async: false
 
   alias SquidMesh.AttemptStore
-  alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.StepRunStore
 
   test "claims a step once and skips concurrent duplicate claims" do
     {:ok, run} =
-      %RunRecord{}
-      |> RunRecord.changeset(%{
+      %SquidMesh.Persistence.Run{}
+      |> SquidMesh.Persistence.Run.changeset(%{
         workflow: "Elixir.SquidMesh.StepRunStoreTest.Workflow",
         trigger: "manual",
         status: "running",
@@ -19,7 +18,7 @@ defmodule SquidMesh.StepRunStoreTest do
     results =
       1..4
       |> Task.async_stream(
-        fn _ ->
+        fn _ignored_index ->
           StepRunStore.begin_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
         end,
         max_concurrency: 4,
@@ -41,8 +40,8 @@ defmodule SquidMesh.StepRunStoreTest do
 
   test "claims a scheduled step and skips duplicate schedules" do
     {:ok, run} =
-      %RunRecord{}
-      |> RunRecord.changeset(%{
+      %SquidMesh.Persistence.Run{}
+      |> SquidMesh.Persistence.Run.changeset(%{
         workflow: "Elixir.SquidMesh.StepRunStoreTest.Workflow",
         trigger: "manual",
         status: "running",
@@ -79,8 +78,8 @@ defmodule SquidMesh.StepRunStoreTest do
 
   test "rejects stale terminal updates after a step is finalized" do
     {:ok, run} =
-      %RunRecord{}
-      |> RunRecord.changeset(%{
+      %SquidMesh.Persistence.Run{}
+      |> SquidMesh.Persistence.Run.changeset(%{
         workflow: "Elixir.SquidMesh.StepRunStoreTest.Workflow",
         trigger: "manual",
         status: "running",
@@ -109,8 +108,8 @@ defmodule SquidMesh.StepRunStoreTest do
 
   test "orders compensation by forward completion time after recovery metadata updates" do
     {:ok, run} =
-      %RunRecord{}
-      |> RunRecord.changeset(%{
+      %SquidMesh.Persistence.Run{}
+      |> SquidMesh.Persistence.Run.changeset(%{
         workflow: "Elixir.SquidMesh.StepRunStoreTest.Workflow",
         trigger: "manual",
         status: "failed",
@@ -123,7 +122,9 @@ defmodule SquidMesh.StepRunStoreTest do
 
     {:ok, first_attempt} = AttemptStore.begin_attempt(Repo, first_step.id)
     {:ok, _first_attempt} = AttemptStore.complete_attempt(Repo, first_attempt.id)
-    {:ok, first_step} = StepRunStore.complete_step(Repo, first_step.id, %{reserved: true})
+
+    {:ok, completed_first_step} =
+      StepRunStore.complete_step(Repo, first_step.id, %{reserved: true})
 
     Process.sleep(1)
 
@@ -132,18 +133,20 @@ defmodule SquidMesh.StepRunStoreTest do
 
     {:ok, second_attempt} = AttemptStore.begin_attempt(Repo, second_step.id)
     {:ok, _second_attempt} = AttemptStore.complete_attempt(Repo, second_attempt.id)
-    {:ok, second_step} = StepRunStore.complete_step(Repo, second_step.id, %{authorized: true})
+
+    {:ok, completed_second_step} =
+      StepRunStore.complete_step(Repo, second_step.id, %{authorized: true})
 
     Process.sleep(1)
 
     assert {:ok, _updated_first_step} =
-             StepRunStore.update_recovery(Repo, first_step.id, %{
+             StepRunStore.update_recovery(Repo, completed_first_step.id, %{
                compensation: %{status: :completed}
              })
 
     assert Enum.map(
              StepRunStore.completed_step_runs_for_compensation(Repo, run.id),
              & &1.id
-           ) == [second_step.id, first_step.id]
+           ) == [completed_second_step.id, completed_first_step.id]
   end
 end

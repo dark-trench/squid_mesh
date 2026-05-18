@@ -69,7 +69,7 @@ defmodule SquidMesh.Runtime.StepRecovery do
   end
 
   defp stale?(%StepRun{updated_at: updated_at}, timeout_ms) do
-    now_ms = DateTime.utc_now() |> DateTime.to_unix(:millisecond)
+    now_ms = DateTime.to_unix(DateTime.utc_now(), :millisecond)
     updated_ms = DateTime.to_unix(updated_at, :millisecond)
 
     now_ms - updated_ms >= timeout_ms

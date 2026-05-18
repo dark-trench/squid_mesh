@@ -9,22 +9,18 @@ defmodule SquidMesh.RunStore.Serialization do
 
   import Ecto.Query
 
-  alias SquidMesh.Persistence.Run, as: RunRecord
-  alias SquidMesh.Persistence.StepAttempt, as: StepAttemptRecord
-  alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.Run
   alias SquidMesh.RunAuditEvent
   alias SquidMesh.RunStepState
   alias SquidMesh.StepAttempt
   alias SquidMesh.StepRun
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type list_filter ::
           {:workflow, module()} | {:status, Run.status()} | {:limit, pos_integer()}
   @type list_filters :: [list_filter()]
 
   @doc false
-  @spec to_public_run(RunRecord.t()) :: Run.t()
+  @spec to_public_run(SquidMesh.Persistence.Run.t()) :: Run.t()
   def to_public_run(run) do
     {workflow, definition} = deserialize_workflow(run.workflow)
     step_runs = to_public_step_runs(run, definition)
@@ -32,9 +28,9 @@ defmodule SquidMesh.RunStore.Serialization do
     %Run{
       id: run.id,
       workflow: workflow,
-      trigger: WorkflowDefinition.deserialize_trigger(definition, run.trigger),
+      trigger: SquidMesh.Workflow.Definition.deserialize_trigger(definition, run.trigger),
       status: deserialize_status(run.status),
-      payload: WorkflowDefinition.deserialize_payload(definition, run.input || %{}),
+      payload: SquidMesh.Workflow.Definition.deserialize_payload(definition, run.input || %{}),
       context: deserialize_map(run.context || %{}),
       current_step: deserialize_step(definition, run.current_step),
       last_error: deserialize_run_error(definition, run.last_error),
@@ -50,11 +46,15 @@ defmodule SquidMesh.RunStore.Serialization do
   @doc false
   @spec serialize_filters(list_filters()) :: keyword()
   def serialize_filters(filters) do
-    filters
-    |> Enum.map(fn
-      {:workflow, workflow} -> {:workflow, WorkflowDefinition.serialize_workflow(workflow)}
-      {:status, status} -> {:status, serialize_status(status)}
-      {:limit, limit} -> {:limit, limit}
+    Enum.map(filters, fn
+      {:workflow, workflow} ->
+        {:workflow, SquidMesh.Workflow.Definition.serialize_workflow(workflow)}
+
+      {:status, status} ->
+        {:status, serialize_status(status)}
+
+      {:limit, limit} ->
+        {:limit, limit}
     end)
   end
 
@@ -96,25 +96,26 @@ defmodule SquidMesh.RunStore.Serialization do
   end
 
   @doc false
-  @spec deserialize_step(WorkflowDefinition.t() | nil, String.t() | nil) ::
+  @spec deserialize_step(SquidMesh.Workflow.Definition.t() | nil, String.t() | nil) ::
           atom() | String.t() | nil
   def deserialize_step(nil, step_name), do: step_name
 
   def deserialize_step(definition, step_name) do
-    WorkflowDefinition.deserialize_step(definition, step_name)
+    SquidMesh.Workflow.Definition.deserialize_step(definition, step_name)
   end
 
   @doc false
-  @spec deserialize_workflow(String.t()) :: {module() | String.t(), WorkflowDefinition.t() | nil}
+  @spec deserialize_workflow(String.t()) ::
+          {module() | String.t(), SquidMesh.Workflow.Definition.t() | nil}
   def deserialize_workflow(workflow_name) do
-    case WorkflowDefinition.load_serialized(workflow_name) do
+    case SquidMesh.Workflow.Definition.load_serialized(workflow_name) do
       {:ok, workflow, definition} -> {workflow, definition}
       {:error, _reason} -> {workflow_name, nil}
     end
   end
 
   @doc false
-  @spec deserialize_run_error(WorkflowDefinition.t() | nil, map() | nil) :: map() | nil
+  @spec deserialize_run_error(SquidMesh.Workflow.Definition.t() | nil, map() | nil) :: map() | nil
   def deserialize_run_error(_definition, nil), do: nil
 
   def deserialize_run_error(definition, error) when is_map(error) do
@@ -125,10 +126,13 @@ defmodule SquidMesh.RunStore.Serialization do
     |> maybe_update_error_steps(:pending_steps, definition)
   end
 
-  defp to_public_step_runs(%RunRecord{step_runs: %Ecto.Association.NotLoaded{}}, _definition),
-    do: nil
+  defp to_public_step_runs(
+         %SquidMesh.Persistence.Run{step_runs: %Ecto.Association.NotLoaded{}},
+         _definition
+       ),
+       do: nil
 
-  defp to_public_step_runs(%RunRecord{step_runs: step_runs}, definition)
+  defp to_public_step_runs(%SquidMesh.Persistence.Run{step_runs: step_runs}, definition)
        when is_list(step_runs) do
     Enum.map(step_runs, &to_public_step_run(&1, definition))
   end
@@ -156,7 +160,10 @@ defmodule SquidMesh.RunStore.Serialization do
 
   defp to_public_steps(definition, step_runs) when is_list(step_runs) do
     step_runs_by_step = Map.new(step_runs, &{&1.step, &1})
-    declared_steps = WorkflowDefinition.inspect_steps(definition, step_statuses(step_runs))
+
+    declared_steps =
+      SquidMesh.Workflow.Definition.inspect_steps(definition, step_statuses(step_runs))
+
     declared_step_names = MapSet.new(Enum.map(declared_steps, & &1.step))
 
     declared_states =
@@ -205,7 +212,10 @@ defmodule SquidMesh.RunStore.Serialization do
     }
   end
 
-  defp step_recovery_policy(definition, %StepRunRecord{recovery: recovery, step: step}) do
+  defp step_recovery_policy(definition, %SquidMesh.Persistence.StepRun{
+         recovery: recovery,
+         step: step
+       }) do
     deserialize_recovery_policy(definition, recovery) || step_recovery_policy(definition, step)
   end
 
@@ -219,7 +229,7 @@ defmodule SquidMesh.RunStore.Serialization do
   end
 
   defp step_recovery_policy(definition, step) when is_atom(step) do
-    case WorkflowDefinition.step_recovery_policy(definition, step) do
+    case SquidMesh.Workflow.Definition.step_recovery_policy(definition, step) do
       {:ok, recovery} -> recovery
       {:error, _reason} -> nil
     end
@@ -230,7 +240,7 @@ defmodule SquidMesh.RunStore.Serialization do
   defp deserialize_recovery_policy(definition, recovery) when is_map(recovery) do
     recovery
     |> deserialize_map()
-    |> WorkflowDefinition.normalize_recovery_policy()
+    |> SquidMesh.Workflow.Definition.normalize_recovery_policy()
     |> deserialize_recovery_failure_target(definition)
   end
 
@@ -246,9 +256,13 @@ defmodule SquidMesh.RunStore.Serialization do
     Map.new(step_runs, &{&1.step, &1.status})
   end
 
-  defp to_public_attempts(%StepRunRecord{attempts: %Ecto.Association.NotLoaded{}}), do: []
+  defp to_public_attempts(%SquidMesh.Persistence.StepRun{
+         attempts: %Ecto.Association.NotLoaded{}
+       }),
+       do: []
 
-  defp to_public_attempts(%StepRunRecord{attempts: attempts}) when is_list(attempts) do
+  defp to_public_attempts(%SquidMesh.Persistence.StepRun{attempts: attempts})
+       when is_list(attempts) do
     Enum.map(attempts, fn attempt ->
       %StepAttempt{
         id: attempt.id,
@@ -290,7 +304,7 @@ defmodule SquidMesh.RunStore.Serialization do
     end
   end
 
-  defp step_run_audit_events(definition, %StepRunRecord{} = step_run) do
+  defp step_run_audit_events(definition, %SquidMesh.Persistence.StepRun{} = step_run) do
     failure_events = failure_recovery_audit_events(definition, step_run)
     step = deserialize_step(definition, step_run.step)
 
@@ -302,8 +316,7 @@ defmodule SquidMesh.RunStore.Serialization do
         _kind ->
           paused_event = %RunAuditEvent{type: :paused, step: step, at: step_run.inserted_at}
 
-          [paused_event | completed_manual_events(definition, step_run)]
-          |> Enum.reject(&is_nil(&1))
+          Enum.reject([paused_event | completed_manual_events(definition, step_run)], &is_nil(&1))
       end
 
     failure_events ++ manual_events
@@ -331,11 +344,11 @@ defmodule SquidMesh.RunStore.Serialization do
     deserialize_step(definition, target) || target
   end
 
-  defp failure_recovery_audit_events(_definition, %StepRunRecord{status: status})
+  defp failure_recovery_audit_events(_definition, %SquidMesh.Persistence.StepRun{status: status})
        when status != "failed",
        do: []
 
-  defp failure_recovery_audit_events(definition, %StepRunRecord{} = step_run) do
+  defp failure_recovery_audit_events(definition, %SquidMesh.Persistence.StepRun{} = step_run) do
     case step_recovery_policy(definition, step_run) do
       %{failure: %{strategy: strategy, target: target}} when strategy in [:compensation, :undo] ->
         [
@@ -347,7 +360,7 @@ defmodule SquidMesh.RunStore.Serialization do
           }
         ]
 
-      _other ->
+      _ignored ->
         []
     end
   end
@@ -355,7 +368,10 @@ defmodule SquidMesh.RunStore.Serialization do
   defp failure_recovery_audit_type(:compensation), do: :compensation_routed
   defp failure_recovery_audit_type(:undo), do: :undo_routed
 
-  defp completed_manual_events(definition, %StepRunRecord{status: "completed"} = step_run) do
+  defp completed_manual_events(
+         definition,
+         %SquidMesh.Persistence.StepRun{status: "completed"} = step_run
+       ) do
     case deserialize_manual_event(step_run.manual, definition, step_run) do
       %RunAuditEvent{} = event ->
         [event]
@@ -367,7 +383,7 @@ defmodule SquidMesh.RunStore.Serialization do
 
   defp completed_manual_events(_definition, _step_run), do: []
 
-  defp fallback_manual_event(definition, %StepRunRecord{} = step_run) do
+  defp fallback_manual_event(definition, %SquidMesh.Persistence.StepRun{} = step_run) do
     case manual_step_kind(definition, deserialize_step(definition, step_run.step), step_run) do
       :pause ->
         [
@@ -392,11 +408,11 @@ defmodule SquidMesh.RunStore.Serialization do
               }
             ]
 
-          _other ->
+          _ignored ->
             []
         end
 
-      _other ->
+      _ignored ->
         []
     end
   end
@@ -410,13 +426,13 @@ defmodule SquidMesh.RunStore.Serialization do
 
   defp decision_payload(output) when is_map(output) do
     Enum.find_value(output, fn
-      {_key, %{decision: _decision, decided_at: _decided_at} = payload} ->
+      {_ignored_key, %{decision: _decision, decided_at: _decided_at} = payload} ->
         payload
 
-      {_key, %{"decision" => _decision, "decided_at" => _decided_at} = payload} ->
+      {_ignored_key, %{"decision" => _decision, "decided_at" => _decided_at} = payload} ->
         deserialize_map(payload)
 
-      _other ->
+      _ignored ->
         nil
     end)
   end
@@ -425,30 +441,36 @@ defmodule SquidMesh.RunStore.Serialization do
     Map.get(payload, key, Map.get(payload, Atom.to_string(key)))
   end
 
-  defp manual_step_kind(_definition, _step, %StepRunRecord{manual: %{"event" => event}})
+  defp manual_step_kind(_definition, _step, %SquidMesh.Persistence.StepRun{
+         manual: %{"event" => event}
+       })
        when event in ["resumed", "approved", "rejected"] do
     case event do
       "resumed" -> :pause
-      _ -> :approval
+      _approval_event -> :approval
     end
   end
 
-  defp manual_step_kind(_definition, _step, %StepRunRecord{resume: %{"kind" => "approval"}}),
-    do: :approval
+  defp manual_step_kind(_definition, _step, %SquidMesh.Persistence.StepRun{
+         resume: %{"kind" => "approval"}
+       }),
+       do: :approval
 
-  defp manual_step_kind(_definition, _step, %StepRunRecord{resume: resume}) when is_map(resume),
-    do: :pause
+  defp manual_step_kind(_definition, _step, %SquidMesh.Persistence.StepRun{resume: resume})
+       when is_map(resume),
+       do: :pause
 
-  defp manual_step_kind(nil, _step, %StepRunRecord{output: output}) when is_map(output) do
+  defp manual_step_kind(nil, _step, %SquidMesh.Persistence.StepRun{output: output})
+       when is_map(output) do
     if decision_payload(output), do: :approval, else: nil
   end
 
-  defp manual_step_kind(nil, _step, %StepRunRecord{}), do: nil
+  defp manual_step_kind(nil, _step, %SquidMesh.Persistence.StepRun{}), do: nil
 
-  defp manual_step_kind(definition, step, %StepRunRecord{}) do
-    case WorkflowDefinition.step(definition, step) do
+  defp manual_step_kind(definition, step, %SquidMesh.Persistence.StepRun{}) do
+    case SquidMesh.Workflow.Definition.step(definition, step) do
       {:ok, %{module: module}} when module in [:pause, :approval] -> module
-      _other -> nil
+      _ignored -> nil
     end
   end
 
@@ -463,19 +485,19 @@ defmodule SquidMesh.RunStore.Serialization do
   defp deserialize_event_at(timestamp, fallback) when is_binary(timestamp) do
     case DateTime.from_iso8601(timestamp) do
       {:ok, datetime, _offset} -> datetime
-      _other -> fallback
+      _ignored -> fallback
     end
   end
 
   defp step_runs_preload_query do
-    from(step_run in StepRunRecord,
+    from(step_run in SquidMesh.Persistence.StepRun,
       order_by: [asc: step_run.inserted_at, asc: step_run.id],
       preload: [attempts: ^attempts_preload_query()]
     )
   end
 
   defp attempts_preload_query do
-    from(attempt in StepAttemptRecord,
+    from(attempt in SquidMesh.Persistence.StepAttempt,
       order_by: [asc: attempt.attempt_number, asc: attempt.inserted_at, asc: attempt.id]
     )
   end
@@ -503,7 +525,7 @@ defmodule SquidMesh.RunStore.Serialization do
       {:ok, steps} when is_list(steps) ->
         Map.put(error, key, Enum.map(steps, &deserialize_error_step(definition, &1)))
 
-      _other ->
+      _ignored ->
         error
     end
   end

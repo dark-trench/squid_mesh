@@ -1,14 +1,13 @@
 defmodule SquidMesh.AttemptStoreTest do
-  use SquidMesh.DataCase
+  use SquidMesh.DataCase, async: false
 
   alias SquidMesh.AttemptStore
-  alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Persistence.StepRun
 
   test "records attempt history for a step run" do
     {:ok, run} =
-      %RunRecord{}
-      |> RunRecord.changeset(%{
+      %SquidMesh.Persistence.Run{}
+      |> SquidMesh.Persistence.Run.changeset(%{
         workflow: "Elixir.SquidMesh.AttemptStoreTest.Workflow",
         trigger: "manual",
         status: "pending",
@@ -44,8 +43,8 @@ defmodule SquidMesh.AttemptStoreTest do
 
   test "allocates unique attempt numbers under concurrent writers" do
     {:ok, run} =
-      %RunRecord{}
-      |> RunRecord.changeset(%{
+      %SquidMesh.Persistence.Run{}
+      |> SquidMesh.Persistence.Run.changeset(%{
         workflow: "Elixir.SquidMesh.AttemptStoreTest.Workflow",
         trigger: "manual",
         status: "pending",
@@ -65,7 +64,7 @@ defmodule SquidMesh.AttemptStoreTest do
     attempts =
       1..4
       |> Task.async_stream(
-        fn _ ->
+        fn _ignored_index ->
           {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
           attempt
         end,
@@ -81,8 +80,8 @@ defmodule SquidMesh.AttemptStoreTest do
 
   test "rejects stale terminal updates after an attempt is finalized" do
     {:ok, run} =
-      %RunRecord{}
-      |> RunRecord.changeset(%{
+      %SquidMesh.Persistence.Run{}
+      |> SquidMesh.Persistence.Run.changeset(%{
         workflow: "Elixir.SquidMesh.AttemptStoreTest.Workflow",
         trigger: "manual",
         status: "pending",

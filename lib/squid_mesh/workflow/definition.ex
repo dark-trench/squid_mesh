@@ -129,9 +129,7 @@ defmodule SquidMesh.Workflow.Definition do
       |> Enum.reject(&MapSet.member?(declared_names, &1))
       |> Enum.sort_by(&to_string/1)
 
-    invalid_types =
-      declared_fields
-      |> Enum.reduce(%{}, &invalid_payload_type(payload, &1, &2))
+    invalid_types = Enum.reduce(declared_fields, %{}, &invalid_payload_type(payload, &1, &2))
 
     errors =
       %{}
@@ -483,7 +481,11 @@ defmodule SquidMesh.Workflow.Definition do
 
       _steps ->
         phases = dependency_phases(definition)
-        current_phase = remaining_steps |> Enum.map(&Map.fetch!(phases, &1)) |> Enum.min()
+
+        current_phase =
+          remaining_steps
+          |> Enum.map(&Map.fetch!(phases, &1))
+          |> Enum.min()
 
         phase_steps =
           definition
@@ -562,13 +564,14 @@ defmodule SquidMesh.Workflow.Definition do
         recovery: :manual_intervention
       }
     else
-      %{
+      default_policy = %{
         irreversible?: false,
         compensatable?: true,
         replay: :allowed,
         recovery: :automatic
       }
-      |> maybe_put_compensation(compensation_policy(Keyword.get(opts, :compensate)))
+
+      maybe_put_compensation(default_policy, compensation_policy(Keyword.get(opts, :compensate)))
     end
   end
 
@@ -812,7 +815,7 @@ defmodule SquidMesh.Workflow.Definition do
 
   defp dependency_phases(definition) do
     dependencies = dependency_map(definition)
-    step_names = definition.steps |> Enum.map(& &1.name)
+    step_names = Enum.map(definition.steps, & &1.name)
 
     {phases, _visiting} =
       Enum.reduce(step_names, {%{}, MapSet.new()}, fn step_name, {phases, visiting} ->
@@ -924,7 +927,7 @@ defmodule SquidMesh.Workflow.Definition do
     ArgumentError -> {:error, {:invalid_workflow, workflow_name}}
   end
 
-  defp resolve_default!({:today, :iso8601}), do: Date.utc_today() |> Date.to_iso8601()
-  defp resolve_default!({:now, :iso8601}), do: DateTime.utc_now() |> DateTime.to_iso8601()
+  defp resolve_default!({:today, :iso8601}), do: Date.to_iso8601(Date.utc_today())
+  defp resolve_default!({:now, :iso8601}), do: DateTime.to_iso8601(DateTime.utc_now())
   defp resolve_default!(default), do: default
 end

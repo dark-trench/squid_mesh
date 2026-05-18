@@ -1,5 +1,5 @@
 defmodule SquidMesh.Runtime.StateMachineTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   alias SquidMesh.Runtime.StateMachine
 

@@ -1,19 +1,18 @@
 defmodule SquidMesh.RunStoreTest do
-  use SquidMesh.DataCase
+  use SquidMesh.DataCase, async: false
 
   import Ecto.Query
 
-  alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.RunStore
 
   defmodule LockStepRepo do
     import Ecto.Query
 
-    alias SquidMesh.Persistence.Run, as: RunRecord
     alias SquidMesh.Test.Repo
 
     @scenario_key {__MODULE__, :scenario}
 
+    @spec put_locked_transition(String.t(), atom(), atom(), map()) :: :ok
     def put_locked_transition(run_id, from_status, to_status, attrs \\ %{}) do
       :persistent_term.put(@scenario_key, %{
         run_id: run_id,
@@ -24,18 +23,26 @@ defmodule SquidMesh.RunStoreTest do
       })
     end
 
+    @spec clear_locked_transition() :: :ok | false
     def clear_locked_transition do
       :persistent_term.erase(@scenario_key)
     end
 
+    @spec transaction(function()) :: term()
     def transaction(fun), do: Repo.transaction(fun)
+    @spec transaction(function(), keyword()) :: term()
     def transaction(fun, opts), do: Repo.transaction(fun, opts)
+    @spec rollback(term()) :: no_return()
     def rollback(reason), do: Repo.rollback(reason)
+    @spec update(Ecto.Changeset.t()) :: term()
     def update(changeset), do: Repo.update(changeset)
+    @spec update(Ecto.Changeset.t(), keyword()) :: term()
     def update(changeset, opts), do: Repo.update(changeset, opts)
 
+    @spec one(Ecto.Queryable.t()) :: term()
     def one(query), do: maybe_flip_locked_run(query, fn -> Repo.one(query) end)
 
+    @spec one(Ecto.Queryable.t(), keyword()) :: term()
     def one(query, opts),
       do: maybe_flip_locked_run(query, fn -> Repo.one(query, opts) end)
 
@@ -48,15 +55,17 @@ defmodule SquidMesh.RunStoreTest do
           attrs: attrs,
           fired: false
         } = scenario ->
-          current_run = Repo.get(RunRecord, run_id)
+          current_run = Repo.get(SquidMesh.Persistence.Run, run_id)
 
           if current_run && current_run.status == Atom.to_string(from_status) do
             Repo.update_all(
-              from(run_record in RunRecord, where: run_record.id == ^run_id),
+              from(run_record in SquidMesh.Persistence.Run, where: run_record.id == ^run_id),
               set: locked_transition_attrs(to_status, attrs)
             )
 
             :persistent_term.put(@scenario_key, %{scenario | fired: true})
+          else
+            :ok
           end
 
           fetch_fun.()
@@ -70,8 +79,7 @@ defmodule SquidMesh.RunStoreTest do
 
     defp locked_transition_attrs(to_status, attrs) do
       serialized_attrs =
-        attrs
-        |> Enum.map(fn
+        Enum.map(attrs, fn
           {:current_step, step} when is_atom(step) -> {:current_step, Atom.to_string(step)}
           pair -> pair
         end)
@@ -348,7 +356,7 @@ defmodule SquidMesh.RunStoreTest do
       assert {:ok, run} =
                RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
-      persisted_run = Repo.get!(RunRecord, run.id)
+      persisted_run = Repo.get!(SquidMesh.Persistence.Run, run.id)
 
       assert persisted_run.workflow == "Elixir.SquidMesh.RunStoreTest.InvoiceReminderWorkflow"
       assert persisted_run.current_step == "load_invoice"

@@ -33,7 +33,6 @@ defmodule SquidMesh.Workflow do
     optional: [:transition]
   }
 
-  alias SquidMesh.Workflow.Info, as: WorkflowInfo
   alias SquidMesh.Workflow.StepSpec
   alias SquidMesh.Workflow.Validation
 
@@ -132,18 +131,17 @@ defmodule SquidMesh.Workflow do
   """
   defmacro cron(expression, opts \\ []) do
     quote bind_quoted: [expression: expression, opts: opts] do
+      base_config = %{
+        expression: expression,
+        timezone: Keyword.get(opts, :timezone)
+      }
+
       config =
-        %{
-          expression: expression,
-          timezone: Keyword.get(opts, :timezone)
-        }
-        |> then(fn config ->
-          if Keyword.has_key?(opts, :idempotency) do
-            Map.put(config, :idempotency, Keyword.get(opts, :idempotency))
-          else
-            config
-          end
-        end)
+        if Keyword.has_key?(opts, :idempotency) do
+          Map.put(base_config, :idempotency, Keyword.get(opts, :idempotency))
+        else
+          base_config
+        end
 
       SquidMesh.Workflow.__push_current_trigger_definition__(__MODULE__, %{
         type: :cron,
@@ -194,13 +192,13 @@ defmodule SquidMesh.Workflow do
         to: Keyword.fetch!(opts, :to)
       }
 
-      transition =
+      transition_config =
         case Keyword.fetch(opts, :recovery) do
           {:ok, recovery} -> Map.put(transition, :recovery, recovery)
           :error -> transition
         end
 
-      @squid_mesh_transitions transition
+      @squid_mesh_transitions transition_config
     end
   end
 
@@ -276,7 +274,7 @@ defmodule SquidMesh.Workflow do
 
   defp spark_steps(module) do
     module
-    |> WorkflowInfo.steps()
+    |> SquidMesh.Workflow.Info.steps()
     |> Enum.map(fn %StepSpec{} = step ->
       step
       |> Map.from_struct()

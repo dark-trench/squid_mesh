@@ -2,7 +2,6 @@ defmodule SquidMesh.Runtime.ScheduleMetadataTest do
   use ExUnit.Case, async: true
 
   alias SquidMesh.Runtime.ScheduleMetadata
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   defmodule ScheduledDigestWorkflow do
     use SquidMesh.Workflow
@@ -40,7 +39,7 @@ defmodule SquidMesh.Runtime.ScheduleMetadataTest do
 
   defp trigger_definition do
     ScheduledDigestWorkflow.workflow_definition()
-    |> WorkflowDefinition.trigger(:scheduled_digest)
+    |> SquidMesh.Workflow.Definition.trigger(:scheduled_digest)
     |> elem(1)
   end
 end

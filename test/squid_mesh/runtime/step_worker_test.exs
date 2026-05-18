@@ -1,5 +1,5 @@
 defmodule SquidMesh.Runtime.StepWorkerTest do
-  use SquidMesh.DataCase
+  use SquidMesh.DataCase, async: false
 
   import Ecto.Query
 
@@ -47,7 +47,6 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias SquidMesh.StepRunStore
   alias SquidMesh.Test.Job
   alias SquidMesh.Test.StepWorker
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   describe "workflow execution through the configured executor" do
     test "enqueues and executes the declared steps through Jido-backed actions" do
@@ -1329,7 +1328,10 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                }
              ] = completed_run.audit_events
 
-      assert [%{recovery: %{failure: %{strategy: :compensation, target: :queue_recovery}}}, _] =
+      assert [
+               %{recovery: %{failure: %{strategy: :compensation, target: :queue_recovery}}},
+               _other_step_run
+             ] =
                completed_run.step_runs
     end
 
@@ -1657,8 +1659,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
 
       invalid_definition =
-        DependencyWorkflow.workflow_definition()
-        |> Map.update!(:steps, fn steps ->
+        Map.update!(DependencyWorkflow.workflow_definition(), :steps, fn steps ->
           Enum.map(steps, fn
             %{name: :send_email} = step ->
               %{step | opts: [after: [:missing_dependency]]}
@@ -1721,8 +1722,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
 
       invalid_definition =
-        DependencyWorkflow.workflow_definition()
-        |> Map.update!(:steps, fn steps ->
+        Map.update!(DependencyWorkflow.workflow_definition(), :steps, fn steps ->
           Enum.map(steps, fn
             %{name: :load_account} = step ->
               %{step | opts: [after: [:send_email]]}
@@ -2003,7 +2003,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert cancelling_run.status == :cancelling
 
       assert {:ok, config} = Config.load(repo: Repo)
-      assert {:ok, definition} = WorkflowDefinition.load(SuccessfulWorkflow)
+      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(SuccessfulWorkflow)
 
       assert {:cancel, locked_run} =
                Preparation.prepare(config, definition, stale_running_run, :load_invoice)
@@ -2060,7 +2060,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
     test "finalizes pause step history when cancellation wins before pause progression" do
       assert {:ok, config} = Config.load(repo: Repo)
-      assert {:ok, definition} = WorkflowDefinition.load(PauseWorkflow)
+      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(PauseWorkflow)
 
       assert {:ok, run} =
                SquidMesh.start_run(
@@ -2124,7 +2124,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
     test "finalizes pause step history when pause progression sees an already-cancelled run" do
       assert {:ok, config} = Config.load(repo: Repo)
-      assert {:ok, definition} = WorkflowDefinition.load(PauseWorkflow)
+      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(PauseWorkflow)
 
       assert {:ok, run} =
                SquidMesh.start_run(
@@ -2247,7 +2247,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{account: %{id: account_id, tier: "pro"}}}
     end
@@ -2261,7 +2261,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         invoice_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{invoice_id: invoice_id}, _context) do
       {:ok, %{invoice: %{id: invoice_id, status: "open"}}}
     end
@@ -2276,7 +2276,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         invoice: [type: :map, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account: account, invoice: invoice}, _context) do
       {:ok,
        %{
@@ -2322,7 +2322,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account: [type: :map, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account: account}, _context) do
       {:ok, %{account_message: %{account_id: account.id, status: "prepared"}}}
     end
@@ -2337,7 +2337,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         invoice: [type: :map, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_message: account_message, invoice: invoice}, _context) do
       {:ok,
        %{
@@ -2380,7 +2380,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         invoice_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{invoice_id: invoice_id} = input, _context) do
       {:ok,
        %{
@@ -2419,7 +2419,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       notify_test(:load_account)
       await_continue()
@@ -2450,7 +2450,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         invoice_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{invoice_id: invoice_id}, _context) do
       notify_test(:load_invoice)
       await_continue()
@@ -2500,7 +2500,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       notify_test(:load_account)
       await_continue()
@@ -2531,7 +2531,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         invoice_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{invoice_id: invoice_id}, _context) do
       notify_test(:load_invoice)
       await_continue()
@@ -2583,7 +2583,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       notify_test(:load_account)
       await_continue()
@@ -2615,7 +2615,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         invoice_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{invoice_id: invoice_id}, _context) do
       notify_test(:load_invoice)
       await_continue()
@@ -2647,7 +2647,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         invoice_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{invoice_id: invoice_id}, _context) do
       {:error,
        %{message: "invoice unavailable", code: "invoice_unavailable", invoice_id: invoice_id}}
@@ -2709,7 +2709,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{id: account_id}}
     end
@@ -2724,7 +2724,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         invoice_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account: account, invoice_id: invoice_id}, _context) do
       {:ok, %{account_id: account.id, invoice_id: invoice_id}}
     end
@@ -2739,7 +2739,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         invoice_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id, invoice_id: invoice_id}, _context) do
       {:ok,
        %{
@@ -2758,7 +2758,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         invoice: [type: :map, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account: account, invoice: invoice}, _context) do
       {:ok,
        %{
@@ -2796,7 +2796,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context) do
       {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
     end
@@ -2850,7 +2850,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
     alias SquidMesh.Test.Repo
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, %{run_id: run_id}) do
       write_events!(run_id, account_id, ["reserved", "captured"])
       {:ok, %{local_transaction: %{status: "committed", rows: 2}}}
@@ -2858,7 +2858,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
     defp write_events!(run_id, account_id, events) do
       dumped_run_id = Ecto.UUID.dump!(run_id)
-      now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+      now = NaiveDateTime.utc_now(:second)
 
       entries =
         Enum.map(events, fn event ->
@@ -2886,7 +2886,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
     alias SquidMesh.Test.Repo
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, %{run_id: run_id}) do
       write_events!(run_id, account_id, ["reserved", "captured"])
       {:error, %{message: "local group failed"}}
@@ -2894,7 +2894,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
     defp write_events!(run_id, account_id, events) do
       dumped_run_id = Ecto.UUID.dump!(run_id)
-      now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+      now = NaiveDateTime.utc_now(:second)
 
       entries =
         Enum.map(events, fn event ->
@@ -2947,7 +2947,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{credit_hold: %{account_id: account_id, status: "held"}}}
     end
@@ -2961,7 +2961,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         order_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{order_id: order_id}, _context) do
       {:ok, %{inventory_reservation: %{order_id: order_id, status: "reserved"}}}
     end
@@ -2973,7 +2973,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       description: "Attempts to charge a card",
       schema: []
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context) do
       {:error, %{message: "card declined", code: "card_declined"}}
     end
@@ -2990,7 +2990,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         released: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(%{payload: %{account_id: account_id}}, _context) do
       if :persistent_term.get({CompensationWorkflow, :fail_release_credit?}, false) do
         {:error, %{message: "release failed", code: "release_failed"}}
@@ -2999,7 +2999,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
         :persistent_term.put(
           {CompensationWorkflow, :events},
-          events ++ [{:release_credit_hold, account_id}]
+          List.insert_at(events, -1, {:release_credit_hold, account_id})
         )
 
         {:ok, %{released: "credit"}}
@@ -3018,13 +3018,13 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         released: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(%{payload: %{order_id: order_id}}, _context) do
       events = :persistent_term.get({CompensationWorkflow, :events}, [])
 
       :persistent_term.put(
         {CompensationWorkflow, :events},
-        events ++ [{:release_inventory, order_id}]
+        List.insert_at(events, -1, {:release_inventory, order_id})
       )
 
       {:ok, %{released: "inventory"}}
@@ -3061,7 +3061,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{credit_hold: %{account_id: account_id, status: "held"}}}
     end
@@ -3073,7 +3073,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       description: "Attempts to charge a card with workflow retries",
       schema: []
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context) do
       {:error, %{message: "card declined", code: "card_declined"}}
     end
@@ -3085,13 +3085,13 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       description: "Releases a prior credit hold",
       schema: []
 
-    @impl true
+    @impl Jido.Action
     def run(%{payload: %{account_id: account_id}}, _context) do
       events = :persistent_term.get({CompensationRetryWorkflow, :events}, [])
 
       :persistent_term.put(
         {CompensationRetryWorkflow, :events},
-        events ++ [{:release_credit_hold, account_id}]
+        List.insert_at(events, -1, {:release_credit_hold, account_id})
       )
 
       {:ok, %{released: "credit"}}
@@ -3125,7 +3125,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context) do
       {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
     end
@@ -3159,7 +3159,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context) do
       {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
     end
@@ -3173,7 +3173,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{recovery: %{account_id: account_id, status: "queued"}}}
     end
@@ -3207,7 +3207,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context) do
       {:error, %{message: "reservation failed", code: "reservation_failed"}}
     end
@@ -3221,7 +3221,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{undo: %{account_id: account_id, status: "released"}}}
     end
@@ -3253,7 +3253,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context) do
       {:error, %{message: "reservation failed", code: "reservation_failed"}}
     end
@@ -3287,7 +3287,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context) do
       {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
     end
@@ -3301,7 +3301,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{recovery: %{account_id: account_id, status: "queued"}}}
     end
@@ -3336,7 +3336,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
     @coordination_key {__MODULE__, :attempts}
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, %{run_id: run_id}) do
       seen_runs = :persistent_term.get(@coordination_key, MapSet.new())
 
@@ -3421,7 +3421,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{approval: approval, account_id: account_id}, _context) do
       {:ok, %{account_id: account_id, approval: approval}}
     end
@@ -3465,7 +3465,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{approval: approval, account_id: account_id}, _context) do
       {:ok,
        %{
@@ -3485,7 +3485,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{approval: approval, account_id: account_id}, _context) do
       {:ok,
        %{
@@ -3526,7 +3526,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
     @coordination_key {__MODULE__, :test_pid}
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       test_pid = :persistent_term.get(@coordination_key)
       send(test_pid, {:record_delivery_started, self(), account_id})
@@ -3550,7 +3550,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         source_step: [type: :atom, required: true]
       ]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(%{account_id: account_id}, %SquidMesh.Step.Context{step: step}) do
       {:ok, %{id: account_id, source_step: step}}
     end
@@ -3568,7 +3568,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         attempt: [type: :integer, required: true]
       ]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(%{account: account}, %SquidMesh.Step.Context{state: state, attempt: attempt}) do
       {:ok,
        %{
@@ -3612,7 +3612,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(_input, _context) do
       {:error, %{message: "card_declined", code: "card_declined"}}
     end
@@ -3625,7 +3625,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(%{account_id: account_id}, _context) do
       {:ok, %{recovery: %{account_id: account_id, reason: :declined}}}
     end
@@ -3661,7 +3661,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
     @coordination_key {__MODULE__, :attempts}
 
-    @impl true
+    @impl SquidMesh.Step
     def run(%{account_id: account_id}, %SquidMesh.Step.Context{run_id: run_id}) do
       seen_runs = :persistent_term.get(@coordination_key, MapSet.new())
 
@@ -3707,7 +3707,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         scheduled: [type: :map, required: true]
       ]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(%{account_id: account_id}, _context) do
       {:ok, %{scheduled: %{account_id: account_id}}, schedule_in: 60}
     end
@@ -3720,7 +3720,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         scheduled: [type: :map, required: true]
       ]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(%{scheduled: scheduled}, _context), do: {:ok, %{delivered: scheduled}}
   end
 
@@ -3751,7 +3751,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(_input, _context) do
       {:retry, %{message: "gateway_timeout", code: "gateway_timeout"}, retry_after: 60_000}
     end
@@ -3782,7 +3782,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(%{account_id: account_id}, _context) do
       {:ok, %{recovery: %{account_id: account_id, reason: :validation}}}
     end
@@ -3795,7 +3795,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         invoice_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(_input, _context), do: {:ok, %{}}
   end
 
@@ -3829,7 +3829,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         account: [type: :map, required: true]
       ]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(%{account_id: account_id}, _context), do: {:ok, %{account_id: account_id}}
   end
 
@@ -3856,16 +3856,16 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   defmodule MissingExecutor do
     @behaviour SquidMesh.Executor
 
-    @impl true
+    @impl SquidMesh.Executor
     def enqueue_step(_config, _run, _step, _opts), do: {:error, :executor_unavailable}
 
-    @impl true
+    @impl SquidMesh.Executor
     def enqueue_steps(_config, _run, _steps, _opts), do: {:error, :executor_unavailable}
 
-    @impl true
+    @impl SquidMesh.Executor
     def enqueue_compensation(_config, _run, _opts), do: {:error, :executor_unavailable}
 
-    @impl true
+    @impl SquidMesh.Executor
     def enqueue_cron(_config, _workflow, _trigger, _opts), do: {:error, :executor_unavailable}
   end
 end

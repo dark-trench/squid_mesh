@@ -68,17 +68,14 @@ defmodule SquidMesh.Config do
         config
 
       {:error, {:missing_config, keys}} ->
-        keys =
-          keys
-          |> Enum.map_join(", ", &inspect/1)
+        keys = Enum.map_join(keys, ", ", &inspect/1)
 
         raise ArgumentError,
               "missing Squid Mesh configuration keys: #{keys}"
 
       {:error, {:invalid_config, details}} ->
         details =
-          details
-          |> Enum.map_join(", ", fn {key, value} -> "#{inspect(key)}=#{inspect(value)}" end)
+          Enum.map_join(details, ", ", fn {key, value} -> "#{inspect(key)}=#{inspect(value)}" end)
 
         raise ArgumentError,
               "invalid Squid Mesh configuration: #{details}"
@@ -86,9 +83,7 @@ defmodule SquidMesh.Config do
   end
 
   defp validate_required_keys(config) do
-    missing_keys =
-      [:repo, :executor]
-      |> Enum.reject(&Keyword.has_key?(config, &1))
+    missing_keys = Enum.reject([:repo, :executor], &Keyword.has_key?(config, &1))
 
     case missing_keys do
       [] -> :ok

@@ -27,8 +27,7 @@ defmodule SquidMesh.Workflow.Validation do
 
       errors ->
         description =
-          ["workflow validation failed:" | Enum.map(errors, &"- #{&1}")]
-          |> Enum.join("\n")
+          Enum.join(["workflow validation failed:" | Enum.map(errors, &"- #{&1}")], "\n")
 
         raise CompileError,
           file: env.file,

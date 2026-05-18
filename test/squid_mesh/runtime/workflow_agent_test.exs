@@ -748,9 +748,7 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
   end
 
   defp planned_runnable(attrs \\ %{}) do
-    attrs
-    |> scheduled_attrs()
-    |> Map.delete(:occurred_at)
+    Map.delete(scheduled_attrs(attrs), :occurred_at)
   end
 
   defp claimed_attrs(attrs \\ %{}) do
@@ -817,9 +815,13 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
     }
   end
 
+  defp table_name(:checkpoints), do: :squid_mesh_workflow_agent_test_checkpoints
+  defp table_name(:threads), do: :squid_mesh_workflow_agent_test_threads
+  defp table_name(:thread_meta), do: :squid_mesh_workflow_agent_test_thread_meta
+
   defp cleanup_storage do
     for suffix <- [:checkpoints, :threads, :thread_meta] do
-      table = :"squid_mesh_workflow_agent_test_#{suffix}"
+      table = table_name(suffix)
 
       if :ets.whereis(table) != :undefined do
         :ets.delete(table)

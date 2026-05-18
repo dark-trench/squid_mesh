@@ -8,7 +8,6 @@ defmodule SquidMesh.Runtime.StepInput do
 
   alias SquidMesh.Run
   alias SquidMesh.StepRunStore
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type expected_step :: atom() | String.t() | nil
   @type input_mapping :: [atom()] | nil
@@ -32,9 +31,9 @@ defmodule SquidMesh.Runtime.StepInput do
   def deserialize_expected_step(step, _definition) when is_atom(step), do: {:ok, step}
 
   def deserialize_expected_step(step, definition) when is_binary(step) do
-    case WorkflowDefinition.deserialize_step(definition, step) do
+    case SquidMesh.Workflow.Definition.deserialize_step(definition, step) do
       resolved_step when is_atom(resolved_step) -> {:ok, resolved_step}
-      _other -> {:error, {:invalid_step, step}}
+      _ignored -> {:error, {:invalid_step, step}}
     end
   end
 
@@ -69,7 +68,7 @@ defmodule SquidMesh.Runtime.StepInput do
     end)
   end
 
-  defp normalize_value(%_{} = value), do: value
+  defp normalize_value(%_struct{} = value), do: value
   defp normalize_value(value) when is_map(value), do: normalize_map_keys(value)
   defp normalize_value(value) when is_list(value), do: Enum.map(value, &normalize_value/1)
   defp normalize_value(value), do: value

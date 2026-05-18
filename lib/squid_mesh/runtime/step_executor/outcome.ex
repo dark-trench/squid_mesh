@@ -25,7 +25,6 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   alias SquidMesh.Runtime.StepExecutor.Progression.Update
   alias SquidMesh.Runtime.StepInput
   alias SquidMesh.StepRunStore
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @reserved_context_keys [:schedule]
 
@@ -43,7 +42,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
   @type execution_context :: %{
           required(:config) => Config.t(),
-          required(:definition) => WorkflowDefinition.t(),
+          required(:definition) => SquidMesh.Workflow.Definition.t(),
           required(:run) => Run.t(),
           required(:step_name) => atom(),
           required(:step_run_id) => Ecto.UUID.t(),
@@ -87,9 +86,9 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
        ) do
     duration = System.monotonic_time() - started_at
 
-    with {:ok, step} <- WorkflowDefinition.step(definition, step_name),
+    with {:ok, step} <- SquidMesh.Workflow.Definition.step(definition, step_name),
          {:ok, mapped_output} <-
-           WorkflowDefinition.apply_output_mapping(definition, step_name, output) do
+           SquidMesh.Workflow.Definition.apply_output_mapping(definition, step_name, output) do
       step
       |> pause_kind(execution_opts)
       |> handle_success_result(
@@ -200,7 +199,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
          duration: duration,
          mapped_output: mapped_output
        }) do
-    with {:ok, pause_target} <- WorkflowDefinition.transition_target(definition, step_name, :ok),
+    with {:ok, pause_target} <-
+           SquidMesh.Workflow.Definition.transition_target(definition, step_name, :ok),
          {:ok, _step_run} <-
            StepRunStore.persist_pause_resume(
              config.repo,
@@ -230,8 +230,10 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
          attempt_number: attempt_number,
          duration: duration
        }) do
-    with {:ok, targets} <- WorkflowDefinition.approval_transition_targets(definition, step_name),
-         {:ok, output_key} <- WorkflowDefinition.step_output_mapping(definition, step_name),
+    with {:ok, targets} <-
+           SquidMesh.Workflow.Definition.approval_transition_targets(definition, step_name),
+         {:ok, output_key} <-
+           SquidMesh.Workflow.Definition.step_output_mapping(definition, step_name),
          {:ok, _step_run} <-
            StepRunStore.persist_approval_resume(config.repo, step_run_id, targets, output_key) do
       apply_pause_progression(
@@ -326,7 +328,12 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   end
 
   @doc false
-  @spec reconcile_completed_step(Config.t(), WorkflowDefinition.t(), Run.t(), PreparedStep.t()) ::
+  @spec reconcile_completed_step(
+          Config.t(),
+          SquidMesh.Workflow.Definition.t(),
+          Run.t(),
+          PreparedStep.t()
+        ) ::
           :ok | {:error, execution_error() | term()}
   def reconcile_completed_step(
         %Config{} = config,
@@ -370,15 +377,16 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         {:ok, []}
 
       {:retrying, _latest_run} ->
-        RunStore.progress_run_with_events(
-          config.repo,
-          run.id,
-          fn current_run ->
-            %{context: merged_context(current_run, mapped_output)}
-          end,
-          :update
+        progress_events_result(
+          RunStore.progress_run_with_events(
+            config.repo,
+            run.id,
+            fn current_run ->
+              %{context: merged_context(current_run, mapped_output)}
+            end,
+            :update
+          )
         )
-        |> progress_events_result()
 
       {:error, latest_run, reason} ->
         mark_failed_after_success_resolution_error(
@@ -482,10 +490,11 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         latest_run.status in [:failed, :completed, :cancelled] ->
           :already_terminal
 
-        latest_run.status == :retrying and WorkflowDefinition.dependency_mode?(definition) ->
+        latest_run.status == :retrying and
+            SquidMesh.Workflow.Definition.dependency_mode?(definition) ->
           {:retrying, latest_run}
 
-        WorkflowDefinition.dependency_mode?(definition) ->
+        SquidMesh.Workflow.Definition.dependency_mode?(definition) ->
           resolve_dependency_success(repo, definition, latest_run)
 
         true ->
@@ -495,20 +504,22 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   end
 
   defp success_transition_target(definition, latest_run, step_name) do
-    case WorkflowDefinition.transition_target(definition, step_name, :ok) do
+    case SquidMesh.Workflow.Definition.transition_target(definition, step_name, :ok) do
       {:ok, target} -> {:ok, latest_run, target}
       {:error, reason} -> {:error, latest_run, reason}
     end
   end
 
   defp apply_progression(%Config{} = config, run_id, %Complete{attrs_fun: attrs_fun}) do
-    RunStore.progress_run_with_events(config.repo, run_id, attrs_fun, {:transition, :completed})
-    |> progress_events_result()
+    progress_events_result(
+      RunStore.progress_run_with_events(config.repo, run_id, attrs_fun, {:transition, :completed})
+    )
   end
 
   defp apply_progression(%Config{} = config, run_id, %Update{attrs_fun: attrs_fun}) do
-    RunStore.progress_run_with_events(config.repo, run_id, attrs_fun, :update)
-    |> progress_events_result()
+    progress_events_result(
+      RunStore.progress_run_with_events(config.repo, run_id, attrs_fun, :update)
+    )
   end
 
   defp apply_progression(
@@ -521,21 +532,22 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            dispatch_error_handler: failure_attrs_fun
          }
        ) do
-    RunStore.progress_run_with_events(
-      config.repo,
-      run_id,
-      attrs_fun,
-      {:dispatch_or_fail,
-       fn updated_run ->
-         dispatch_steps_events(
-           config,
-           updated_run,
-           steps,
-           Keyword.put(dispatch_opts, :schedule_pending, true)
-         )
-       end, failure_attrs_fun}
+    progress_events_result(
+      RunStore.progress_run_with_events(
+        config.repo,
+        run_id,
+        attrs_fun,
+        {:dispatch_or_fail,
+         fn updated_run ->
+           dispatch_steps_events(
+             config,
+             updated_run,
+             steps,
+             Keyword.put(dispatch_opts, :schedule_pending, true)
+           )
+         end, failure_attrs_fun}
+      )
     )
-    |> progress_events_result()
   end
 
   defp apply_progression(
@@ -547,23 +559,24 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            dispatch_error_handler: failure_attrs_fun
          }
        ) do
-    RunStore.progress_run_with_events(
-      config.repo,
-      run_id,
-      attrs_fun,
-      {:dispatch_or_fail,
-       fn updated_run -> dispatch_run_events(config, updated_run, dispatch_opts) end,
-       failure_attrs_fun}
+    progress_events_result(
+      RunStore.progress_run_with_events(
+        config.repo,
+        run_id,
+        attrs_fun,
+        {:dispatch_or_fail,
+         fn updated_run -> dispatch_run_events(config, updated_run, dispatch_opts) end,
+         failure_attrs_fun}
+      )
     )
-    |> progress_events_result()
   end
 
   defp handle_terminal_or_routed_failure(config, definition, run, step_name, step_run_id, error) do
-    if WorkflowDefinition.dependency_mode?(definition) do
+    if SquidMesh.Workflow.Definition.dependency_mode?(definition) do
       Logger.error("workflow step failed")
       fail_run_and_request_compensation(config, definition, run, step_name, error)
     else
-      case WorkflowDefinition.transition_target(definition, step_name, :error) do
+      case SquidMesh.Workflow.Definition.transition_target(definition, step_name, :error) do
         {:ok, target} ->
           Logger.warning("workflow step failed; routing to error transition")
           record_failure_and_advance(config, definition, run, step_name, step_run_id, target)
@@ -586,7 +599,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   end
 
   defp record_failure_recovery(repo, definition, step_name, step_run_id) do
-    case WorkflowDefinition.failure_recovery(definition, step_name) do
+    case SquidMesh.Workflow.Definition.failure_recovery(definition, step_name) do
       {:ok, nil} ->
         :ok
 
@@ -605,8 +618,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   end
 
   defp advance_after_failure(config, run, :complete) do
-    config
-    |> apply_progression(
+    apply_progression(
+      config,
       run.id,
       Progression.complete(fn _run -> %{current_step: nil, last_error: nil} end)
     )
@@ -615,8 +628,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   defp advance_after_failure(config, run, next_step) when is_atom(next_step) do
     attrs = %{current_step: next_step, last_error: nil}
 
-    config
-    |> apply_progression(
+    apply_progression(
+      config,
       run.id,
       Progression.dispatch_run(
         fn _current_run -> attrs end,
@@ -645,13 +658,14 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         {:transition, :failed}
       end
 
-    RunStore.progress_run_with_events(
-      config.repo,
-      run.id,
-      failure_attrs(step_name, error),
-      operation
+    progress_events_result(
+      RunStore.progress_run_with_events(
+        config.repo,
+        run.id,
+        failure_attrs(step_name, error),
+        operation
+      )
     )
-    |> progress_events_result()
   end
 
   defp failure_attrs(step_name, error) do
@@ -850,7 +864,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     step_statuses = StepRunStore.step_statuses(repo, latest_run.id)
 
     try do
-      case WorkflowDefinition.dependency_progress(definition, step_statuses) do
+      case SquidMesh.Workflow.Definition.dependency_progress(definition, step_statuses) do
         :complete -> {:ok, latest_run, :complete}
         {:dispatch, steps} -> {:ok, latest_run, {:dispatch, steps}}
         {:wait, phase_steps} -> {:ok, latest_run, {:wait, phase_steps}}
@@ -874,7 +888,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   end
 
   defp success_current_step(definition, next_step) do
-    if WorkflowDefinition.dependency_mode?(definition), do: nil, else: next_step
+    if SquidMesh.Workflow.Definition.dependency_mode?(definition), do: nil, else: next_step
   end
 
   defp merged_context(run, output) do

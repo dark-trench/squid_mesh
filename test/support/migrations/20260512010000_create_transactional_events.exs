@@ -1,6 +1,7 @@
 defmodule SquidMesh.Test.Repo.Migrations.CreateTransactionalEvents do
   use Ecto.Migration
 
+  @spec change() :: :ok
   def change do
     create table(:transactional_events) do
       add(:run_id, :uuid, null: false)

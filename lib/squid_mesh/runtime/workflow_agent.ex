@@ -125,9 +125,9 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
     |> DispatchAgent.completed_results()
     |> Enum.filter(fn result ->
       result.run_id == run_id and
-        Projection.planned_runnable_key?(projection, result.runnable_key)
+        Projection.planned_runnable_key?(projection, result.runnable_key) and
+        not MapSet.member?(applied_keys, result.runnable_key)
     end)
-    |> Enum.reject(&MapSet.member?(applied_keys, &1.runnable_key))
     |> reject_when_terminal(projection)
   end
 

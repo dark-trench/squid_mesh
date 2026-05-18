@@ -10,14 +10,12 @@ defmodule SquidMesh.RunExplanation do
   import Ecto.Query
 
   alias SquidMesh.Config
-  alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.Run
   alias SquidMesh.RunStepState
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.RetryPolicy
   alias SquidMesh.StepAttempt
   alias SquidMesh.StepRun
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type reason ::
           :pending_dispatch
@@ -100,11 +98,10 @@ defmodule SquidMesh.RunExplanation do
     {step_run, attempt} = current_step_attempt(run)
 
     details =
-      %{
+      compact(%{
         next_attempt_number: next_attempt_number(attempt),
         last_error: run.last_error
-      }
-      |> compact()
+      })
 
     evidence =
       run
@@ -137,11 +134,16 @@ defmodule SquidMesh.RunExplanation do
       |> evidence_with_workflow_definition(definition)
       |> Map.merge(step_evidence(step_run, attempt))
 
-    details =
-      details
-      |> Map.merge(terminal_details(run, definition))
+    final_details = Map.merge(details, terminal_details(run, definition))
 
-    explanation(run, reason, run.current_step, details, replay_actions(run, definition), evidence)
+    explanation(
+      run,
+      reason,
+      run.current_step,
+      final_details,
+      replay_actions(run, definition),
+      evidence
+    )
   end
 
   defp build(%Config{} = config, %Run{} = run, _definition) do
@@ -302,9 +304,7 @@ defmodule SquidMesh.RunExplanation do
         step.status == :waiting and Enum.any?(step.depends_on, &dependency_incomplete?(run, &1))
       end)
 
-    waiting_on =
-      waiting_step.depends_on
-      |> Enum.filter(&dependency_incomplete?(run, &1))
+    waiting_on = Enum.filter(waiting_step.depends_on, &dependency_incomplete?(run, &1))
 
     details = %{
       waiting_on: waiting_on,
@@ -343,11 +343,10 @@ defmodule SquidMesh.RunExplanation do
     {step_run, attempt} = current_step_attempt(run)
 
     details =
-      %{
+      compact(%{
         duplicate_delivery_policy: :skip_while_running,
         stale_step_reclaim: stale_step_reclaim(config)
-      }
-      |> compact()
+      })
 
     evidence =
       run
@@ -451,18 +450,17 @@ defmodule SquidMesh.RunExplanation do
 
   defp failure_reason(_run, _step_run, _attempt), do: {:step_failed, %{}}
 
-  defp persisted_current_step_run(repo, %Run{id: run_id, current_step: step})
-       when not is_nil(step) do
+  defp persisted_current_step_run(_repo, %Run{current_step: nil}), do: nil
+
+  defp persisted_current_step_run(repo, %Run{id: run_id, current_step: step}) do
     serialized_step = serialize_step(step)
 
-    StepRunRecord
+    SquidMesh.Persistence.StepRun
     |> where([step_run], step_run.run_id == ^run_id and step_run.step == ^serialized_step)
     |> order_by([step_run], desc: step_run.updated_at, desc: step_run.id)
     |> limit(1)
     |> repo.one()
   end
-
-  defp persisted_current_step_run(_repo, _run), do: nil
 
   defp deserialize_resume(%{"kind" => "approval"} = resume, definition) do
     {:ok,
@@ -490,7 +488,7 @@ defmodule SquidMesh.RunExplanation do
   defp deserialize_target(nil, target), do: target
 
   defp deserialize_target(definition, target) when is_binary(target) do
-    WorkflowDefinition.deserialize_step(definition, target)
+    SquidMesh.Workflow.Definition.deserialize_step(definition, target)
   end
 
   defp invalid_resume_target?(_definition, :complete), do: false
@@ -510,7 +508,7 @@ defmodule SquidMesh.RunExplanation do
   defp invalid_resume_details(%{target: target}), do: %{resume_target: target}
 
   defp workflow_definition(%Run{workflow: workflow}) when is_atom(workflow) do
-    case WorkflowDefinition.load(workflow) do
+    case SquidMesh.Workflow.Definition.load(workflow) do
       {:ok, definition} -> definition
       {:error, _reason} -> nil
     end
@@ -538,8 +536,8 @@ defmodule SquidMesh.RunExplanation do
   end
 
   defp base_evidence(%Run{} = run) do
-    %{
-      run:
+    run_evidence =
+      maybe_put(
         %{
           id: run.id,
           status: run.status,
@@ -548,8 +546,13 @@ defmodule SquidMesh.RunExplanation do
           last_error: run.last_error,
           inserted_at: run.inserted_at,
           updated_at: run.updated_at
-        }
-        |> maybe_put(:schedule, schedule_context(run.context || %{}))
+        },
+        :schedule,
+        schedule_context(run.context || %{})
+      )
+
+    %{
+      run: run_evidence
     }
   end
 
@@ -612,7 +615,7 @@ defmodule SquidMesh.RunExplanation do
       |> Enum.filter(&(&1.status == :completed))
       |> Enum.map(&{&1.step, &1.recovery})
 
-    WorkflowDefinition.unsafe_replay_steps(definition, completed_steps)
+    SquidMesh.Workflow.Definition.unsafe_replay_steps(definition, completed_steps)
   end
 
   defp unsafe_replay_steps(_run, _definition), do: []

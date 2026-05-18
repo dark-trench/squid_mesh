@@ -6,9 +6,9 @@ defmodule SquidMesh.ToolsTest do
   alias SquidMesh.Tools.Result
 
   defmodule SuccessfulAdapter do
-    @behaviour Tools.Adapter
+    @behaviour SquidMesh.Tools.Adapter
 
-    @impl true
+    @impl SquidMesh.Tools.Adapter
     def invoke(request, context, _opts) do
       {:ok,
        %Result{
@@ -20,9 +20,9 @@ defmodule SquidMesh.ToolsTest do
   end
 
   defmodule InvalidAdapter do
-    @behaviour Tools.Adapter
+    @behaviour SquidMesh.Tools.Adapter
 
-    @impl true
+    @impl SquidMesh.Tools.Adapter
     def invoke(_request, _context, _opts) do
       {:ok, %{payload: %{}}}
     end

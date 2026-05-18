@@ -15,7 +15,6 @@ defmodule SquidMesh.Runtime.Compensation do
   alias SquidMesh.Run
   alias SquidMesh.Runtime.StepInput
   alias SquidMesh.StepRunStore
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type compensation_error :: {:compensation_failed, [map()]}
 
@@ -26,17 +25,18 @@ defmodule SquidMesh.Runtime.Compensation do
   reversible completed work keep their historical worker-count and dispatch
   behavior.
   """
-  @spec compensation_available?(module(), WorkflowDefinition.t(), Ecto.UUID.t()) :: boolean()
+  @spec compensation_available?(module(), SquidMesh.Workflow.Definition.t(), Ecto.UUID.t()) ::
+          boolean()
   def compensation_available?(repo, definition, run_id) do
     repo
     |> StepRunStore.completed_step_runs_for_compensation(run_id)
     |> Enum.any?(fn step_run ->
-      step_name = WorkflowDefinition.deserialize_step(definition, step_run.step)
+      step_name = SquidMesh.Workflow.Definition.deserialize_step(definition, step_run.step)
 
       is_atom(step_name) and ensure_not_completed(step_run.recovery) == :ok and
         match?(
           {:ok, callback} when is_atom(callback) and not is_nil(callback),
-          WorkflowDefinition.step_compensation_callback(definition, step_name)
+          SquidMesh.Workflow.Definition.step_compensation_callback(definition, step_name)
         )
     end)
   end
@@ -50,7 +50,7 @@ defmodule SquidMesh.Runtime.Compensation do
   structured `{:compensation_failed, failures}` error after all eligible
   callbacks have been attempted.
   """
-  @spec compensate_completed_steps(Config.t(), WorkflowDefinition.t(), Run.t(), map()) ::
+  @spec compensate_completed_steps(Config.t(), SquidMesh.Workflow.Definition.t(), Run.t(), map()) ::
           :ok | {:error, compensation_error() | term()}
   def compensate_completed_steps(%Config{} = config, definition, %Run{} = run, failure)
       when is_map(failure) do
@@ -69,11 +69,11 @@ defmodule SquidMesh.Runtime.Compensation do
   end
 
   defp compensate_step(config, definition, run, step_run, failure) do
-    step_name = WorkflowDefinition.deserialize_step(definition, step_run.step)
+    step_name = SquidMesh.Workflow.Definition.deserialize_step(definition, step_run.step)
 
     with step when is_atom(step) <- step_name,
          {:ok, callback} when is_atom(callback) and not is_nil(callback) <-
-           WorkflowDefinition.step_compensation_callback(definition, step),
+           SquidMesh.Workflow.Definition.step_compensation_callback(definition, step),
          :ok <- ensure_not_completed(step_run.recovery),
          {:ok, recovery} <- mark_compensation_running(config, step_run, callback),
          result <- execute_callback(callback, run, step, step_run, failure),
@@ -101,7 +101,7 @@ defmodule SquidMesh.Runtime.Compensation do
       |> Map.put(:compensation, %{
         callback: callback,
         status: :running,
-        started_at: DateTime.utc_now() |> DateTime.to_iso8601()
+        started_at: DateTime.to_iso8601(DateTime.utc_now())
       })
 
     with {:ok, _step_run} <- StepRunStore.update_recovery(config.repo, step_run.id, recovery) do
@@ -129,8 +129,8 @@ defmodule SquidMesh.Runtime.Compensation do
       state: run.context || %{}
     }
 
-    {callback, input} = callback_input(callback, input)
-    run_callback_instruction(callback, input, context)
+    {callback, callback_payload} = callback_input(callback, input)
+    run_callback_instruction(callback, callback_payload, context)
   end
 
   defp run_callback_instruction(callback, input, context) do
@@ -167,7 +167,7 @@ defmodule SquidMesh.Runtime.Compensation do
       recovery.compensation
       |> Map.put(:status, :completed)
       |> Map.put(:output, output)
-      |> Map.put(:completed_at, DateTime.utc_now() |> DateTime.to_iso8601())
+      |> Map.put(:completed_at, DateTime.to_iso8601(DateTime.utc_now()))
 
     recovery = Map.put(recovery, :compensation, compensation)
 
@@ -181,7 +181,7 @@ defmodule SquidMesh.Runtime.Compensation do
       recovery.compensation
       |> Map.put(:status, :failed)
       |> Map.put(:error, error)
-      |> Map.put(:failed_at, DateTime.utc_now() |> DateTime.to_iso8601())
+      |> Map.put(:failed_at, DateTime.to_iso8601(DateTime.utc_now()))
 
     recovery = Map.put(recovery, :compensation, compensation)
 

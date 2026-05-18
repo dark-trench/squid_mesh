@@ -10,7 +10,6 @@ defmodule SquidMesh.Runtime.Runner do
   alias SquidMesh.Observability
   alias SquidMesh.Runtime.ScheduleMetadata
   alias SquidMesh.Runtime.StepExecutor
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @doc """
   Executes one queued executor payload.
@@ -144,10 +143,11 @@ defmodule SquidMesh.Runtime.Runner do
   def start_cron_trigger(workflow_name, trigger_name, signal_payload, overrides)
       when is_binary(workflow_name) and is_binary(trigger_name) and is_map(signal_payload) and
              is_list(overrides) do
-    with {:ok, workflow, definition} <- WorkflowDefinition.load_serialized(workflow_name),
+    with {:ok, workflow, definition} <-
+           SquidMesh.Workflow.Definition.load_serialized(workflow_name),
          trigger when is_atom(trigger) <-
-           WorkflowDefinition.deserialize_trigger(definition, trigger_name),
-         {:ok, trigger_definition} <- WorkflowDefinition.trigger(definition, trigger),
+           SquidMesh.Workflow.Definition.deserialize_trigger(definition, trigger_name),
+         {:ok, trigger_definition} <- SquidMesh.Workflow.Definition.trigger(definition, trigger),
          {:ok, schedule_context} <-
            ScheduleMetadata.cron_context(workflow, trigger_definition, signal_payload),
          {:ok, run_result} <-

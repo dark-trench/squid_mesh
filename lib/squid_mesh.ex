@@ -13,9 +13,7 @@ defmodule SquidMesh do
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.ProjectedExplanation
-  alias SquidMesh.Runtime.ProjectedExplanation.Explanation, as: ProjectedExplanationResult
   alias SquidMesh.Runtime.ProjectedInspection
-  alias SquidMesh.Runtime.ProjectedInspection.Snapshot, as: ProjectedInspectionSnapshot
   alias SquidMesh.Runtime.Reviewer
   alias SquidMesh.Runtime.Unblocker
 
@@ -136,7 +134,7 @@ defmodule SquidMesh do
     do: {:error, reason}
 
   defp normalize_start_error(reason) when reason in [:not_found], do: {:error, reason}
-  defp normalize_start_error(%_{} = reason), do: {:error, {:dispatch_failed, reason}}
+  defp normalize_start_error(%_struct{} = reason), do: {:error, {:dispatch_failed, reason}}
   defp normalize_start_error(reason) when is_tuple(reason), do: {:error, reason}
   defp normalize_start_error(reason), do: {:error, {:dispatch_failed, reason}}
 
@@ -210,7 +208,7 @@ defmodule SquidMesh do
   Jido-native projection-backed snapshot from durable journal entries instead.
   """
   @spec inspect_run(String.t(), keyword()) ::
-          {:ok, Run.t() | ProjectedInspectionSnapshot.t()}
+          {:ok, Run.t() | SquidMesh.Runtime.ProjectedInspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
@@ -249,7 +247,7 @@ defmodule SquidMesh do
   projections instead.
   """
   @spec explain_run(String.t(), keyword()) ::
-          {:ok, RunExplanation.t() | ProjectedExplanationResult.t()}
+          {:ok, RunExplanation.t() | SquidMesh.Runtime.ProjectedExplanation.Explanation.t()}
           | {:error,
              :not_found
              | :invalid_run_id
@@ -484,7 +482,7 @@ defmodule SquidMesh do
       {:error, {:invalid_run, _changeset} = reason} ->
         {:error, reason}
 
-      {:error, %_{} = reason} ->
+      {:error, %_struct{} = reason} ->
         {:error, {:dispatch_failed, reason}}
 
       {:error, reason} ->

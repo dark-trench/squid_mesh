@@ -28,13 +28,13 @@ defmodule SquidMesh.Persistence.MigrationTest do
     migrations_path = Application.app_dir(:squid_mesh, "priv/repo/migrations")
     unload_migration_module()
 
-    assert [_version] = Ecto.Migrator.run(MigrationRepo, migrations_path, :up, all: true)
+    assert [_version] = run_migrations_without_module_conflict_warning(migrations_path, :up)
 
     assert table_exists?("squid_mesh_runs")
     assert table_exists?("squid_mesh_step_runs")
     assert table_exists?("squid_mesh_step_attempts")
 
-    assert [_version] = Ecto.Migrator.run(MigrationRepo, migrations_path, :down, all: true)
+    assert [_version] = run_migrations_without_module_conflict_warning(migrations_path, :down)
 
     refute table_exists?("squid_mesh_runs")
     refute table_exists?("squid_mesh_step_runs")
@@ -51,6 +51,17 @@ defmodule SquidMesh.Persistence.MigrationTest do
     module = SquidMesh.Repo.Migrations.CreateSquidMeshSchema
     :code.purge(module)
     :code.delete(module)
+  end
+
+  defp run_migrations_without_module_conflict_warning(migrations_path, direction) do
+    compiler_options = Code.compiler_options()
+    Code.compiler_options(ignore_module_conflict: true)
+
+    try do
+      Ecto.Migrator.run(MigrationRepo, migrations_path, direction, all: true)
+    after
+      Code.compiler_options(compiler_options)
+    end
   end
 
   defp table_exists?(table_name) do

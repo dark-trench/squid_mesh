@@ -11,7 +11,6 @@ defmodule SquidMesh.Runtime.Unblocker do
   alias SquidMesh.AttemptStore
   alias SquidMesh.Config
   alias SquidMesh.Observability
-  alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Persistence.StepAttempt
   alias SquidMesh.Persistence.StepRun
   alias SquidMesh.Run
@@ -20,7 +19,6 @@ defmodule SquidMesh.Runtime.Unblocker do
   alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.ManualAction
   alias SquidMesh.StepRunStore
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @doc false
   @spec unblock(Config.t(), Run.t(), map()) :: :ok | {:error, term()}
@@ -50,7 +48,7 @@ defmodule SquidMesh.Runtime.Unblocker do
   defp do_unblock(config, run, attrs, workflow) do
     with {:ok, {paused_run, run_record}} <- locked_paused_run(config.repo, run.id),
          {:ok, step_name} <- paused_step_name(paused_run),
-         {:ok, definition} <- WorkflowDefinition.load(workflow),
+         {:ok, definition} <- SquidMesh.Workflow.Definition.load(workflow),
          {:ok, _pause_step} <- paused_step_definition(definition, step_name),
          {:ok, step_run} <- running_step_run(config.repo, paused_run.id, step_name),
          {:ok, mapped_output, target} <- resume_metadata(step_run, definition, step_name),
@@ -90,10 +88,10 @@ defmodule SquidMesh.Runtime.Unblocker do
 
   defp locked_paused_run(repo, run_id) do
     case locked_run_record(repo, run_id) do
-      %RunRecord{status: "paused"} = run_record ->
+      %SquidMesh.Persistence.Run{status: "paused"} = run_record ->
         {:ok, {Serialization.to_public_run(run_record), run_record}}
 
-      %RunRecord{status: status} ->
+      %SquidMesh.Persistence.Run{status: status} ->
         {:error, {:invalid_transition, Serialization.deserialize_status(status), :running}}
 
       nil ->
@@ -107,7 +105,7 @@ defmodule SquidMesh.Runtime.Unblocker do
   defp paused_step_name(%Run{current_step: step_name}), do: {:error, {:invalid_step, step_name}}
 
   defp paused_step_definition(definition, step_name) do
-    with {:ok, step} <- WorkflowDefinition.step(definition, step_name) do
+    with {:ok, step} <- SquidMesh.Workflow.Definition.step(definition, step_name) do
       case step do
         %{module: :pause} -> {:ok, step}
         _other -> {:error, {:invalid_step, step_name}}
@@ -116,7 +114,7 @@ defmodule SquidMesh.Runtime.Unblocker do
   end
 
   defp running_step_run(repo, run_id, step_name) do
-    serialized_step = WorkflowDefinition.serialize_step(step_name)
+    serialized_step = SquidMesh.Workflow.Definition.serialize_step(step_name)
 
     case locked_step_run(repo, run_id, serialized_step) do
       %StepRun{status: "running"} = step_run -> {:ok, step_run}
@@ -132,7 +130,7 @@ defmodule SquidMesh.Runtime.Unblocker do
   end
 
   defp locked_run_record(repo, run_id) do
-    RunRecord
+    SquidMesh.Persistence.Run
     |> where([run], run.id == ^run_id)
     |> lock("FOR UPDATE")
     |> repo.one()
@@ -149,8 +147,9 @@ defmodule SquidMesh.Runtime.Unblocker do
 
   defp resume_metadata(%StepRun{}, definition, step_name) do
     with {:ok, mapped_output} <-
-           WorkflowDefinition.apply_output_mapping(definition, step_name, %{}),
-         {:ok, target} <- WorkflowDefinition.transition_target(definition, step_name, :ok) do
+           SquidMesh.Workflow.Definition.apply_output_mapping(definition, step_name, %{}),
+         {:ok, target} <-
+           SquidMesh.Workflow.Definition.transition_target(definition, step_name, :ok) do
       {:ok, mapped_output, target}
     end
   end
@@ -207,7 +206,7 @@ defmodule SquidMesh.Runtime.Unblocker do
   defp deserialize_resume_target(_definition, "__complete__"), do: :complete
 
   defp deserialize_resume_target(definition, target),
-    do: WorkflowDefinition.deserialize_step(definition, target)
+    do: SquidMesh.Workflow.Definition.deserialize_step(definition, target)
 
   defp locked_step_run(repo, run_id, step_name) do
     StepRun
