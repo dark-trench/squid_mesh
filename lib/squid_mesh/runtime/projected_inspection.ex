@@ -87,17 +87,18 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
 
     terminal? = WorkflowAgent.Projection.terminal?(workflow_projection)
 
-    {visible_attempts, expired_claims} =
+    attempts = run_attempts(dispatch_projection, run_id)
+
+    {visible_attempts, scheduled_attempts, expired_claims} =
       if terminal? do
-        {[], []}
+        {[], [], []}
       else
         {
           attempts_for(DispatchAgent.visible_attempts(dispatch_agent, now), run_id),
+          scheduled_attempts(attempts, now),
           attempts_for(DispatchAgent.expired_claims(dispatch_agent, now), run_id)
         }
       end
-
-    attempts = run_attempts(dispatch_projection, run_id)
 
     %Snapshot{
       run_id: run_id,
@@ -110,6 +111,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
           pending_dispatches,
           pending_results,
           visible_attempts,
+          scheduled_attempts,
           expired_claims,
           attempts
         ),
@@ -126,6 +128,8 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
       pending_dispatches: normalize_runnables(pending_dispatches),
       pending_results: Enum.map(pending_results, &attempt_snapshot/1),
       visible_attempts: Enum.map(visible_attempts, &attempt_snapshot/1),
+      scheduled_attempts: Enum.map(scheduled_attempts, &attempt_snapshot/1),
+      next_visible_at: next_visible_at(scheduled_attempts),
       expired_claims: Enum.map(expired_claims, &attempt_snapshot/1),
       attempts: Enum.map(attempts, &attempt_snapshot/1),
       anomalies: projection_anomalies(workflow_projection, dispatch_projection)
@@ -137,6 +141,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
          pending_dispatches,
          pending_results,
          visible_attempts,
+         scheduled_attempts,
          expired_claims,
          attempts
        ) do
@@ -157,14 +162,17 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
         :attempt_visible
 
       true ->
-        idle_snapshot_reason(workflow_projection, attempts)
+        idle_snapshot_reason(workflow_projection, scheduled_attempts, attempts)
     end
   end
 
-  defp idle_snapshot_reason(workflow_projection, attempts) do
+  defp idle_snapshot_reason(workflow_projection, scheduled_attempts, attempts) do
     cond do
       Enum.any?(attempts, &(&1.status == :claimed)) ->
         :attempt_claimed
+
+      scheduled_attempts != [] ->
+        :attempt_scheduled_for_later
 
       WorkflowAgent.Projection.status(workflow_projection) == :idle ->
         :idle
@@ -195,6 +203,20 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
        attempt.attempt_number}
     end)
   end
+
+  defp scheduled_attempts(attempts, %DateTime{} = now) do
+    attempts
+    |> Enum.filter(fn %ActionAttempt{} = attempt ->
+      attempt.status in [:available, :retry_scheduled] and after?(attempt.visible_at, now)
+    end)
+    |> sort_attempts()
+  end
+
+  defp next_visible_at([%ActionAttempt{visible_at: %DateTime{} = visible_at} | _attempts]) do
+    visible_at
+  end
+
+  defp next_visible_at([]), do: nil
 
   defp normalize_runnables(runnables) do
     runnables
@@ -275,5 +297,9 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
 
   defp compact(map) do
     Map.reject(map, fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp after?(%DateTime{} = left, %DateTime{} = right) do
+    DateTime.compare(left, right) == :gt
   end
 end

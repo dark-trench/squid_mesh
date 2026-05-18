@@ -122,6 +122,21 @@ defmodule SquidMesh.Runtime.ProjectedExplanation do
     }
   end
 
+  defp explanation_parts(%Snapshot{reason: :attempt_scheduled_for_later} = snapshot) do
+    attempts = snapshot.scheduled_attempts
+
+    {
+      "A dispatch attempt is scheduled for future visibility.",
+      %{
+        scheduled_attempt_count: length(attempts),
+        runnable_keys: runnable_keys(attempts),
+        next_visible_at: snapshot.next_visible_at
+      },
+      [:wait_until_attempt_visible],
+      first_step(attempts)
+    }
+  end
+
   defp explanation_parts(%Snapshot{reason: :attempt_claimed} = snapshot) do
     attempts = claimed_attempts(snapshot.attempts)
 
@@ -183,6 +198,7 @@ defmodule SquidMesh.Runtime.ProjectedExplanation do
       terminal_status: snapshot.terminal_status,
       planned_runnable_keys: snapshot.planned_runnable_keys,
       applied_runnable_keys: snapshot.applied_runnable_keys,
+      next_visible_at: snapshot.next_visible_at,
       attempt_counts: attempt_counts(snapshot.attempts),
       anomaly_count: length(snapshot.anomalies),
       anomalies: snapshot.anomalies

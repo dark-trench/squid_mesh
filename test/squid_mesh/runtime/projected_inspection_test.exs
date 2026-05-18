@@ -11,9 +11,12 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
   @workflow "BillingWorkflow"
   @queue "default"
   @runnable_key "run_123:charge_card:1"
+  @second_runnable_key "run_123:send_receipt:1"
   @idempotency_key "run_123:charge_card:payment_456"
+  @second_idempotency_key "run_123:send_receipt:payment_456"
   @started_at ~U[2026-05-15 00:00:00Z]
   @visible_at ~U[2026-05-15 00:00:10Z]
+  @later_visible_at ~U[2026-05-15 00:00:30Z]
   @claimed_at ~U[2026-05-15 00:00:20Z]
   @completed_at ~U[2026-05-15 00:00:40Z]
   @lease_until ~U[2026-05-15 00:01:00Z]
@@ -44,6 +47,63 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     assert snapshot.pending_results == []
     assert snapshot.expired_claims == []
     assert snapshot.terminal? == false
+  end
+
+  test "shows scheduled attempts before they become visible" do
+    append_run_entries([run_started(), runnables_planned()])
+    append_dispatch_entries([attempt_scheduled()])
+
+    assert {:ok, %Snapshot{} = snapshot} =
+             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @started_at)
+
+    assert snapshot.status == :running
+    assert snapshot.reason == :attempt_scheduled_for_later
+    assert snapshot.visible_attempts == []
+    assert snapshot.expired_claims == []
+
+    assert [
+             %{
+               runnable_key: @runnable_key,
+               status: :available,
+               visible_at: @visible_at
+             }
+           ] = snapshot.scheduled_attempts
+  end
+
+  test "reports the earliest visible time across scheduled attempts" do
+    append_run_entries([
+      run_started(),
+      runnables_planned([
+        planned_runnable(),
+        planned_runnable(
+          idempotency_key: @second_idempotency_key,
+          runnable_key: @second_runnable_key,
+          step: "send_receipt",
+          visible_at: @later_visible_at
+        )
+      ])
+    ])
+
+    append_dispatch_entries([
+      attempt_scheduled(),
+      attempt_scheduled(
+        idempotency_key: @second_idempotency_key,
+        runnable_key: @second_runnable_key,
+        step: "send_receipt",
+        visible_at: @later_visible_at
+      )
+    ])
+
+    assert {:ok, %Snapshot{} = snapshot} =
+             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @started_at)
+
+    assert snapshot.reason == :attempt_scheduled_for_later
+    assert snapshot.next_visible_at == @visible_at
+
+    assert Enum.map(snapshot.scheduled_attempts, & &1.runnable_key) == [
+             @runnable_key,
+             @second_runnable_key
+           ]
   end
 
   test "shows planned runnables that have not been durably scheduled yet" do
@@ -118,9 +178,24 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     assert snapshot.reason == :terminal
     assert snapshot.terminal? == true
     assert snapshot.terminal_status == :completed
+    assert snapshot.scheduled_attempts == []
     assert snapshot.visible_attempts == []
     assert snapshot.expired_claims == []
     assert [%{runnable_key: @runnable_key, status: :claimed}] = snapshot.attempts
+  end
+
+  test "uses terminal run facts to suppress scheduled attempt views" do
+    append_run_entries([run_started(), runnables_planned(), run_terminal(:cancelled)])
+    append_dispatch_entries([attempt_scheduled()])
+
+    assert {:ok, %Snapshot{} = snapshot} =
+             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @started_at)
+
+    assert snapshot.status == :cancelled
+    assert snapshot.reason == :terminal
+    assert snapshot.scheduled_attempts == []
+    assert snapshot.visible_attempts == []
+    assert [%{runnable_key: @runnable_key, status: :available}] = snapshot.attempts
   end
 
   test "keeps failed and cancelled terminal statuses visible in snapshots" do
@@ -187,10 +262,10 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     })
   end
 
-  defp runnables_planned do
+  defp runnables_planned(runnables \\ [planned_runnable()]) do
     entry!(:runnables_planned, %{
       run_id: @run_id,
-      runnables: [planned_runnable()],
+      runnables: runnables,
       occurred_at: @visible_at
     })
   end
@@ -212,8 +287,8 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     })
   end
 
-  defp attempt_scheduled do
-    entry!(:attempt_scheduled, scheduled_attrs())
+  defp attempt_scheduled(overrides \\ []) do
+    entry!(:attempt_scheduled, scheduled_attrs(overrides))
   end
 
   defp attempt_claimed do
@@ -241,12 +316,14 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     })
   end
 
-  defp planned_runnable do
-    Map.delete(scheduled_attrs(), :occurred_at)
+  defp planned_runnable(overrides \\ []) do
+    overrides
+    |> scheduled_attrs()
+    |> Map.delete(:occurred_at)
   end
 
-  defp scheduled_attrs do
-    %{
+  defp scheduled_attrs(overrides) do
+    base = %{
       run_id: @run_id,
       runnable_key: @runnable_key,
       idempotency_key: @idempotency_key,
@@ -257,6 +334,8 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
       visible_at: @visible_at,
       occurred_at: @started_at
     }
+
+    Map.merge(base, Map.new(overrides))
   end
 
   defp entry!(type, attrs) do
