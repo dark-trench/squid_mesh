@@ -91,14 +91,13 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
 
   test "does not treat a live wakeup as successful before runnable intent exists" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:live_wakeup_emitted, %{
           run_id: @run_id,
           runnable_key: @runnable_key,
           occurred_at: @started_at
         })
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert Projection.visible_attempts(projection, @visible_at) == []
 
@@ -113,10 +112,9 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
 
   test "rebuilds visible runnable intent after restart" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs())
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert [%{runnable_key: @runnable_key, status: :available}] =
              Projection.visible_attempts(projection, @visible_at)
@@ -124,11 +122,10 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
 
   test "duplicate runnable intent is idempotent when the scheduled fields match" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_scheduled, scheduled_attrs())
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert [%{runnable_key: @runnable_key}] = Projection.visible_attempts(projection, @visible_at)
     assert Projection.anomalies(projection) == []
@@ -141,11 +138,10 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
       |> Map.put(:input, %{"payment_id" => "pay_999"})
 
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_scheduled, conflicting_attrs)
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert [%{runnable_key: @runnable_key, idempotency_key: @idempotency_key}] =
              Projection.visible_attempts(projection, @visible_at)
@@ -162,11 +158,10 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
 
   test "current leases hide attempts from redelivery and expired leases are recoverable" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_claimed, claimed_attrs())
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert Projection.visible_attempts(projection, @visible_at) == []
     assert Projection.expired_claims(projection, @visible_at) == []
@@ -177,7 +172,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
 
   test "terminal run entries fence remaining visible work and later claims" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_claimed, claimed_attrs()),
         entry!(:run_terminal, %{
@@ -186,8 +181,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
           occurred_at: @expired_at
         }),
         entry!(:attempt_claimed, claimed_attrs(occurred_at: @expired_at))
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert Projection.visible_attempts(projection, @expired_at) == []
     assert Projection.expired_claims(projection, @expired_at) == []
@@ -204,11 +198,10 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
 
   test "claims cannot be accepted before the attempt is visible" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_claimed, claimed_attrs(occurred_at: @started_at))
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert [%{runnable_key: @runnable_key, status: :available}] =
              Projection.visible_attempts(projection, @visible_at)
@@ -225,7 +218,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
 
   test "claim takeover is allowed only after the current lease expires" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_claimed, claimed_attrs()),
         entry!(
@@ -247,8 +240,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
             occurred_at: @expired_at
           )
         )
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert [%{claim_id: "claim_3", claim_token_hash: "token_hash_3", owner_id: "worker_3"}] =
              Projection.expired_claims(projection, ~U[2026-05-14 00:05:00Z])
@@ -268,7 +260,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
     extended_lease = ~U[2026-05-14 00:05:00Z]
 
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_claimed, claimed_attrs()),
         entry!(:attempt_heartbeat, %{
@@ -287,8 +279,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
           lease_until: extended_lease,
           occurred_at: @started_at
         })
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert Projection.expired_claims(projection, @expired_at) == []
 
@@ -305,7 +296,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
 
   test "expired claim owners cannot heartbeat complete fail or schedule retries" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_claimed, claimed_attrs()),
         entry!(:attempt_heartbeat, %{
@@ -334,8 +325,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
           retry_visible_at: @expired_at,
           occurred_at: @expired_at
         })
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert Projection.completed_results(projection) == []
     assert Projection.visible_attempts(projection, @expired_at) == []
@@ -354,7 +344,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
     }
 
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_claimed, claimed_attrs()),
         entry!(:attempt_completed, %{
@@ -373,8 +363,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
           result: completed,
           occurred_at: @started_at
         })
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert [%{runnable_key: @runnable_key, result: ^completed}] =
              Projection.completed_results(projection)
@@ -384,7 +373,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
 
   test "completion appended without a live wakeup remains recoverable after restart" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_claimed, claimed_attrs()),
         entry!(:attempt_completed, %{
@@ -395,15 +384,14 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
           result: %{"ok" => true},
           occurred_at: @started_at
         })
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert [%{runnable_key: @runnable_key}] = Projection.results_ready_to_apply(projection)
   end
 
   test "applied completed results are removed from the apply projection" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_claimed, claimed_attrs()),
         entry!(:attempt_completed, %{
@@ -419,8 +407,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
           runnable_key: @runnable_key,
           occurred_at: @expired_at
         })
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert Projection.results_ready_to_apply(projection) == []
 
@@ -430,15 +417,14 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
 
   test "runnable apply entries cannot precede completion" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:runnable_applied, %{
           run_id: @run_id,
           runnable_key: @runnable_key,
           occurred_at: @started_at
         })
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert Projection.results_ready_to_apply(projection) == []
 
@@ -453,7 +439,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
 
   test "stale completion is fenced out by claim token hash" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_claimed, claimed_attrs()),
         entry!(:attempt_completed, %{
@@ -464,8 +450,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
           result: %{"ok" => true},
           occurred_at: @started_at
         })
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert Projection.completed_results(projection) == []
 
@@ -482,7 +467,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
 
   test "claim entries cannot reopen completed attempts" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_claimed, claimed_attrs()),
         entry!(:attempt_completed, %{
@@ -502,8 +487,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
           lease_until: @expired_at,
           occurred_at: @started_at
         })
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert [%{runnable_key: @runnable_key, status: :completed}] =
              Projection.completed_results(projection)
@@ -522,7 +506,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
 
   test "retry scheduling survives projection rebuild" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_claimed, claimed_attrs()),
         entry!(:attempt_failed, %{
@@ -535,8 +519,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
           retry_visible_at: @expired_at,
           occurred_at: @started_at
         })
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert Projection.visible_attempts(projection, @visible_at) == []
 
@@ -546,7 +529,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
 
   test "stale failures cannot schedule retry attempts" do
     projection =
-      [
+      Projection.rebuild([
         entry!(:attempt_scheduled, scheduled_attrs()),
         entry!(:attempt_claimed, claimed_attrs()),
         entry!(:attempt_failed, %{
@@ -559,8 +542,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
           retry_visible_at: @expired_at,
           occurred_at: @started_at
         })
-      ]
-      |> Projection.rebuild()
+      ])
 
     assert Projection.visible_attempts(projection, @expired_at) == []
 

@@ -1,17 +1,12 @@
 defmodule SquidMeshTest do
-  use SquidMesh.DataCase
+  use SquidMesh.DataCase, async: false
 
   alias SquidMesh.Executor.Payload
-  alias SquidMesh.Persistence.Run, as: PersistedRun
-  alias SquidMesh.Persistence.Run, as: RunRecord
-  alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.Run
   alias SquidMesh.RunStepState
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Runner
   alias SquidMesh.Runtime.Unblocker
-  alias SquidMesh.StepAttempt, as: PublicStepAttempt
-  alias SquidMesh.StepRun, as: PublicStepRun
   alias SquidMesh.Test.Job
   alias SquidMesh.Test.StepWorker
   alias SquidMesh.TestSupport.LazyWorkflow
@@ -103,7 +98,7 @@ defmodule SquidMeshTest do
         invoice_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id, invoice_id: invoice_id}, _context) do
       {:ok,
        %{
@@ -122,7 +117,7 @@ defmodule SquidMeshTest do
         invoice: [type: :map, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account: account, invoice: invoice}, _context) do
       {:ok,
        %{
@@ -143,7 +138,7 @@ defmodule SquidMeshTest do
         account_id: [type: :string, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{gateway_check: %{account_id: account_id, status: "healthy"}}}
     end
@@ -159,7 +154,7 @@ defmodule SquidMeshTest do
       description: "Loads account details",
       schema: [account_id: [type: :string, required: true]]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{account: %{id: account_id}}}
     end
@@ -171,7 +166,7 @@ defmodule SquidMeshTest do
       description: "Captures a payment",
       schema: [account: [type: :map, required: true]]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account: account}, _context) do
       {:ok, %{payment: %{account_id: account.id, status: "captured"}}}
     end
@@ -274,7 +269,7 @@ defmodule SquidMeshTest do
       name: :capture_schedule,
       output_schema: [schedule_seen: [type: :map, required: true]]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(_input, context) do
       {:ok, %{schedule_seen: Map.fetch!(context.state, :schedule)}}
     end
@@ -326,16 +321,16 @@ defmodule SquidMeshTest do
   defmodule MissingExecutor do
     @behaviour SquidMesh.Executor
 
-    @impl true
+    @impl SquidMesh.Executor
     def enqueue_step(_config, _run, _step, _opts), do: {:error, :executor_unavailable}
 
-    @impl true
+    @impl SquidMesh.Executor
     def enqueue_steps(_config, _run, _steps, _opts), do: {:error, :executor_unavailable}
 
-    @impl true
+    @impl SquidMesh.Executor
     def enqueue_compensation(_config, _run, _opts), do: {:error, :executor_unavailable}
 
-    @impl true
+    @impl SquidMesh.Executor
     def enqueue_cron(_config, _workflow, _trigger, _opts), do: {:error, :executor_unavailable}
   end
 
@@ -540,7 +535,7 @@ defmodule SquidMeshTest do
 
       assert run.payload == %{
                team_id: "backend",
-               prompt_date: Date.utc_today() |> Date.to_iso8601(),
+               prompt_date: Date.to_iso8601(Date.utc_today()),
                invoice_id: "inv_456"
              }
     end
@@ -565,7 +560,7 @@ defmodule SquidMeshTest do
     end
 
     test "rolls back run creation when dispatching the first step fails" do
-      before_count = Repo.aggregate(RunRecord, :count, :id)
+      before_count = Repo.aggregate(SquidMesh.Persistence.Run, :count, :id)
       SquidMesh.Test.Executor.fail_next!()
 
       assert {:error, {:dispatch_failed, :executor_unavailable}} =
@@ -575,7 +570,7 @@ defmodule SquidMeshTest do
                  repo: Repo
                )
 
-      assert Repo.aggregate(RunRecord, :count, :id) == before_count
+      assert Repo.aggregate(SquidMesh.Persistence.Run, :count, :id) == before_count
     end
   end
 
@@ -594,7 +589,7 @@ defmodule SquidMeshTest do
         args: %{"step" => "announce_prompt"}
       )
 
-      assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+      assert [%SquidMesh.Persistence.Run{} = persisted_run] = Repo.all(SquidMesh.Persistence.Run)
 
       assert persisted_run.workflow == "Elixir.SquidMeshTest.DailyStandupWorkflow"
       assert persisted_run.trigger == "daily_standup"
@@ -610,7 +605,7 @@ defmodule SquidMeshTest do
                  repo: Repo
                )
 
-      assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+      assert [%SquidMesh.Persistence.Run{} = persisted_run] = Repo.all(SquidMesh.Persistence.Run)
 
       assert persisted_run.workflow ==
                "Elixir.SquidMeshTest.ManualAndScheduledDigestWorkflow"
@@ -634,7 +629,7 @@ defmodule SquidMeshTest do
 
       assert :ok = Runner.perform(payload, repo: Repo)
 
-      assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+      assert [%SquidMesh.Persistence.Run{} = persisted_run] = Repo.all(SquidMesh.Persistence.Run)
 
       assert persisted_run.context["schedule"]["signal_id"] == "signal_123"
       refute String.starts_with?(persisted_run.context["schedule"]["signal_id"], "sha256:")
@@ -682,7 +677,8 @@ defmodule SquidMeshTest do
       assert :ok = Runner.perform(payload, repo: Repo)
       assert :ok = Runner.perform(payload, repo: Repo)
 
-      assert [%PersistedRun{}, %PersistedRun{}] = persisted_runs = Repo.all(PersistedRun)
+      assert [%SquidMesh.Persistence.Run{}, %SquidMesh.Persistence.Run{}] =
+               persisted_runs = Repo.all(SquidMesh.Persistence.Run)
 
       signal_ids =
         Enum.map(persisted_runs, fn persisted_run ->
@@ -707,7 +703,7 @@ defmodule SquidMeshTest do
 
       assert :ok = Runner.perform(payload, repo: Repo)
 
-      assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+      assert [%SquidMesh.Persistence.Run{} = persisted_run] = Repo.all(SquidMesh.Persistence.Run)
 
       refute Map.has_key?(persisted_run.context["schedule"], "signal_id")
     end
@@ -736,7 +732,7 @@ defmodule SquidMeshTest do
       assert :ok = Runner.perform(other_payload, repo: Repo)
 
       signal_ids =
-        PersistedRun
+        SquidMesh.Persistence.Run
         |> Repo.all()
         |> Enum.map(fn persisted_run -> persisted_run.context["schedule"]["signal_id"] end)
 
@@ -752,7 +748,7 @@ defmodule SquidMeshTest do
       assert {:error, {:invalid_schedule_signal_id, 123}} =
                Runner.perform(payload, repo: Repo)
 
-      assert [] = Repo.all(PersistedRun)
+      assert [] = Repo.all(SquidMesh.Persistence.Run)
     end
 
     test "preserves atom-keyed scheduler metadata from delivered cron payloads" do
@@ -767,7 +763,7 @@ defmodule SquidMeshTest do
 
       assert :ok = Runner.perform(payload, repo: Repo)
 
-      assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+      assert [%SquidMesh.Persistence.Run{} = persisted_run] = Repo.all(SquidMesh.Persistence.Run)
 
       assert persisted_run.context["schedule"]["signal_id"] == "signal_123"
 
@@ -829,7 +825,7 @@ defmodule SquidMeshTest do
                  repo: Repo
                )
 
-      persisted_run = Repo.get!(RunRecord, created_run.id)
+      persisted_run = Repo.get!(SquidMesh.Persistence.Run, created_run.id)
 
       assert persisted_run.workflow == "Elixir.SquidMeshTest.InvoiceReminderWorkflow"
       assert persisted_run.current_step == "load_invoice"
@@ -860,7 +856,7 @@ defmodule SquidMeshTest do
                {:send_email, :completed, []}
              ]
 
-      assert [%PublicStepRun{}, %PublicStepRun{}] = inspected_run.step_runs
+      assert [%SquidMesh.StepRun{}, %SquidMesh.StepRun{}] = inspected_run.step_runs
 
       assert Enum.map(inspected_run.step_runs, &{&1.step, &1.status}) == [
                {:load_invoice, :completed},
@@ -868,7 +864,7 @@ defmodule SquidMeshTest do
              ]
 
       assert Enum.all?(inspected_run.step_runs, fn step_run ->
-               match?([%PublicStepAttempt{}], step_run.attempts)
+               match?([%SquidMesh.StepAttempt{}], step_run.attempts)
              end)
 
       assert Enum.map(inspected_run.step_runs, fn step_run ->
@@ -948,7 +944,7 @@ defmodule SquidMeshTest do
       assert %RunStepState{recovery: %{replay: :manual_review_required}} =
                Enum.find(inspected_run.steps, &(&1.step == :capture_payment))
 
-      assert %PublicStepRun{recovery: %{irreversible?: true, compensatable?: false}} =
+      assert %SquidMesh.StepRun{recovery: %{irreversible?: true, compensatable?: false}} =
                Enum.find(inspected_run.step_runs, &(&1.step == :capture_payment))
     end
 
@@ -962,7 +958,7 @@ defmodule SquidMeshTest do
                })
 
       Repo.update_all(
-        from(run_record in RunRecord, where: run_record.id == ^run.id),
+        from(run_record in SquidMesh.Persistence.Run, where: run_record.id == ^run.id),
         set: [workflow: "Elixir.Missing.Workflow"]
       )
 
@@ -1007,7 +1003,7 @@ defmodule SquidMeshTest do
                )
 
       Repo.update_all(
-        from(run_record in RunRecord, where: run_record.id == ^run.id),
+        from(run_record in SquidMesh.Persistence.Run, where: run_record.id == ^run.id),
         set: [workflow: "Elixir.Missing.Workflow"]
       )
 
@@ -1050,7 +1046,7 @@ defmodule SquidMeshTest do
                )
 
       Repo.update_all(
-        from(run_record in RunRecord, where: run_record.id == ^run.id),
+        from(run_record in SquidMesh.Persistence.Run, where: run_record.id == ^run.id),
         set: [workflow: "Elixir.Missing.Workflow"]
       )
 
@@ -1282,7 +1278,7 @@ defmodule SquidMeshTest do
                  %{account_id: "acct_123", invoice_id: "inv_123"}
                )
 
-      before_count = Repo.aggregate(RunRecord, :count, :id)
+      before_count = Repo.aggregate(SquidMesh.Persistence.Run, :count, :id)
 
       assert {:error, {:dispatch_failed, :executor_unavailable}} =
                SquidMesh.replay_run(
@@ -1291,7 +1287,7 @@ defmodule SquidMeshTest do
                  executor: MissingExecutor
                )
 
-      assert Repo.aggregate(RunRecord, :count, :id) == before_count
+      assert Repo.aggregate(SquidMesh.Persistence.Run, :count, :id) == before_count
     end
 
     test "blocks replay by default after completed irreversible steps" do
@@ -1305,7 +1301,7 @@ defmodule SquidMeshTest do
       assert %{success: 2, failure: 0} =
                SquidMesh.Test.Executor.drain()
 
-      before_count = Repo.aggregate(RunRecord, :count, :id)
+      before_count = Repo.aggregate(SquidMesh.Persistence.Run, :count, :id)
 
       assert {:error,
               {:unsafe_replay,
@@ -1323,7 +1319,7 @@ defmodule SquidMeshTest do
                  ]
                }}} = SquidMesh.replay_run(source_run.id, repo: Repo)
 
-      assert Repo.aggregate(RunRecord, :count, :id) == before_count
+      assert Repo.aggregate(SquidMesh.Persistence.Run, :count, :id) == before_count
     end
 
     test "uses persisted recovery policy when checking replay safety" do
@@ -1339,7 +1335,7 @@ defmodule SquidMeshTest do
 
       assert {1, _rows} =
                Repo.update_all(
-                 from(step_run in StepRunRecord,
+                 from(step_run in SquidMesh.Persistence.StepRun,
                    where:
                      step_run.run_id == ^source_run.id and step_run.step == "send_email" and
                        step_run.status == "completed"
@@ -1387,12 +1383,12 @@ defmodule SquidMeshTest do
       assert %{success: 2, failure: 0} =
                SquidMesh.Test.Executor.drain()
 
-      before_count = Repo.aggregate(RunRecord, :count, :id)
+      before_count = Repo.aggregate(SquidMesh.Persistence.Run, :count, :id)
 
       assert {:error, {:unsafe_replay, %{steps: [%{step: :capture_payment}]}}} =
                SquidMesh.replay_run(source_run.id, repo: Repo, allow_irreversible: "true")
 
-      assert Repo.aggregate(RunRecord, :count, :id) == before_count
+      assert Repo.aggregate(SquidMesh.Persistence.Run, :count, :id) == before_count
     end
   end
 
@@ -1458,7 +1454,7 @@ defmodule SquidMeshTest do
                })
 
       Repo.update_all(
-        from(run_record in RunRecord, where: run_record.id == ^run.id),
+        from(run_record in SquidMesh.Persistence.Run, where: run_record.id == ^run.id),
         set: [workflow: "Elixir.Missing.Workflow"]
       )
 
@@ -1476,7 +1472,7 @@ defmodule SquidMeshTest do
                })
 
       Repo.update_all(
-        from(run_record in RunRecord, where: run_record.id == ^run.id),
+        from(run_record in SquidMesh.Persistence.Run, where: run_record.id == ^run.id),
         set: [current_step: "record_delivery"]
       )
 
@@ -1574,7 +1570,7 @@ defmodule SquidMeshTest do
                })
 
       Repo.update_all(
-        from(run_record in RunRecord, where: run_record.id == ^run.id),
+        from(run_record in SquidMesh.Persistence.Run, where: run_record.id == ^run.id),
         set: [workflow: "Elixir.Missing.Workflow"]
       )
 

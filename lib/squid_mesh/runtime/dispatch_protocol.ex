@@ -16,7 +16,6 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
   """
 
   alias SquidMesh.Runtime.DispatchProtocol.Entry
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type entry_type ::
           :run_started
@@ -159,7 +158,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
   defp normalize_workflow(nil), do: nil
 
   defp normalize_workflow(workflow) when is_atom(workflow),
-    do: WorkflowDefinition.serialize_workflow(workflow)
+    do: SquidMesh.Workflow.Definition.serialize_workflow(workflow)
 
   defp normalize_workflow(workflow), do: normalize_thread_id(workflow)
 

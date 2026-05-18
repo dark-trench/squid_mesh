@@ -66,7 +66,7 @@ defmodule SquidMesh.Runtime.ManualAction do
   def build(type, attrs) when type in [:resumed, :approved, :rejected] and is_map(attrs) do
     %{
       "event" => Atom.to_string(type),
-      "at" => DateTime.utc_now() |> DateTime.truncate(:microsecond) |> DateTime.to_iso8601()
+      "at" => DateTime.to_iso8601(DateTime.utc_now(:microsecond))
     }
     |> maybe_put("actor", Map.get(attrs, :actor))
     |> maybe_put("comment", Map.get(attrs, :comment))

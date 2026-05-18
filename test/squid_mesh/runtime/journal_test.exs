@@ -250,9 +250,13 @@ defmodule SquidMesh.Runtime.JournalTest do
     )
   end
 
+  defp table_name(:checkpoints), do: :squid_mesh_journal_test_checkpoints
+  defp table_name(:threads), do: :squid_mesh_journal_test_threads
+  defp table_name(:thread_meta), do: :squid_mesh_journal_test_thread_meta
+
   defp cleanup_storage do
     for suffix <- [:checkpoints, :threads, :thread_meta] do
-      table = :"squid_mesh_journal_test_#{suffix}"
+      table = table_name(suffix)
       delete_table_if_present(table)
     end
   end

@@ -54,9 +54,9 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
     projection
     |> ordered_attempts()
     |> Enum.filter(fn attempt ->
-      attempt.status in [:available, :retry_scheduled] and not after?(attempt.visible_at, at)
+      attempt.status in [:available, :retry_scheduled] and not after?(attempt.visible_at, at) and
+        not terminal_run?(projection, attempt.run_id)
     end)
-    |> Enum.reject(&terminal_run?(projection, &1.run_id))
   end
 
   @doc false
@@ -66,9 +66,8 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
     |> ordered_attempts()
     |> Enum.filter(fn attempt ->
       attempt.status == :claimed and not is_nil(attempt.lease_until) and
-        not after?(attempt.lease_until, at)
+        not after?(attempt.lease_until, at) and not terminal_run?(projection, attempt.run_id)
     end)
-    |> Enum.reject(&terminal_run?(projection, &1.run_id))
   end
 
   @doc false

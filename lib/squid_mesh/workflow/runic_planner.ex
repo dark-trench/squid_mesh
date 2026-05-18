@@ -2,9 +2,10 @@ defmodule SquidMesh.Workflow.RunicPlanner do
   @moduledoc false
 
   alias Runic.Workflow
-  alias Runic.Workflow.Events.{ActivationConsumed, FactProduced}
-  alias Runic.Workflow.{Fact, Invokable}
-  alias Runic.Workflow.Step, as: RunicStep
+  alias Runic.Workflow.Events.ActivationConsumed
+  alias Runic.Workflow.Events.FactProduced
+  alias Runic.Workflow.Fact
+  alias Runic.Workflow.Invokable
   alias SquidMesh.Workflow.Info
   alias SquidMesh.Workflow.RunicPlanner.Runnable
   alias SquidMesh.Workflow.Spec
@@ -77,6 +78,7 @@ defmodule SquidMesh.Workflow.RunicPlanner do
   end
 
   @doc false
+  @spec external_step_result(term()) :: term()
   def external_step_result(input), do: input
 
   defp build_runic_workflow(%Spec{} = spec) do
@@ -103,7 +105,7 @@ defmodule SquidMesh.Workflow.RunicPlanner do
   end
 
   defp runic_step(spec, step) do
-    RunicStep.new(
+    Runic.Workflow.Step.new(
       work: &__MODULE__.external_step_result/1,
       name: step.name,
       hash: stable_step_hash(spec, step),
@@ -117,7 +119,10 @@ defmodule SquidMesh.Workflow.RunicPlanner do
   end
 
   defp parent_map(%Spec{} = spec) do
-    step_names = spec.steps |> Enum.map(& &1.name) |> MapSet.new()
+    step_names =
+      spec.steps
+      |> Enum.map(& &1.name)
+      |> MapSet.new()
 
     transition_parents =
       Enum.reduce(spec.transitions, %{}, fn
@@ -141,7 +146,7 @@ defmodule SquidMesh.Workflow.RunicPlanner do
 
   defp put_transition_parent(acc, step_names, from, to) do
     if MapSet.member?(step_names, to) do
-      Map.update(acc, to, [from], fn parents -> parents ++ [from] end)
+      Map.update(acc, to, [from], &List.insert_at(&1, -1, from))
     else
       acc
     end
@@ -166,12 +171,12 @@ defmodule SquidMesh.Workflow.RunicPlanner do
   end
 
   defp do_visit_step(step_name, parent_map, step_map, {ordered, visiting, visited}) do
-    visiting = MapSet.put(visiting, step_name)
+    visiting_steps = MapSet.put(visiting, step_name)
 
-    {ordered, visiting, visited} =
+    {ordered, ancestor_visits, visited_steps} =
       parent_map
       |> Map.get(step_name, [])
-      |> Enum.reduce({ordered, visiting, visited}, fn parent, acc ->
+      |> Enum.reduce({ordered, visiting_steps, visited}, fn parent, acc ->
         visit_step(parent, parent_map, step_map, acc)
       end)
 
@@ -179,8 +184,8 @@ defmodule SquidMesh.Workflow.RunicPlanner do
 
     {
       [step | ordered],
-      MapSet.delete(visiting, step_name),
-      MapSet.put(visited, step_name)
+      MapSet.delete(ancestor_visits, step_name),
+      MapSet.put(visited_steps, step_name)
     }
   end
 
@@ -189,17 +194,17 @@ defmodule SquidMesh.Workflow.RunicPlanner do
     {external, internal} = Enum.split_with(runnables, &external_runnable?(&1, planner.spec))
     {allowed, blocked} = Enum.split_with(external, &runnable_allowed?(&1, planner.spec))
 
-    workflow =
+    prepared_workflow =
       Enum.reduce(blocked, workflow, fn runic_runnable, acc ->
         Workflow.apply_runnable(acc, consume_blocked_runnable(runic_runnable))
       end)
 
     if internal == [] and blocked == [] do
-      planner = %{planner | runic_workflow: workflow}
-      {:ok, planner, Enum.map(allowed, &to_squid_mesh_runnable(&1, planner.spec))}
+      prepared_planner = %{planner | runic_workflow: prepared_workflow}
+      {:ok, prepared_planner, Enum.map(allowed, &to_squid_mesh_runnable(&1, planner.spec))}
     else
       workflow =
-        Enum.reduce(internal, workflow, fn runic_runnable, acc ->
+        Enum.reduce(internal, prepared_workflow, fn runic_runnable, acc ->
           executed = Invokable.execute(runic_runnable.node, runic_runnable)
           Workflow.apply_runnable(acc, executed)
         end)

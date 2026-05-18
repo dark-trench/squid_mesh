@@ -473,7 +473,7 @@ defmodule SquidMesh.StepRunStore do
 
     case count do
       1 -> {:ok, get_step_run(repo, run_id, step)}
-      _ -> :not_updated
+      _count -> :not_updated
     end
   end
 
@@ -495,14 +495,17 @@ defmodule SquidMesh.StepRunStore do
 
     case count do
       1 -> {:ok, get_step_run(repo, run_id, step)}
-      _ -> :not_updated
+      _count -> :not_updated
     end
   end
 
   @spec update_running_step(module(), Ecto.UUID.t(), map()) ::
           {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
   defp update_running_step(repo, step_run_id, attrs) do
-    updates = attrs |> Map.put(:updated_at, now_utc()) |> Map.to_list()
+    updates =
+      attrs
+      |> Map.put(:updated_at, now_utc())
+      |> Map.to_list()
 
     {count, _rows} =
       StepRun
@@ -569,6 +572,6 @@ defmodule SquidMesh.StepRunStore do
   defp serialize_recovery_key(key), do: key
 
   defp now_utc do
-    DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    DateTime.utc_now(:microsecond)
   end
 end

@@ -1,14 +1,11 @@
 defmodule SquidMesh.WorkflowTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   alias __MODULE__.DependencyWorkflow
   alias __MODULE__.InvoiceReminder
   alias __MODULE__.MalformedSchemaStep
   alias __MODULE__.NativeStepContractWorkflow
   alias __MODULE__.NativeStepStructError
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
-  alias SquidMesh.Workflow.Info, as: WorkflowInfo
-  alias SquidMesh.Workflow.Validation, as: WorkflowValidation
 
   defmodule NativeStepContractWorkflow.LoadAccount do
     use SquidMesh.Step,
@@ -21,7 +18,7 @@ defmodule SquidMesh.WorkflowTest do
         account: [type: :map, required: true]
       ]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(_input, _context), do: {:ok, %{account: %{id: "acct_123"}}}
   end
 
@@ -46,7 +43,7 @@ defmodule SquidMesh.WorkflowTest do
         account_id: :string
       ]
 
-    @impl true
+    @impl SquidMesh.Step
     def run(_input, _context), do: {:ok, %{}}
   end
 
@@ -150,7 +147,7 @@ defmodule SquidMesh.WorkflowTest do
     assert module.workflow_definition().steps == [
              %{
                name: :load_account,
-               module: Module.concat(module, LoadAccount),
+               module: Module.safe_concat(module, LoadAccount),
                opts: [input: [:account_id], output: :account]
              }
            ]
@@ -182,7 +179,7 @@ defmodule SquidMesh.WorkflowTest do
                  input_schema: [account_id: [type: :string, required: true]]
                }
              }
-           ] = WorkflowInfo.steps(NativeStepContractWorkflow)
+           ] = SquidMesh.Workflow.Info.steps(NativeStepContractWorkflow)
   end
 
   test "resolves native step metadata when a step module is compiled after the workflow" do
@@ -214,7 +211,7 @@ defmodule SquidMesh.WorkflowTest do
               account: [type: :map, required: true]
             ]
 
-          @impl true
+          @impl SquidMesh.Step
           def run(_input, _context), do: {:ok, %{account: %{id: "acct_late"}}}
         end
         """,
@@ -280,7 +277,7 @@ defmodule SquidMesh.WorkflowTest do
 
     definition = module.workflow_definition()
 
-    assert WorkflowDefinition.step_recovery_policy(definition, :capture_payment) ==
+    assert SquidMesh.Workflow.Definition.step_recovery_policy(definition, :capture_payment) ==
              {:ok,
               %{
                 irreversible?: true,
@@ -289,7 +286,7 @@ defmodule SquidMesh.WorkflowTest do
                 recovery: :manual_intervention
               }}
 
-    assert WorkflowDefinition.step_recovery_policy(definition, :send_receipt) ==
+    assert SquidMesh.Workflow.Definition.step_recovery_policy(definition, :send_receipt) ==
              {:ok,
               %{
                 irreversible?: false,
@@ -321,11 +318,11 @@ defmodule SquidMesh.WorkflowTest do
 
     definition = module.workflow_definition()
 
-    assert WorkflowDefinition.step_compensation_callback(
+    assert SquidMesh.Workflow.Definition.step_compensation_callback(
              definition,
              :reserve_inventory
            ) ==
-             {:ok, Module.concat(module, ReleaseInventory)}
+             {:ok, Module.safe_concat(module, ReleaseInventory)}
   end
 
   test "supports repo transaction boundaries on local step groups" do
@@ -358,7 +355,7 @@ defmodule SquidMesh.WorkflowTest do
              }
            ] = definition.steps
 
-    assert WorkflowDefinition.step_transaction_boundary(
+    assert SquidMesh.Workflow.Definition.step_transaction_boundary(
              definition,
              :write_local_records
            ) == {:ok, :repo}
@@ -402,7 +399,7 @@ defmodule SquidMesh.WorkflowTest do
   end
 
   test "normalizes persisted irreversible policy as non-compensatable" do
-    assert WorkflowDefinition.normalize_recovery_policy(%{
+    assert SquidMesh.Workflow.Definition.normalize_recovery_policy(%{
              "irreversible?" => true,
              "compensatable?" => true,
              "replay" => "manual_review_required",
@@ -416,7 +413,7 @@ defmodule SquidMesh.WorkflowTest do
   end
 
   test "normalizes persisted failure recovery decisions" do
-    assert WorkflowDefinition.normalize_recovery_policy(%{
+    assert SquidMesh.Workflow.Definition.normalize_recovery_policy(%{
              "irreversible?" => false,
              "compensatable?" => true,
              "replay" => "allowed",
@@ -455,7 +452,7 @@ defmodule SquidMesh.WorkflowTest do
     definition = DependencyWorkflow.workflow_definition()
 
     assert {:wait, [:load_invoice]} =
-             WorkflowDefinition.dependency_progress(definition, %{
+             SquidMesh.Workflow.Definition.dependency_progress(definition, %{
                load_account: :completed,
                load_invoice: :failed
              })
@@ -935,7 +932,7 @@ defmodule SquidMesh.WorkflowTest do
     assert_raise CompileError,
                  ~r/dependency-based workflow must define at least one root step/,
                  fn ->
-                   WorkflowValidation.entry_steps!(definition, __ENV__)
+                   SquidMesh.Workflow.Validation.entry_steps!(definition, __ENV__)
                  end
   end
 
@@ -1436,8 +1433,16 @@ defmodule SquidMesh.WorkflowTest do
 
     assert module.workflow_definition().steps == [
              %{name: :wait_for_review, module: :approval, opts: [output: :approval]},
-             %{name: :record_approval, module: Module.concat(module, RecordApproval), opts: []},
-             %{name: :record_rejection, module: Module.concat(module, RecordRejection), opts: []}
+             %{
+               name: :record_approval,
+               module: Module.safe_concat(module, RecordApproval),
+               opts: []
+             },
+             %{
+               name: :record_rejection,
+               module: Module.safe_concat(module, RecordRejection),
+               opts: []
+             }
            ]
   end
 
@@ -1534,7 +1539,7 @@ defmodule SquidMesh.WorkflowTest do
         Code.compile_string(source, "test/support/invalid_workflow.exs")
       end
 
-    assert Exception.message(error) |> String.contains?(message)
+    assert String.contains?(Exception.message(error), message)
   end
 
   defp compile_module(source) do
@@ -1543,12 +1548,13 @@ defmodule SquidMesh.WorkflowTest do
   end
 
   defp compiled_module!(compiled_modules, module) do
-    compiled_modules
-    |> Enum.find_value(fn
-      {^module, _bytecode} -> module
-      _other -> nil
-    end)
-    |> case do
+    compiled_module =
+      Enum.find_value(compiled_modules, fn
+        {^module, _bytecode} -> module
+        _other -> nil
+      end)
+
+    case compiled_module do
       nil -> flunk("expected #{inspect(module)} to compile")
       module -> module
     end

@@ -16,12 +16,11 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
 
   alias Jido.Agent
   alias SquidMesh.Runtime.DispatchAgent
+  alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.DispatchProtocol.ActionAttempt
-  alias SquidMesh.Runtime.DispatchProtocol.Projection, as: DispatchProjection
   alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.ProjectedInspection.Snapshot
   alias SquidMesh.Runtime.WorkflowAgent
-  alias SquidMesh.Runtime.WorkflowAgent.Projection, as: WorkflowProjection
 
   @type storage_config :: Journal.storage_config()
   @type snapshot_option :: {:queue, atom() | String.t()} | {:now, DateTime.t()}
@@ -69,38 +68,36 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
            state: %{
              run_id: run_id,
              workflow: workflow,
-             projection: %WorkflowProjection{} = workflow_projection,
+             projection: %WorkflowAgent.Projection{} = workflow_projection,
              thread_rev: run_thread_rev
            }
          } = workflow_agent,
          %Agent{
            agent_module: DispatchAgent,
            state: %{
-             projection: %DispatchProjection{} = dispatch_projection,
+             projection: %DispatchProtocol.Projection{} = dispatch_projection,
              thread_rev: dispatch_thread_rev
            }
          } = dispatch_agent,
          queue,
          %DateTime{} = now
        ) do
-    pending_dispatches = workflow_agent |> WorkflowAgent.pending_dispatches(dispatch_agent)
-    pending_results = workflow_agent |> WorkflowAgent.pending_results(dispatch_agent)
+    pending_dispatches = WorkflowAgent.pending_dispatches(workflow_agent, dispatch_agent)
+    pending_results = WorkflowAgent.pending_results(workflow_agent, dispatch_agent)
 
-    terminal? = WorkflowProjection.terminal?(workflow_projection)
-
-    visible_attempts =
-      dispatch_agent |> DispatchAgent.visible_attempts(now) |> attempts_for(run_id)
-
-    expired_claims = dispatch_agent |> DispatchAgent.expired_claims(now) |> attempts_for(run_id)
+    terminal? = WorkflowAgent.Projection.terminal?(workflow_projection)
 
     {visible_attempts, expired_claims} =
       if terminal? do
         {[], []}
       else
-        {visible_attempts, expired_claims}
+        {
+          attempts_for(DispatchAgent.visible_attempts(dispatch_agent, now), run_id),
+          attempts_for(DispatchAgent.expired_claims(dispatch_agent, now), run_id)
+        }
       end
 
-    attempts = dispatch_projection |> run_attempts(run_id)
+    attempts = run_attempts(dispatch_projection, run_id)
 
     %Snapshot{
       run_id: run_id,
@@ -117,7 +114,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
           attempts
         ),
       terminal?: terminal?,
-      terminal_status: WorkflowProjection.terminal_status(workflow_projection),
+      terminal_status: WorkflowAgent.Projection.terminal_status(workflow_projection),
       thread_revisions: %{run: run_thread_rev, dispatch: dispatch_thread_rev},
       planned_runnables: normalize_runnables(WorkflowAgent.planned_runnables(workflow_agent)),
       planned_runnable_keys: WorkflowAgent.planned_runnable_keys(workflow_agent),
@@ -136,7 +133,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
   end
 
   defp snapshot_reason(
-         %WorkflowProjection{} = workflow_projection,
+         %WorkflowAgent.Projection{} = workflow_projection,
          pending_dispatches,
          pending_results,
          visible_attempts,
@@ -144,7 +141,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
          attempts
        ) do
     cond do
-      WorkflowProjection.terminal?(workflow_projection) ->
+      WorkflowAgent.Projection.terminal?(workflow_projection) ->
         :terminal
 
       pending_results != [] ->
@@ -169,7 +166,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
       Enum.any?(attempts, &(&1.status == :claimed)) ->
         :attempt_claimed
 
-      WorkflowProjection.status(workflow_projection) == :idle ->
+      WorkflowAgent.Projection.status(workflow_projection) == :idle ->
         :idle
 
       attempts == [] ->
@@ -186,7 +183,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
     |> sort_attempts()
   end
 
-  defp run_attempts(%DispatchProjection{attempts: attempts}, run_id) do
+  defp run_attempts(%DispatchProtocol.Projection{attempts: attempts}, run_id) do
     attempts
     |> Map.values()
     |> attempts_for(run_id)
@@ -211,7 +208,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
   end
 
   defp attempt_snapshot(%ActionAttempt{} = attempt) do
-    %{
+    snapshot = %{
       runnable_key: attempt.runnable_key,
       status: attempt.status,
       attempt_number: attempt.attempt_number,
@@ -227,19 +224,20 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
       wakeup_emitted?: attempt.wakeup_emitted?,
       applied?: attempt.applied?
     }
-    |> compact()
+
+    compact(snapshot)
   end
 
   defp projection_anomalies(
-         %WorkflowProjection{} = workflow_projection,
-         %DispatchProjection{} = dispatch_projection
+         %WorkflowAgent.Projection{} = workflow_projection,
+         %DispatchProtocol.Projection{} = dispatch_projection
        ) do
     workflow_projection
-    |> WorkflowProjection.anomalies()
+    |> WorkflowAgent.Projection.anomalies()
     |> Enum.map(&Map.put(&1, :source, :workflow))
     |> Kernel.++(
       dispatch_projection
-      |> DispatchProjection.anomalies()
+      |> DispatchProtocol.Projection.anomalies()
       |> Enum.map(&Map.put(&1, :source, :dispatch))
     )
   end
@@ -266,7 +264,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
 
   defp snapshot_queue(opts) do
     case Keyword.get(opts, :queue, "default") do
-      queue when is_atom(queue) -> queue |> Atom.to_string() |> validate_queue(queue)
+      queue when is_atom(queue) -> validate_queue(Atom.to_string(queue), queue)
       queue when is_binary(queue) -> validate_queue(queue, queue)
       invalid -> {:error, {:invalid_option, {:queue, invalid}}}
     end

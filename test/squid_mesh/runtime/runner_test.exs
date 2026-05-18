@@ -1,8 +1,7 @@
 defmodule SquidMesh.Runtime.RunnerTest do
-  use SquidMesh.DataCase
+  use SquidMesh.DataCase, async: false
 
   alias SquidMesh.Executor.Payload
-  alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Runtime.Runner
   alias SquidMesh.Test.Executor
 
@@ -24,7 +23,7 @@ defmodule SquidMesh.Runtime.RunnerTest do
       description: "Delivers a scheduled digest",
       schema: []
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context), do: {:ok, %{}}
   end
 
@@ -46,7 +45,7 @@ defmodule SquidMesh.Runtime.RunnerTest do
       description: "Delivers a scheduled digest",
       schema: []
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context), do: {:ok, %{}}
   end
 
@@ -68,7 +67,7 @@ defmodule SquidMesh.Runtime.RunnerTest do
       description: "Delivers a scheduled digest",
       schema: []
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context), do: {:ok, %{}}
   end
 
@@ -85,7 +84,9 @@ defmodule SquidMesh.Runtime.RunnerTest do
                []
              )
 
-    assert [%RunRecord{id: run_id, context: context}] = Repo.all(RunRecord)
+    assert [%SquidMesh.Persistence.Run{id: run_id, context: context}] =
+             Repo.all(SquidMesh.Persistence.Run)
+
     assert duplicate_run_id == run_id
     assert get_in(context, ["schedule", "idempotency"]) == "return_existing_run"
     assert get_in(context, ["schedule", "idempotency_key"]) == "digest-2026-05-16T09"
@@ -104,7 +105,9 @@ defmodule SquidMesh.Runtime.RunnerTest do
                []
              )
 
-    assert [%RunRecord{id: run_id, context: context}] = Repo.all(RunRecord)
+    assert [%SquidMesh.Persistence.Run{id: run_id, context: context}] =
+             Repo.all(SquidMesh.Persistence.Run)
+
     assert skipped_run_id == run_id
     assert get_in(context, ["schedule", "idempotency"]) == "skip_duplicate"
   end
@@ -115,7 +118,7 @@ defmodule SquidMesh.Runtime.RunnerTest do
     assert :ok = Runner.perform(payload)
     assert %{success: 1, failure: 0} = Executor.drain()
 
-    assert [%RunRecord{context: context}] = Repo.all(RunRecord)
+    assert [%SquidMesh.Persistence.Run{context: context}] = Repo.all(SquidMesh.Persistence.Run)
     assert get_in(context, ["schedule", "idempotency"]) == "return_existing_run"
     assert get_in(context, ["schedule", "idempotency_key"]) == "digest-2026-05-16T09"
     assert get_in(context, ["digest_delivery", "ok"]) == true
@@ -127,7 +130,7 @@ defmodule SquidMesh.Runtime.RunnerTest do
     assert :ok = Runner.perform(payload)
     assert :ok = Runner.perform(payload)
 
-    assert Repo.aggregate(RunRecord, :count) == 2
+    assert Repo.aggregate(SquidMesh.Persistence.Run, :count) == 2
   end
 
   defp cron_payload(workflow) do
@@ -158,7 +161,7 @@ defmodule SquidMesh.Runtime.RunnerTest do
       description: "Delivers a scheduled digest with an accidental reserved key",
       schema: []
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context) do
       {:ok,
        %{

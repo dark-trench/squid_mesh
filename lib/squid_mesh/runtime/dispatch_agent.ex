@@ -496,7 +496,12 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     end)
     |> case do
       {:ok, terminal_entry_chunks} ->
-        {:ok, terminal_entry_chunks |> Enum.reverse() |> Enum.flat_map(& &1)}
+        terminal_entries =
+          terminal_entry_chunks
+          |> Enum.reverse()
+          |> Enum.flat_map(& &1)
+
+        {:ok, terminal_entries}
 
       {:error, _reason} = error ->
         error
@@ -846,8 +851,7 @@ defmodule SquidMesh.Runtime.DispatchAgent do
   end
 
   defp claim_token_hash(token) do
-    :crypto.hash(:sha256, token)
-    |> Base.encode16(case: :lower)
+    Base.encode16(:crypto.hash(:sha256, token), case: :lower)
   end
 
   defp expired_claim?(%ActionAttempt{lease_until: %DateTime{} = lease_until}, %DateTime{} = at) do

@@ -20,10 +20,12 @@ defmodule SquidMesh.DataCase do
     end
   end
 
+  @spec all_enqueued(keyword()) :: [map()]
   def all_enqueued(_opts \\ []) do
     Executor.jobs()
   end
 
+  @spec assert_enqueued(keyword()) :: :ok
   def assert_enqueued(opts) do
     if Enum.any?(all_enqueued(), &job_matches?(&1, opts)) do
       :ok
@@ -43,8 +45,10 @@ defmodule SquidMesh.DataCase do
   @spec errors_on(Ecto.Changeset.t()) :: map()
   def errors_on(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {message, opts} ->
-      Regex.replace(~r"%{(\w+)}", message, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+      Regex.replace(~r"%{(\w+)}", message, fn _whole, key ->
+        opts
+        |> Keyword.get(String.to_existing_atom(key), key)
+        |> to_string()
       end)
     end)
   end

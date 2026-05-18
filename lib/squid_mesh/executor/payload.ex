@@ -17,7 +17,6 @@ defmodule SquidMesh.Executor.Payload do
   """
 
   alias SquidMesh.Run
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type t :: %{
           required(String.t()) => String.t() | boolean() | map()
@@ -35,7 +34,7 @@ defmodule SquidMesh.Executor.Payload do
     %{
       "kind" => "step",
       "run_id" => run_id,
-      "step" => WorkflowDefinition.serialize_step(step)
+      "step" => SquidMesh.Workflow.Definition.serialize_step(step)
     }
   end
 
@@ -81,8 +80,8 @@ defmodule SquidMesh.Executor.Payload do
   def cron(workflow, trigger, opts \\ []) when is_atom(workflow) and is_list(opts) do
     %{
       "kind" => "cron",
-      "workflow" => WorkflowDefinition.serialize_workflow(workflow),
-      "trigger" => WorkflowDefinition.serialize_trigger(trigger)
+      "workflow" => SquidMesh.Workflow.Definition.serialize_workflow(workflow),
+      "trigger" => SquidMesh.Workflow.Definition.serialize_trigger(trigger)
     }
     |> maybe_put("signal_id", Keyword.get(opts, :signal_id))
     |> maybe_put("intended_window", Keyword.get(opts, :intended_window))

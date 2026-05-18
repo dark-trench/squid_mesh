@@ -24,8 +24,6 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
   database column for one trigger kind.
   """
 
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
-
   @type t :: %{
           required(:workflow) => String.t(),
           required(:trigger_name) => String.t(),
@@ -57,15 +55,15 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
   complete intended window. Without that identity, Squid Mesh rejects the start
   because it cannot prove whether the activation is new or a duplicate.
   """
-  @spec cron_context(module(), WorkflowDefinition.trigger(), map()) ::
+  @spec cron_context(module(), SquidMesh.Workflow.Definition.trigger(), map()) ::
           {:ok, %{schedule: t()}}
           | {:error, {:invalid_schedule_signal_id, term()}}
           | {:error, {:missing_schedule_idempotency_key, atom()}}
   def cron_context(workflow, %{name: trigger_name, type: :cron, config: config}, payload)
       when is_atom(workflow) and is_map(config) and is_map(payload) do
-    workflow_name = WorkflowDefinition.serialize_workflow(workflow)
+    workflow_name = SquidMesh.Workflow.Definition.serialize_workflow(workflow)
     raw_trigger_name = trigger_name
-    trigger_name = WorkflowDefinition.serialize_trigger(trigger_name)
+    trigger_name = SquidMesh.Workflow.Definition.serialize_trigger(trigger_name)
     intended_window = intended_window(payload)
     idempotency = Map.get(config, :idempotency)
 
@@ -160,9 +158,7 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
   end
 
   defp received_at do
-    DateTime.utc_now()
-    |> DateTime.truncate(:second)
-    |> DateTime.to_iso8601()
+    DateTime.to_iso8601(DateTime.utc_now(:second))
   end
 
   defp payload_value(payload, "signal_id"),

@@ -49,11 +49,7 @@ defmodule SquidMesh.Observability do
     emit(
       [:run, :transition],
       %{system_time: System.system_time()},
-      run_metadata(run)
-      |> Map.merge(%{
-        from_status: from_status,
-        to_status: to_status
-      })
+      Map.merge(run_metadata(run), %{from_status: from_status, to_status: to_status})
     )
   end
 
@@ -77,8 +73,7 @@ defmodule SquidMesh.Observability do
     emit(
       [:step, :skipped],
       %{system_time: System.system_time()},
-      step_metadata(run, step, nil)
-      |> Map.put(:reason, reason)
+      Map.put(step_metadata(run, step, nil), :reason, reason)
     )
   end
 
@@ -102,8 +97,7 @@ defmodule SquidMesh.Observability do
     emit(
       [:step, :failed],
       %{duration: duration_native, system_time: System.system_time()},
-      step_metadata(run, step, attempt)
-      |> Map.put(:error, error)
+      Map.put(step_metadata(run, step, attempt), :error, error)
     )
   end
 
@@ -124,7 +118,9 @@ defmodule SquidMesh.Observability do
   """
   @spec duration_since(DateTime.t()) :: non_neg_integer()
   def duration_since(%DateTime{} = started_at) do
-    DateTime.diff(DateTime.utc_now(), started_at, :microsecond)
+    elapsed_microseconds = DateTime.diff(DateTime.utc_now(), started_at, :microsecond)
+
+    elapsed_microseconds
     |> Kernel.max(0)
     |> System.convert_time_unit(:microsecond, :native)
   end
@@ -159,7 +155,9 @@ defmodule SquidMesh.Observability do
 
   @spec step_metadata(Run.t(), atom(), pos_integer() | nil) :: map()
   defp step_metadata(%Run{} = run, step, attempt) do
-    run_metadata(run)
+    metadata = run_metadata(run)
+
+    metadata
     |> Map.put(:step, step)
     |> Map.put(:attempt, attempt)
   end

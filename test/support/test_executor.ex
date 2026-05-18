@@ -9,27 +9,32 @@ defmodule SquidMesh.Test.Executor do
   alias SquidMesh.Runtime.Runner
   alias SquidMesh.Test.Job
 
+  @spec start_link(keyword()) :: Agent.on_start()
   def start_link(_opts \\ []) do
     Agent.start_link(fn -> %{jobs: [], fail?: false} end, name: __MODULE__)
   end
 
+  @spec reset!() :: :ok
   def reset! do
     Agent.update(__MODULE__, fn _state -> %{jobs: [], fail?: false} end)
   end
 
+  @spec fail_next!() :: :ok
   def fail_next! do
     Agent.update(__MODULE__, &Map.put(&1, :fail?, true))
   end
 
+  @spec jobs() :: [Job.t()]
   def jobs do
     Agent.get(__MODULE__, & &1.jobs)
   end
 
+  @spec available_count(String.t(), atom() | nil) :: non_neg_integer()
   def available_count(run_id, step \\ nil) do
-    jobs()
-    |> Enum.count(&(available?(&1) and matches_run_and_step?(&1, run_id, step)))
+    Enum.count(jobs(), &(available?(&1) and matches_run_and_step?(&1, run_id, step)))
   end
 
+  @spec scheduled_job(String.t(), atom() | nil) :: Job.t() | nil
   def scheduled_job(run_id, step \\ nil) do
     jobs()
     |> Enum.filter(&(scheduled?(&1) and matches_run_and_step?(&1, run_id, step)))
@@ -37,6 +42,7 @@ defmodule SquidMesh.Test.Executor do
     |> List.first()
   end
 
+  @spec compensation_job(String.t()) :: Job.t() | nil
   def compensation_job(run_id) do
     jobs()
     |> Enum.filter(&(&1.args["run_id"] == run_id and &1.args["kind"] == "compensation"))
@@ -44,10 +50,12 @@ defmodule SquidMesh.Test.Executor do
     |> List.first()
   end
 
+  @spec drain() :: %{success: non_neg_integer(), failure: non_neg_integer()}
   def drain do
     do_drain(0)
   end
 
+  @spec drain_one() :: %{success: non_neg_integer(), failure: non_neg_integer()}
   def drain_one do
     case pop_job() do
       nil ->
@@ -59,7 +67,7 @@ defmodule SquidMesh.Test.Executor do
     end
   end
 
-  @impl true
+  @impl SquidMesh.Executor
   def enqueue_step(_config, run, step, opts) do
     enqueue(%Job{
       id: Ecto.UUID.generate(),
@@ -72,22 +80,23 @@ defmodule SquidMesh.Test.Executor do
     })
   end
 
-  @impl true
+  @impl SquidMesh.Executor
   def enqueue_steps(config, run, steps, opts) do
-    steps
-    |> Enum.reduce_while({:ok, []}, fn step, {:ok, metadata} ->
-      case enqueue_step(config, run, step, opts) do
-        {:ok, job_metadata} -> {:cont, {:ok, [job_metadata | metadata]}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-    |> case do
+    result =
+      Enum.reduce_while(steps, {:ok, []}, fn step, {:ok, metadata} ->
+        case enqueue_step(config, run, step, opts) do
+          {:ok, job_metadata} -> {:cont, {:ok, [job_metadata | metadata]}}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+
+    case result do
       {:ok, metadata} -> {:ok, Enum.reverse(metadata)}
       {:error, _reason} = error -> error
     end
   end
 
-  @impl true
+  @impl SquidMesh.Executor
   def enqueue_compensation(_config, run, opts) do
     enqueue(%Job{
       id: Ecto.UUID.generate(),
@@ -100,7 +109,7 @@ defmodule SquidMesh.Test.Executor do
     })
   end
 
-  @impl true
+  @impl SquidMesh.Executor
   def enqueue_cron(_config, workflow, trigger, opts) do
     enqueue(%Job{
       id: Ecto.UUID.generate(),
@@ -119,7 +128,7 @@ defmodule SquidMesh.Test.Executor do
         {{:error, :executor_unavailable}, %{state | fail?: false}}
       else
         metadata = metadata(job)
-        {{:ok, metadata}, %{state | jobs: jobs ++ [job]}}
+        {{:ok, metadata}, %{state | jobs: List.insert_at(jobs, -1, job)}}
       end
     end)
   end

@@ -10,7 +10,6 @@ defmodule SquidMesh.Runtime.StepExecutor.Execution do
   alias SquidMesh.Run
   alias SquidMesh.Runtime.BuiltInStep
   alias SquidMesh.Runtime.StepExecutor.PreparedStep
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @doc false
   @spec execute(PreparedStep.t(), pos_integer()) :: {:ok, map(), keyword()} | {:error, term()}
@@ -39,7 +38,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Execution do
         attempt_number
       ) do
     boundary =
-      case WorkflowDefinition.step_transaction_boundary(definition, step_name) do
+      case SquidMesh.Workflow.Definition.step_transaction_boundary(definition, step_name) do
         {:ok, transaction_boundary} -> transaction_boundary
         {:error, _reason} -> nil
       end

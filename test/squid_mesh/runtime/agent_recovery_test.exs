@@ -152,18 +152,19 @@ defmodule SquidMesh.Runtime.AgentRecoveryTest do
   end
 
   defp charge_runnable do
-    scheduled_attrs()
-    |> Map.delete(:occurred_at)
+    Map.delete(scheduled_attrs(), :occurred_at)
   end
 
   defp refund_runnable do
-    scheduled_attrs(
-      runnable_key: @refund_key,
-      idempotency_key: "#{@run_id}:refund_card:payment_456",
-      step: "refund_card",
-      input: %{"payment_id" => "pay_456"}
+    Map.delete(
+      scheduled_attrs(
+        runnable_key: @refund_key,
+        idempotency_key: "#{@run_id}:refund_card:payment_456",
+        step: "refund_card",
+        input: %{"payment_id" => "pay_456"}
+      ),
+      :occurred_at
     )
-    |> Map.delete(:occurred_at)
   end
 
   defp scheduled_attrs(attrs \\ %{}) do
@@ -214,9 +215,13 @@ defmodule SquidMesh.Runtime.AgentRecoveryTest do
     )
   end
 
+  defp table_name(:checkpoints), do: :squid_mesh_agent_recovery_test_checkpoints
+  defp table_name(:threads), do: :squid_mesh_agent_recovery_test_threads
+  defp table_name(:thread_meta), do: :squid_mesh_agent_recovery_test_thread_meta
+
   defp cleanup_storage do
     for suffix <- [:checkpoints, :threads, :thread_meta] do
-      table = :"squid_mesh_agent_recovery_test_#{suffix}"
+      table = table_name(suffix)
 
       if :ets.whereis(table) != :undefined do
         :ets.delete(table)

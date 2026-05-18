@@ -1,5 +1,5 @@
 defmodule SquidMesh.ObservabilityTest do
-  use SquidMesh.DataCase
+  use SquidMesh.DataCase, async: false
 
   import ExUnit.CaptureLog
 
@@ -10,7 +10,6 @@ defmodule SquidMesh.ObservabilityTest do
   alias SquidMesh.Runtime.StepExecutor.Preparation
   alias SquidMesh.StepRunStore
   alias SquidMesh.Test.StepWorker
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @events [
     [:squid_mesh, :run, :created],
@@ -47,7 +46,7 @@ defmodule SquidMesh.ObservabilityTest do
       description: "Delivers an invoice",
       schema: [account_id: [type: :string, required: true]]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{delivery: %{account_id: account_id, status: "sent"}}}
     end
@@ -79,7 +78,7 @@ defmodule SquidMesh.ObservabilityTest do
       description: "Prepares an invoice",
       schema: [account_id: [type: :string, required: true]]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{invoice: %{account_id: account_id}}}
     end
@@ -91,7 +90,7 @@ defmodule SquidMesh.ObservabilityTest do
       description: "Delivers an invoice",
       schema: [invoice: [type: :map, required: true]]
 
-    @impl true
+    @impl Jido.Action
     def run(%{invoice: invoice}, _context) do
       {:ok, %{delivery: %{account_id: invoice.account_id, status: "sent"}}}
     end
@@ -122,7 +121,7 @@ defmodule SquidMesh.ObservabilityTest do
       description: "Fails once and retries",
       schema: [account_id: [type: :string, required: true]]
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context) do
       {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
     end
@@ -131,16 +130,16 @@ defmodule SquidMesh.ObservabilityTest do
   defmodule MissingExecutor do
     @behaviour SquidMesh.Executor
 
-    @impl true
+    @impl SquidMesh.Executor
     def enqueue_step(_config, _run, _step, _opts), do: {:error, :executor_unavailable}
 
-    @impl true
+    @impl SquidMesh.Executor
     def enqueue_steps(_config, _run, _steps, _opts), do: {:error, :executor_unavailable}
 
-    @impl true
+    @impl SquidMesh.Executor
     def enqueue_compensation(_config, _run, _opts), do: {:error, :executor_unavailable}
 
-    @impl true
+    @impl SquidMesh.Executor
     def enqueue_cron(_config, _workflow, _trigger, _opts), do: {:error, :executor_unavailable}
   end
 
@@ -276,7 +275,7 @@ defmodule SquidMesh.ObservabilityTest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
     assert {:ok, config} = Config.load(repo: Repo)
-    assert {:ok, definition} = WorkflowDefinition.load(SuccessfulWorkflow)
+    assert {:ok, definition} = SquidMesh.Workflow.Definition.load(SuccessfulWorkflow)
     assert {:ok, run} = RunStore.create_run(Repo, SuccessfulWorkflow, %{account_id: "acct_123"})
 
     assert {:ok, running_run} =
@@ -327,7 +326,7 @@ defmodule SquidMesh.ObservabilityTest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
     assert {:ok, config} = Config.load(repo: Repo)
-    assert {:ok, definition} = WorkflowDefinition.load(SuccessfulWorkflow)
+    assert {:ok, definition} = SquidMesh.Workflow.Definition.load(SuccessfulWorkflow)
     assert {:ok, run} = RunStore.create_run(Repo, SuccessfulWorkflow, %{account_id: "acct_123"})
 
     flush_telemetry_events()
@@ -357,7 +356,7 @@ defmodule SquidMesh.ObservabilityTest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
     assert {:ok, config} = Config.load(repo: Repo)
-    assert {:ok, definition} = WorkflowDefinition.load(DispatchWorkflow)
+    assert {:ok, definition} = SquidMesh.Workflow.Definition.load(DispatchWorkflow)
     assert {:ok, run} = RunStore.create_run(Repo, DispatchWorkflow, %{account_id: "acct_123"})
 
     assert {:ok, running_run} =
@@ -439,7 +438,7 @@ defmodule SquidMesh.ObservabilityTest do
 
   test "does not emit retry scheduled telemetry when retry dispatch fails" do
     assert {:ok, config} = Config.load(repo: Repo, executor: MissingExecutor)
-    assert {:ok, definition} = WorkflowDefinition.load(RetryWorkflow)
+    assert {:ok, definition} = SquidMesh.Workflow.Definition.load(RetryWorkflow)
     assert {:ok, run} = RunStore.create_run(Repo, RetryWorkflow, %{account_id: "acct_123"})
 
     assert {:ok, running_run} =
@@ -541,7 +540,7 @@ defmodule SquidMesh.ObservabilityTest do
 
   test "emits paused step failure before the cancelled run transition when cancellation wins during pause progression" do
     assert {:ok, config} = Config.load(repo: Repo)
-    assert {:ok, definition} = WorkflowDefinition.load(PauseWorkflow)
+    assert {:ok, definition} = SquidMesh.Workflow.Definition.load(PauseWorkflow)
     assert {:ok, run} = RunStore.create_run(Repo, PauseWorkflow, %{account_id: "acct_123"})
 
     assert {:ok, running_run} =

@@ -124,8 +124,7 @@ defmodule SquidMesh.ProjectedReadModelTest do
   end
 
   defp planned_runnable do
-    scheduled_attrs()
-    |> Map.delete(:occurred_at)
+    Map.delete(scheduled_attrs(), :occurred_at)
   end
 
   defp scheduled_attrs do
@@ -147,9 +146,13 @@ defmodule SquidMesh.ProjectedReadModelTest do
     entry
   end
 
+  defp table_name(:checkpoints), do: :squid_mesh_projected_read_model_test_checkpoints
+  defp table_name(:threads), do: :squid_mesh_projected_read_model_test_threads
+  defp table_name(:thread_meta), do: :squid_mesh_projected_read_model_test_thread_meta
+
   defp cleanup_storage do
     for suffix <- [:checkpoints, :threads, :thread_meta] do
-      delete_table_if_present(:"squid_mesh_projected_read_model_test_#{suffix}")
+      delete_table_if_present(table_name(suffix))
     end
   end
 

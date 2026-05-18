@@ -1,5 +1,5 @@
 defmodule SquidMesh.RunExplanationTest do
-  use SquidMesh.DataCase
+  use SquidMesh.DataCase, async: false
 
   alias __MODULE__.ApprovalWorkflow
   alias __MODULE__.BackoffWorkflow
@@ -8,8 +8,6 @@ defmodule SquidMesh.RunExplanationTest do
   alias __MODULE__.PauseWorkflow
   alias __MODULE__.RetryExhaustedWorkflow
   alias __MODULE__.SuccessfulWorkflow
-  alias SquidMesh.Persistence.Run, as: RunRecord
-  alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.RunExplanation
   alias SquidMesh.StepRunStore
   alias SquidMesh.Test.Executor
@@ -126,7 +124,7 @@ defmodule SquidMesh.RunExplanationTest do
 
       assert {1, _rows} =
                Repo.update_all(
-                 from(step_run in StepRunRecord,
+                 from(step_run in SquidMesh.Persistence.StepRun,
                    where:
                      step_run.run_id == ^run.id and step_run.step == "wait_for_approval" and
                        step_run.status == "running"
@@ -154,7 +152,7 @@ defmodule SquidMesh.RunExplanationTest do
 
       assert {1, _rows} =
                Repo.update_all(
-                 from(run_record in RunRecord, where: run_record.id == ^run.id),
+                 from(run_record in SquidMesh.Persistence.Run, where: run_record.id == ^run.id),
                  set: [workflow: "Elixir.Missing.Workflow"]
                )
 
@@ -320,7 +318,9 @@ defmodule SquidMesh.RunExplanationTest do
 
       assert {1, _rows} =
                Repo.update_all(
-                 from(run_record in RunRecord, where: run_record.id == ^completed_run.id),
+                 from(run_record in SquidMesh.Persistence.Run,
+                   where: run_record.id == ^completed_run.id
+                 ),
                  set: [workflow: "Elixir.Missing.Workflow"]
                )
 
@@ -414,7 +414,7 @@ defmodule SquidMesh.RunExplanationTest do
       description: "Loads account details",
       schema: [account_id: [type: :string, required: true]]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{account: %{id: account_id}}}
     end
@@ -426,7 +426,7 @@ defmodule SquidMesh.RunExplanationTest do
       description: "Sends a message",
       schema: [account: [type: :map, required: true]]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account: account}, _context) do
       {:ok, %{delivery: %{account_id: account.id}}}
     end
@@ -458,7 +458,7 @@ defmodule SquidMesh.RunExplanationTest do
       description: "Loads account",
       schema: [account_id: [type: :string, required: true]]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{account: %{id: account_id}}}
     end
@@ -470,7 +470,7 @@ defmodule SquidMesh.RunExplanationTest do
       description: "Captures payment",
       schema: [account: [type: :map, required: true]]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account: account}, _context) do
       {:ok, %{payment: %{account_id: account.id, status: "captured"}}}
     end
@@ -499,7 +499,7 @@ defmodule SquidMesh.RunExplanationTest do
       description: "Fails until retries are exhausted",
       schema: [account_id: [type: :string, required: true]]
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context) do
       {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
     end
@@ -530,7 +530,7 @@ defmodule SquidMesh.RunExplanationTest do
       description: "Fails before retry",
       schema: [account_id: [type: :string, required: true]]
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context) do
       {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
     end
@@ -603,7 +603,7 @@ defmodule SquidMesh.RunExplanationTest do
       description: "Loads account",
       schema: [account_id: [type: :string, required: true]]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{account: %{id: account_id}}}
     end
@@ -615,7 +615,7 @@ defmodule SquidMesh.RunExplanationTest do
       description: "Loads invoice",
       schema: [account_id: [type: :string, required: true]]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
       {:ok, %{invoice: %{account_id: account_id}}}
     end
@@ -630,7 +630,7 @@ defmodule SquidMesh.RunExplanationTest do
         invoice: [type: :map, required: true]
       ]
 
-    @impl true
+    @impl Jido.Action
     def run(%{account: account}, _context) do
       {:ok, %{delivery: %{account_id: account.id}}}
     end

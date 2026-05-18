@@ -13,7 +13,6 @@ defmodule SquidMesh.Runtime.Reviewer do
   alias SquidMesh.AttemptStore
   alias SquidMesh.Config
   alias SquidMesh.Observability
-  alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Persistence.StepAttempt
   alias SquidMesh.Persistence.StepRun
   alias SquidMesh.Run
@@ -22,7 +21,6 @@ defmodule SquidMesh.Runtime.Reviewer do
   alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.ManualAction
   alias SquidMesh.StepRunStore
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type decision :: :approved | :rejected
   @type review_attrs :: %{
@@ -53,7 +51,7 @@ defmodule SquidMesh.Runtime.Reviewer do
   defp do_review(config, run, workflow, decision, attrs) do
     with {:ok, {paused_run, run_record}} <- locked_paused_run(config.repo, run.id),
          {:ok, step_name} <- paused_step_name(paused_run),
-         {:ok, definition} <- WorkflowDefinition.load(workflow),
+         {:ok, definition} <- SquidMesh.Workflow.Definition.load(workflow),
          {:ok, _approval_step} <- approval_step_definition(definition, step_name),
          {:ok, step_run} <- running_step_run(config.repo, paused_run.id, step_name),
          {:ok, mapped_output, target} <-
@@ -107,10 +105,10 @@ defmodule SquidMesh.Runtime.Reviewer do
 
   defp locked_paused_run(repo, run_id) do
     case locked_run_record(repo, run_id) do
-      %RunRecord{status: "paused"} = run_record ->
+      %SquidMesh.Persistence.Run{status: "paused"} = run_record ->
         {:ok, {Serialization.to_public_run(run_record), run_record}}
 
-      %RunRecord{status: status} ->
+      %SquidMesh.Persistence.Run{status: status} ->
         {:error, {:invalid_transition, Serialization.deserialize_status(status), :running}}
 
       nil ->
@@ -124,7 +122,7 @@ defmodule SquidMesh.Runtime.Reviewer do
   defp paused_step_name(%Run{current_step: step_name}), do: {:error, {:invalid_step, step_name}}
 
   defp approval_step_definition(definition, step_name) do
-    with {:ok, step} <- WorkflowDefinition.step(definition, step_name) do
+    with {:ok, step} <- SquidMesh.Workflow.Definition.step(definition, step_name) do
       case step do
         %{module: :approval} -> {:ok, step}
         _other -> {:error, {:invalid_step, step_name}}
@@ -133,7 +131,7 @@ defmodule SquidMesh.Runtime.Reviewer do
   end
 
   defp running_step_run(repo, run_id, step_name) do
-    serialized_step = WorkflowDefinition.serialize_step(step_name)
+    serialized_step = SquidMesh.Workflow.Definition.serialize_step(step_name)
 
     case locked_step_run(repo, run_id, serialized_step) do
       %StepRun{status: "running"} = step_run -> {:ok, step_run}
@@ -170,8 +168,10 @@ defmodule SquidMesh.Runtime.Reviewer do
   end
 
   defp review_metadata(%StepRun{}, definition, step_name, decision, attrs) do
-    with {:ok, targets} <- WorkflowDefinition.approval_transition_targets(definition, step_name),
-         {:ok, output_key} <- WorkflowDefinition.step_output_mapping(definition, step_name) do
+    with {:ok, targets} <-
+           SquidMesh.Workflow.Definition.approval_transition_targets(definition, step_name),
+         {:ok, output_key} <-
+           SquidMesh.Workflow.Definition.step_output_mapping(definition, step_name) do
       {:ok, map_review_output(attrs, decision, output_key), decision_target(decision, targets)}
     end
   end
@@ -233,7 +233,7 @@ defmodule SquidMesh.Runtime.Reviewer do
       %{
         decision: serialize_decision(decision),
         actor: Map.fetch!(attrs, :actor),
-        decided_at: DateTime.utc_now() |> DateTime.truncate(:microsecond) |> DateTime.to_iso8601()
+        decided_at: DateTime.to_iso8601(DateTime.utc_now(:microsecond))
       }
       |> maybe_put(:comment, Map.get(attrs, :comment))
       |> maybe_put(:metadata, Map.get(attrs, :metadata))
@@ -253,7 +253,7 @@ defmodule SquidMesh.Runtime.Reviewer do
   defp deserialize_resume_target(_definition, "__complete__"), do: :complete
 
   defp deserialize_resume_target(definition, target) when is_binary(target) do
-    WorkflowDefinition.deserialize_step(definition, target)
+    SquidMesh.Workflow.Definition.deserialize_step(definition, target)
   end
 
   defp decision_target(:approved, targets), do: Map.fetch!(targets, :ok)
@@ -278,7 +278,7 @@ defmodule SquidMesh.Runtime.Reviewer do
   end
 
   defp locked_run_record(repo, run_id) do
-    RunRecord
+    SquidMesh.Persistence.Run
     |> where([run], run.id == ^run_id)
     |> lock("FOR UPDATE")
     |> repo.one()

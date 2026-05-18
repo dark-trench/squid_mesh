@@ -79,9 +79,7 @@ defmodule SquidMesh.AttemptStore do
   """
   @spec next_attempt_number(module(), Ecto.UUID.t()) :: pos_integer()
   def next_attempt_number(repo, step_run_id) do
-    repo
-    |> latest_attempt(step_run_id)
-    |> case do
+    case latest_attempt(repo, step_run_id) do
       %StepAttempt{attempt_number: attempt_number} -> attempt_number + 1
       nil -> 1
     end
@@ -138,7 +136,10 @@ defmodule SquidMesh.AttemptStore do
   @spec update_running_attempt(module(), Ecto.UUID.t(), map()) ::
           {:ok, StepAttempt.t()} | {:error, :not_found | stale_error()}
   defp update_running_attempt(repo, attempt_id, attrs) do
-    updates = attrs |> Map.put(:updated_at, now_utc()) |> Map.to_list()
+    updates =
+      attrs
+      |> Map.put(:updated_at, now_utc())
+      |> Map.to_list()
 
     {count, _rows} =
       StepAttempt
@@ -173,6 +174,6 @@ defmodule SquidMesh.AttemptStore do
   end
 
   defp now_utc do
-    DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    DateTime.utc_now(:microsecond)
   end
 end

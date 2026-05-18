@@ -9,17 +9,16 @@ defmodule SquidMesh.Runtime.StepExecutor.PreparedStep do
 
   alias SquidMesh.Config
   alias SquidMesh.Run
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @enforce_keys [:config, :definition, :run, :step_name, :step, :step_run, :input]
   defstruct [:config, :definition, :run, :step_name, :step, :step_run, :input]
 
   @type t :: %__MODULE__{
           config: Config.t(),
-          definition: WorkflowDefinition.t(),
+          definition: SquidMesh.Workflow.Definition.t(),
           run: Run.t(),
           step_name: atom(),
-          step: WorkflowDefinition.step(),
+          step: SquidMesh.Workflow.Definition.step(),
           step_run: SquidMesh.Persistence.StepRun.t(),
           input: map()
         }

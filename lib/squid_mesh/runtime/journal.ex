@@ -8,7 +8,6 @@ defmodule SquidMesh.Runtime.Journal do
   """
 
   alias Jido.Thread
-  alias Jido.Thread.Entry, as: JidoEntry
   alias SquidMesh.Runtime.DispatchProtocol.Entry
   alias SquidMesh.Runtime.DispatchProtocol.Projection
   alias SquidMesh.Runtime.Journal.Checkpoint
@@ -119,7 +118,10 @@ defmodule SquidMesh.Runtime.Journal do
   def thread_id({:run_index, workflow}), do: encode_thread_id("run_index", workflow)
 
   defp entry_thread(entries) do
-    threads = entries |> Enum.map(& &1.thread) |> Enum.uniq()
+    threads =
+      entries
+      |> Enum.map(& &1.thread)
+      |> Enum.uniq()
 
     case threads do
       [thread] -> {:ok, thread}
@@ -128,7 +130,7 @@ defmodule SquidMesh.Runtime.Journal do
   end
 
   defp to_jido_entry(%Entry{} = entry) do
-    %JidoEntry{
+    %Jido.Thread.Entry{
       id: nil,
       seq: 0,
       at: datetime_to_millisecond(entry.occurred_at),
@@ -145,20 +147,22 @@ defmodule SquidMesh.Runtime.Journal do
   end
 
   defp decode_entries(jido_entries, thread) do
-    jido_entries
-    |> Enum.reduce_while({:ok, []}, fn jido_entry, {:ok, entries} ->
-      case from_jido_entry(jido_entry, thread) do
-        {:ok, entry} -> {:cont, {:ok, [entry | entries]}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-    |> case do
+    result =
+      Enum.reduce_while(jido_entries, {:ok, []}, fn jido_entry, {:ok, entries} ->
+        case from_jido_entry(jido_entry, thread) do
+          {:ok, entry} -> {:cont, {:ok, [entry | entries]}}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+
+    case result do
       {:ok, entries} -> {:ok, Enum.reverse(entries)}
       {:error, _reason} = error -> error
     end
   end
 
-  defp from_jido_entry(%JidoEntry{payload: payload} = jido_entry, thread) when is_map(payload) do
+  defp from_jido_entry(%Jido.Thread.Entry{payload: payload} = jido_entry, thread)
+       when is_map(payload) do
     with {:ok, data} <- fetch_payload_data(jido_entry),
          {:ok, occurred_at} <- occurred_at(jido_entry) do
       {:ok,
@@ -171,18 +175,18 @@ defmodule SquidMesh.Runtime.Journal do
     end
   end
 
-  defp from_jido_entry(%JidoEntry{} = jido_entry, _thread) do
+  defp from_jido_entry(%Jido.Thread.Entry{} = jido_entry, _thread) do
     {:error, {:invalid_journal_entry, jido_entry.seq, :invalid_payload}}
   end
 
-  defp fetch_payload_data(%JidoEntry{payload: payload} = jido_entry) do
+  defp fetch_payload_data(%Jido.Thread.Entry{payload: payload} = jido_entry) do
     case Map.fetch(payload, :data) do
       {:ok, data} -> {:ok, data}
       :error -> {:error, {:invalid_journal_entry, jido_entry.seq, :missing_data}}
     end
   end
 
-  defp occurred_at(%JidoEntry{payload: payload} = jido_entry) do
+  defp occurred_at(%Jido.Thread.Entry{payload: payload} = jido_entry) do
     case Map.get(payload, :occurred_at) do
       %DateTime{} = datetime ->
         {:ok, datetime}
@@ -198,7 +202,7 @@ defmodule SquidMesh.Runtime.Journal do
     end
   end
 
-  defp datetime_from_millisecond(%JidoEntry{} = jido_entry, milliseconds)
+  defp datetime_from_millisecond(%Jido.Thread.Entry{} = jido_entry, milliseconds)
        when is_integer(milliseconds) do
     case DateTime.from_unix(milliseconds, :millisecond) do
       {:ok, datetime} ->
@@ -209,7 +213,7 @@ defmodule SquidMesh.Runtime.Journal do
     end
   end
 
-  defp datetime_from_millisecond(%JidoEntry{} = jido_entry, _invalid) do
+  defp datetime_from_millisecond(%Jido.Thread.Entry{} = jido_entry, _invalid) do
     {:error, {:invalid_journal_entry, jido_entry.seq, :invalid_timestamp}}
   end
 

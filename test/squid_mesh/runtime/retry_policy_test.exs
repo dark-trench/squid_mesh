@@ -1,5 +1,5 @@
 defmodule SquidMesh.Runtime.RetryPolicyTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   alias SquidMesh.Runtime.RetryPolicy
 

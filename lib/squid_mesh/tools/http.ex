@@ -18,7 +18,7 @@ defmodule SquidMesh.Tools.HTTP do
           optional(:timeout) => pos_integer()
         }
 
-  @impl true
+  @impl SquidMesh.Tools.Adapter
   @spec invoke(request(), map(), keyword()) :: {:ok, Result.t()} | {:error, Error.t()}
   def invoke(request, _context, _opts) when is_map(request) do
     with :ok <- validate_request(request) do
@@ -58,8 +58,7 @@ defmodule SquidMesh.Tools.HTTP do
 
   @spec build_req_options(request()) :: keyword()
   defp build_req_options(request) do
-    request
-    |> Enum.reduce([method: request.method, retry: false, url: request.url], fn
+    Enum.reduce(request, [method: request.method, retry: false, url: request.url], fn
       {:headers, headers}, opts ->
         Keyword.put(opts, :headers, headers)
 
@@ -99,7 +98,8 @@ defmodule SquidMesh.Tools.HTTP do
          kind: :http,
          message: "HTTP request failed with status #{response.status}",
          details:
-           Req.Response.to_map(response)
+           response
+           |> Req.Response.to_map()
            |> Map.put(:method, request.method)
            |> Map.put(:url, request.url),
          retryable?: response.status >= 500

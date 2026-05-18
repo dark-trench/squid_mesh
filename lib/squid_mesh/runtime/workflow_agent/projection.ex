@@ -196,18 +196,23 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
     Map.get(projection, :applied_results, %{})
   end
 
-  defp refresh_status(%__MODULE__{terminal_status: terminal_status} = projection)
-       when not is_nil(terminal_status) do
-    %__MODULE__{projection | status: terminal_status}
-  end
-
-  defp refresh_status(%__MODULE__{planned_runnables: planned_runnables} = projection)
+  defp refresh_status(
+         %__MODULE__{terminal_status: nil, planned_runnables: planned_runnables} = projection
+       )
        when map_size(planned_runnables) == 0 do
     %__MODULE__{projection | status: :started}
   end
 
+  defp refresh_status(%__MODULE__{terminal_status: terminal_status} = projection)
+       when terminal_status in [:completed, :failed, :cancelled] do
+    %__MODULE__{projection | status: terminal_status}
+  end
+
   defp refresh_status(%__MODULE__{} = projection) do
-    planned_keys = projection.planned_runnables |> Map.keys() |> MapSet.new()
+    planned_keys =
+      projection.planned_runnables
+      |> Map.keys()
+      |> MapSet.new()
 
     if MapSet.subset?(planned_keys, projection.applied_runnable_keys) do
       %__MODULE__{projection | status: :idle}

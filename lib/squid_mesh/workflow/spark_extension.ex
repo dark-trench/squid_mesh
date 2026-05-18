@@ -65,6 +65,8 @@ defmodule SquidMesh.Workflow.SparkExtension do
   use Spark.Dsl.Extension, sections: [@workflow]
 
   @doc false
+  @spec put_step_metadata(SquidMesh.Workflow.StepSpec.t()) ::
+          {:ok, SquidMesh.Workflow.StepSpec.t()}
   def put_step_metadata(%SquidMesh.Workflow.StepSpec{} = step) do
     metadata =
       case SquidMesh.Step.metadata(step.module) do

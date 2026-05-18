@@ -12,7 +12,6 @@ defmodule SquidMesh.RunStore do
 
   alias SquidMesh.AttemptStore
   alias SquidMesh.Observability
-  alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Persistence.StepAttempt
   alias SquidMesh.Persistence.StepRun
   alias SquidMesh.Run
@@ -20,14 +19,13 @@ defmodule SquidMesh.RunStore do
   alias SquidMesh.RunStore.Serialization
   alias SquidMesh.Runtime.StateMachine
   alias SquidMesh.StepRunStore
-  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type list_filter :: {:workflow, module()} | {:status, Run.status()} | {:limit, pos_integer()}
   @type list_filters :: [list_filter()]
 
   @type create_error ::
           {:invalid_payload, :expected_map}
-          | {:invalid_payload, WorkflowDefinition.payload_error_details()}
+          | {:invalid_payload, SquidMesh.Workflow.Definition.payload_error_details()}
           | {:invalid_trigger, atom() | String.t()}
           | {:invalid_workflow, module() | String.t()}
           | {:invalid_run, Ecto.Changeset.t()}
@@ -146,14 +144,14 @@ defmodule SquidMesh.RunStore do
 
   def create_and_dispatch_run(repo, workflow, payload, dispatch_fun, opts)
       when is_map(payload) and is_function(dispatch_fun, 1) and is_list(opts) do
-    with {:ok, definition} <- WorkflowDefinition.load(workflow),
+    with {:ok, definition} <- SquidMesh.Workflow.Definition.load(workflow),
          {:ok, trigger_definition} <-
-           WorkflowDefinition.trigger(
+           SquidMesh.Workflow.Definition.trigger(
              definition,
-             WorkflowDefinition.default_trigger(definition)
+             SquidMesh.Workflow.Definition.default_trigger(definition)
            ),
          {:ok, resolved_payload} <-
-           WorkflowDefinition.resolve_payload(trigger_definition, payload) do
+           SquidMesh.Workflow.Definition.resolve_payload(trigger_definition, payload) do
       trigger = Map.fetch!(trigger_definition, :name)
       attrs = Persistence.build_run_attrs(workflow, trigger, definition, resolved_payload, opts)
       Persistence.insert_run_with_dispatch(repo, attrs, dispatch_fun)
@@ -163,10 +161,11 @@ defmodule SquidMesh.RunStore do
   def create_and_dispatch_run(repo, workflow, trigger_name, payload, dispatch_fun, opts)
       when is_atom(trigger_name) and is_map(payload) and is_function(dispatch_fun, 1) and
              is_list(opts) do
-    with {:ok, definition} <- WorkflowDefinition.load(workflow),
-         {:ok, trigger_definition} <- WorkflowDefinition.trigger(definition, trigger_name),
+    with {:ok, definition} <- SquidMesh.Workflow.Definition.load(workflow),
+         {:ok, trigger_definition} <-
+           SquidMesh.Workflow.Definition.trigger(definition, trigger_name),
          {:ok, resolved_payload} <-
-           WorkflowDefinition.resolve_payload(trigger_definition, payload) do
+           SquidMesh.Workflow.Definition.resolve_payload(trigger_definition, payload) do
       trigger = Map.fetch!(trigger_definition, :name)
       attrs = Persistence.build_run_attrs(workflow, trigger, definition, resolved_payload, opts)
       Persistence.insert_run_with_dispatch(repo, attrs, dispatch_fun)
@@ -198,7 +197,7 @@ defmodule SquidMesh.RunStore do
   def get_run_for_update(repo, run_id) do
     with {:ok, valid_run_id} <- cast_run_id(run_id) do
       case get_run_record_for_update(repo, valid_run_id) do
-        %RunRecord{} = run -> {:ok, Serialization.to_public_run(run)}
+        %SquidMesh.Persistence.Run{} = run -> {:ok, Serialization.to_public_run(run)}
         nil -> {:error, :not_found}
       end
     end
@@ -213,7 +212,7 @@ defmodule SquidMesh.RunStore do
       )
       when is_binary(workflow) and is_binary(trigger) and is_binary(idempotency_key) do
     query =
-      RunRecord
+      SquidMesh.Persistence.Run
       |> where([run], run.workflow == ^workflow)
       |> where([run], run.trigger == ^trigger)
       |> where(
@@ -224,7 +223,7 @@ defmodule SquidMesh.RunStore do
       |> limit(1)
 
     case repo.one(query) do
-      %RunRecord{} = run -> {:ok, Serialization.to_public_run(run)}
+      %SquidMesh.Persistence.Run{} = run -> {:ok, Serialization.to_public_run(run)}
       nil -> {:error, :not_found}
     end
   end
@@ -270,7 +269,7 @@ defmodule SquidMesh.RunStore do
 
   defp transition_for_update(repo, run_id, to_status, attrs) do
     case get_run_record_for_update(repo, run_id) do
-      %RunRecord{} = run -> transition_locked_run(repo, run, to_status, attrs)
+      %SquidMesh.Persistence.Run{} = run -> transition_locked_run(repo, run, to_status, attrs)
       nil -> repo.rollback(:not_found)
     end
   end
@@ -289,7 +288,9 @@ defmodule SquidMesh.RunStore do
 
   defp update_transition_locked_run(repo, run, from_status, to_status, attrs) do
     run
-    |> RunRecord.changeset(Persistence.transition_changeset_attrs(to_status, attrs))
+    |> SquidMesh.Persistence.Run.changeset(
+      Persistence.transition_changeset_attrs(to_status, attrs)
+    )
     |> repo.update()
     |> case do
       {:ok, updated_run} ->
@@ -324,7 +325,7 @@ defmodule SquidMesh.RunStore do
 
   defp transition_and_dispatch_for_update(repo, run_id, to_status, attrs, dispatch_fun) do
     case get_run_record_for_update(repo, run_id) do
-      %RunRecord{} = run ->
+      %SquidMesh.Persistence.Run{} = run ->
         dispatch_transitioned_run(repo, run, to_status, attrs, dispatch_fun)
 
       nil ->
@@ -379,7 +380,7 @@ defmodule SquidMesh.RunStore do
 
   defp do_cancel_run(repo, run_id, cancellation_error) do
     case get_run_record_for_update(repo, run_id) do
-      %RunRecord{} = run ->
+      %SquidMesh.Persistence.Run{} = run ->
         run
         |> Serialization.to_public_run()
         |> cancel_locked_run(repo, run, cancellation_error)
@@ -436,7 +437,7 @@ defmodule SquidMesh.RunStore do
 
   defp update_run_for_update(repo, run_id, attrs_fun) when is_function(attrs_fun, 1) do
     case get_run_record_for_update(repo, run_id) do
-      %RunRecord{} = run ->
+      %SquidMesh.Persistence.Run{} = run ->
         attrs = attrs_fun.(run)
         update_locked_run_record(repo, run, attrs)
 
@@ -447,7 +448,7 @@ defmodule SquidMesh.RunStore do
 
   defp update_locked_run_record(repo, run, attrs) do
     run
-    |> RunRecord.changeset(
+    |> SquidMesh.Persistence.Run.changeset(
       Persistence.serialize_transition_attrs(
         Map.take(attrs, [:context, :current_step, :last_error])
       )
@@ -517,7 +518,7 @@ defmodule SquidMesh.RunStore do
 
   defp do_progress_run(repo, run_id, attrs_fun, operation) do
     case get_run_record_for_update(repo, run_id) do
-      %RunRecord{} = run ->
+      %SquidMesh.Persistence.Run{} = run ->
         run
         |> Serialization.to_public_run()
         |> progress_locked_run(repo, run, attrs_fun, operation)
@@ -602,11 +603,11 @@ defmodule SquidMesh.RunStore do
   defp constant_attrs_fun(attrs), do: fn _run -> attrs end
 
   defp public_attrs_fun(attrs_fun),
-    do: fn run -> run |> Serialization.to_public_run() |> attrs_fun.() end
+    do: fn run -> attrs_fun.(Serialization.to_public_run(run)) end
 
   defp update_and_dispatch_for_update(repo, run_id, attrs_fun, dispatch_fun) do
     case get_run_record_for_update(repo, run_id) do
-      %RunRecord{} = run ->
+      %SquidMesh.Persistence.Run{} = run ->
         run
         |> attrs_fun.()
         |> update_and_dispatch_locked_run(repo, run, dispatch_fun)
@@ -666,7 +667,7 @@ defmodule SquidMesh.RunStore do
 
   defp pause_run_for_update(repo, run_id, step_run_id, attempt_id, attrs, cancellation_error) do
     case get_run_record_for_update(repo, run_id) do
-      %RunRecord{} = run ->
+      %SquidMesh.Persistence.Run{} = run ->
         run
         |> Serialization.to_public_run()
         |> pause_locked_run(repo, run, step_run_id, attempt_id, attrs, cancellation_error)
@@ -763,7 +764,7 @@ defmodule SquidMesh.RunStore do
 
   defp transition_run_with_for_update(repo, run_id, to_status, attrs_fun) do
     case get_run_record_for_update(repo, run_id) do
-      %RunRecord{} = run ->
+      %SquidMesh.Persistence.Run{} = run ->
         transition_locked_run_with(repo, run, to_status, attrs_fun)
 
       nil ->
@@ -787,7 +788,9 @@ defmodule SquidMesh.RunStore do
 
   defp update_locked_run_transition_with(repo, run, from_status, to_status, attrs) do
     run
-    |> RunRecord.changeset(Persistence.transition_changeset_attrs(to_status, attrs))
+    |> SquidMesh.Persistence.Run.changeset(
+      Persistence.transition_changeset_attrs(to_status, attrs)
+    )
     |> repo.update()
     |> case do
       {:ok, updated_run} ->
@@ -809,12 +812,12 @@ defmodule SquidMesh.RunStore do
   def schedule_next_step?(status) when is_atom(status),
     do: StateMachine.schedule_next_step?(status)
 
-  @spec query_runs(module(), list_filters()) :: [RunRecord.t()]
+  @spec query_runs(module(), list_filters()) :: [SquidMesh.Persistence.Run.t()]
   defp query_runs(repo, filters) do
     if function_exported?(repo, :list_runs, 1) do
       repo.list_runs(Serialization.serialize_filters(filters))
     else
-      RunRecord
+      SquidMesh.Persistence.Run
       |> maybe_filter_workflow(filters)
       |> maybe_filter_status(filters)
       |> order_by([run], desc: run.inserted_at, desc: run.id)
@@ -830,7 +833,11 @@ defmodule SquidMesh.RunStore do
         query
 
       workflow ->
-        where(query, [run], run.workflow == ^WorkflowDefinition.serialize_workflow(workflow))
+        where(
+          query,
+          [run],
+          run.workflow == ^SquidMesh.Workflow.Definition.serialize_workflow(workflow)
+        )
     end
   end
 
@@ -851,14 +858,14 @@ defmodule SquidMesh.RunStore do
       limit when is_integer(limit) and limit > 0 ->
         limit(query, ^limit)
 
-      _ ->
+      _limit ->
         query
     end
   end
 
   @spec execute_progress_operation(
           module(),
-          RunRecord.t(),
+          SquidMesh.Persistence.Run.t(),
           Run.status(),
           transition_attrs(),
           progress_operation()
@@ -1103,7 +1110,8 @@ defmodule SquidMesh.RunStore do
 
     # `Persistence.update_run_record/3` returns the public run; refetch the
     # locked row so the failure transition stays in the same transaction.
-    with %RunRecord{} = updated_record <- get_run_record_for_update(repo, updated_run.id),
+    with %SquidMesh.Persistence.Run{} = updated_record <-
+           get_run_record_for_update(repo, updated_run.id),
          {:ok, _next_status} <- StateMachine.transition(updated_run.status, :failed),
          {:ok, failed_run} <-
            Persistence.update_run_record(
@@ -1137,10 +1145,10 @@ defmodule SquidMesh.RunStore do
   @spec replay_valid_run(module(), Ecto.UUID.t(), dispatch_fun(), [replay_option()]) ::
           {:ok, Run.t()} | {:error, replay_error() | term()}
   defp replay_valid_run(repo, run_id, dispatch_fun, opts) do
-    case repo.get(RunRecord, run_id) do
-      %RunRecord{} = source_run ->
+    case repo.get(SquidMesh.Persistence.Run, run_id) do
+      %SquidMesh.Persistence.Run{} = source_run ->
         with {:ok, _workflow, definition} <-
-               WorkflowDefinition.load_serialized(source_run.workflow),
+               SquidMesh.Workflow.Definition.load_serialized(source_run.workflow),
              :ok <- ensure_replay_allowed(repo, source_run, definition, opts) do
           attrs = Persistence.replay_run_attrs(source_run, definition)
           Persistence.insert_run_with_dispatch(repo, attrs, dispatch_fun)
@@ -1151,7 +1159,12 @@ defmodule SquidMesh.RunStore do
     end
   end
 
-  @spec ensure_replay_allowed(module(), RunRecord.t(), WorkflowDefinition.t(), [replay_option()]) ::
+  @spec ensure_replay_allowed(
+          module(),
+          SquidMesh.Persistence.Run.t(),
+          SquidMesh.Workflow.Definition.t(),
+          [replay_option()]
+        ) ::
           :ok | {:error, {:unsafe_replay, map()}}
   defp ensure_replay_allowed(repo, source_run, definition, opts) do
     if Keyword.get(opts, :allow_irreversible) == true do
@@ -1165,7 +1178,7 @@ defmodule SquidMesh.RunStore do
     unsafe_steps =
       source_run
       |> completed_step_recovery_policies(repo)
-      |> then(&WorkflowDefinition.unsafe_replay_steps(definition, &1))
+      |> then(&SquidMesh.Workflow.Definition.unsafe_replay_steps(definition, &1))
 
     case unsafe_steps do
       [] ->
@@ -1182,7 +1195,7 @@ defmodule SquidMesh.RunStore do
     end
   end
 
-  defp completed_step_recovery_policies(%RunRecord{id: run_id}, repo) do
+  defp completed_step_recovery_policies(%SquidMesh.Persistence.Run{id: run_id}, repo) do
     StepRun
     |> where([step_run], step_run.run_id == ^run_id and step_run.status == "completed")
     |> order_by([step_run], asc: step_run.inserted_at, asc: step_run.id)
@@ -1196,25 +1209,25 @@ defmodule SquidMesh.RunStore do
     include_history? = Keyword.get(opts, :include_history, false)
 
     query =
-      RunRecord
+      SquidMesh.Persistence.Run
       |> where([run], run.id == ^run_id)
       |> Serialization.maybe_preload_history(include_history?)
 
     case repo.one(query) do
-      %RunRecord{} = run -> {:ok, Serialization.to_public_run(run)}
+      %SquidMesh.Persistence.Run{} = run -> {:ok, Serialization.to_public_run(run)}
       nil -> {:error, :not_found}
     end
   end
 
-  @spec get_run_record_for_update(module(), Ecto.UUID.t()) :: RunRecord.t() | nil
+  @spec get_run_record_for_update(module(), Ecto.UUID.t()) :: SquidMesh.Persistence.Run.t() | nil
   defp get_run_record_for_update(repo, run_id) do
-    RunRecord
+    SquidMesh.Persistence.Run
     |> where([run], run.id == ^run_id)
     |> lock("FOR UPDATE")
     |> repo.one()
   end
 
-  @spec cancel_locked_paused_run(module(), RunRecord.t(), Run.t(), map()) ::
+  @spec cancel_locked_paused_run(module(), SquidMesh.Persistence.Run.t(), Run.t(), map()) ::
           {:paused_cancelled, Run.t(), Run.t(), map() | nil}
           | no_return()
   defp cancel_locked_paused_run(repo, run, current_run, cancellation_error) do

@@ -16,7 +16,7 @@ defmodule SquidMesh.Step.Action do
   alias SquidMesh.Step
   alias SquidMesh.Step.Context
 
-  @impl true
+  @impl Jido.Action
   def run(%{step: step, input: input}, context) when is_atom(step) and is_map(input) do
     with {:ok, input} <- Step.validate_input(step, input),
          {:ok, result} <- run_native_step(step, input, Context.from_map(context)),
