@@ -388,19 +388,21 @@ Design questions before adding such a construct:
 These are intentionally not first-slice requirements. The first
 projection-backed inspection snapshot already rebuilds workflow and dispatch
 agent projections into a read-only view of pending dispatches, unapplied
-results, visible attempts, expired claims, terminal state, and projection
-anomalies. The first projected explanation layer derives deterministic
-reason-specific details and next actions from that snapshot. The public
-`SquidMesh.inspect_run/2` and `SquidMesh.explain_run/2` APIs now expose this
-read model behind the explicit `read_model: :journal_projection` option with
-`journal_storage:`, while the stable runtime-table read model remains the
-default. Callers that opt into projection reads pass both options together, for
-example
+results, scheduled attempts, visible attempts, expired claims, terminal state,
+and projection anomalies. Run-index projections now rebuild workflow-scoped run
+lookup state from durable index entries and keep malformed or conflicting index
+facts visible as anomalies. The first projected explanation layer derives
+deterministic reason-specific details and next actions from the inspection
+snapshot. The public `SquidMesh.inspect_run/2` and `SquidMesh.explain_run/2`
+APIs now expose this read model behind the explicit
+`read_model: :journal_projection` option with `journal_storage:`, while the
+stable runtime-table read model remains the default. Callers that opt into
+projection reads pass both options together, for example
 `SquidMesh.inspect_run(run_id, read_model: :journal_projection, journal_storage: storage)`.
 
 | Feature | Issue | Runtime dependency |
 | --- | --- | --- |
-| Projection-backed inspection and explanation completion | [#163](https://github.com/ccarvalho-eng/squid_mesh/issues/163) | Stable snapshot shape, run-index projections, and complete coverage for paused, retrying, cancelled, failed, and ambiguous attempt states |
+| Projection-backed inspection and explanation completion | [#163](https://github.com/ccarvalho-eng/squid_mesh/issues/163) | Complete coverage for paused, retrying, cancelled, failed, and ambiguous attempt states |
 | Conditional paths and deferred continuation | [#140](https://github.com/ccarvalho-eng/squid_mesh/issues/140) | Durable planner facts and wakeup metadata |
 | Dynamic graph expansion | [#141](https://github.com/ccarvalho-eng/squid_mesh/issues/141) | Proven static Runic planning, stable identifiers, inspectable origin metadata |
 | Advanced reference workflows | [#109](https://github.com/ccarvalho-eng/squid_mesh/issues/109) | Implemented target features only, without Oban-specific assumptions |

@@ -11,6 +11,7 @@ defmodule SquidMesh.Runtime.Journal do
   alias SquidMesh.Runtime.DispatchProtocol.Entry
   alias SquidMesh.Runtime.DispatchProtocol.Projection
   alias SquidMesh.Runtime.Journal.Checkpoint
+  alias SquidMesh.Runtime.RunIndexProjection
 
   @type storage_config :: module() | {module(), keyword()}
   @type append_error :: :empty_entries | {:mixed_threads, [Entry.thread()]} | term()
@@ -81,6 +82,20 @@ defmodule SquidMesh.Runtime.Journal do
   def rebuild_dispatch_projection(storage, queue) do
     with {:ok, entries} <- load_entries(storage, {:dispatch, queue}) do
       {:ok, Projection.rebuild(entries)}
+    end
+  end
+
+  @doc false
+  @spec rebuild_run_index_projection(storage_config(), atom() | String.t()) ::
+          {:ok, RunIndexProjection.t()} | {:error, term()}
+  def rebuild_run_index_projection(storage, workflow)
+      when is_atom(workflow) or is_binary(workflow) do
+    workflow = to_string(workflow)
+
+    case load_entries(storage, {:run_index, workflow}) do
+      {:ok, entries} -> {:ok, RunIndexProjection.rebuild(entries)}
+      {:error, :not_found} -> {:ok, RunIndexProjection.new(workflow)}
+      {:error, _reason} = error -> error
     end
   end
 
