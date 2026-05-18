@@ -6,6 +6,10 @@ defmodule SquidMesh.Runtime.ProjectedInspection.Snapshot do
   journal projections. It is intentionally separate from the current
   table-backed `SquidMesh.Run` struct so the Jido-native runtime can grow its
   inspection surface without changing the stable public API prematurely.
+
+  Terminal runs keep both `terminal?` and `terminal_status` so operator-facing
+  surfaces can suppress recovery actions while still distinguishing completed,
+  failed, and cancelled histories.
   """
 
   @type reason ::
@@ -43,6 +47,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection.Snapshot do
           status: atom(),
           reason: reason(),
           terminal?: boolean(),
+          terminal_status: atom() | nil,
           thread_revisions: %{run: non_neg_integer(), dispatch: non_neg_integer()},
           planned_runnables: [map()],
           planned_runnable_keys: [String.t()],
@@ -62,6 +67,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection.Snapshot do
     :status,
     :reason,
     :terminal?,
+    :terminal_status,
     :thread_revisions
   ]
 
@@ -72,6 +78,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection.Snapshot do
     :status,
     :reason,
     :terminal?,
+    :terminal_status,
     :thread_revisions,
     planned_runnables: [],
     planned_runnable_keys: [],

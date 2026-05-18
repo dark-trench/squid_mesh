@@ -117,9 +117,28 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     assert snapshot.status == :completed
     assert snapshot.reason == :terminal
     assert snapshot.terminal? == true
+    assert snapshot.terminal_status == :completed
     assert snapshot.visible_attempts == []
     assert snapshot.expired_claims == []
     assert [%{runnable_key: @runnable_key, status: :claimed}] = snapshot.attempts
+  end
+
+  test "keeps failed and cancelled terminal statuses visible in snapshots" do
+    for status <- [:failed, :cancelled] do
+      cleanup_storage()
+      append_run_entries([run_started(), runnables_planned(), run_terminal(status)])
+      append_dispatch_entries([attempt_scheduled(), attempt_claimed()])
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @expired_at)
+
+      assert snapshot.status == status
+      assert snapshot.reason == :terminal
+      assert snapshot.terminal? == true
+      assert snapshot.terminal_status == status
+      assert snapshot.visible_attempts == []
+      assert snapshot.expired_claims == []
+    end
   end
 
   test "returns not found when the run thread is missing" do
