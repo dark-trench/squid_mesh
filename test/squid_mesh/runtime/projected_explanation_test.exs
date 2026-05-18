@@ -12,9 +12,12 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
   @workflow "BillingWorkflow"
   @queue "default"
   @runnable_key "run_123:charge_card:1"
+  @second_runnable_key "run_123:send_receipt:1"
   @idempotency_key "run_123:charge_card:payment_456"
+  @second_idempotency_key "run_123:send_receipt:payment_456"
   @started_at ~U[2026-05-15 00:00:00Z]
   @visible_at ~U[2026-05-15 00:00:10Z]
+  @later_visible_at ~U[2026-05-15 00:00:30Z]
   @claimed_at ~U[2026-05-15 00:00:20Z]
   @completed_at ~U[2026-05-15 00:00:40Z]
   @lease_until ~U[2026-05-15 00:01:00Z]
@@ -46,6 +49,47 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
 
     assert explanation.evidence.thread_revisions == %{run: 2, dispatch: 0}
     assert explanation.evidence.snapshot_reason == :planned_dispatch_pending_schedule
+  end
+
+  test "explains attempts scheduled for future visibility" do
+    append_run_entries([
+      run_started(),
+      runnables_planned([
+        planned_runnable(),
+        planned_runnable(
+          idempotency_key: @second_idempotency_key,
+          runnable_key: @second_runnable_key,
+          step: "send_receipt",
+          visible_at: @later_visible_at
+        )
+      ])
+    ])
+
+    append_dispatch_entries([
+      attempt_scheduled(),
+      attempt_scheduled(
+        idempotency_key: @second_idempotency_key,
+        runnable_key: @second_runnable_key,
+        step: "send_receipt",
+        visible_at: @later_visible_at
+      )
+    ])
+
+    assert {:ok, %Explanation{} = explanation} =
+             ProjectedExplanation.explain(@storage, @run_id, queue: @queue, now: @started_at)
+
+    assert explanation.reason == :attempt_scheduled_for_later
+    assert explanation.step == "charge_card"
+    assert explanation.next_actions == [:wait_until_attempt_visible]
+
+    assert explanation.details == %{
+             scheduled_attempt_count: 2,
+             runnable_keys: [@runnable_key, @second_runnable_key],
+             next_visible_at: @visible_at
+           }
+
+    assert explanation.evidence.next_visible_at == @visible_at
+    assert explanation.evidence.attempt_counts.available == 2
   end
 
   test "explains completed dispatch results that are not applied to the run thread" do
@@ -188,10 +232,10 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
     })
   end
 
-  defp runnables_planned do
+  defp runnables_planned(runnables \\ [planned_runnable()]) do
     entry!(:runnables_planned, %{
       run_id: @run_id,
-      runnables: [planned_runnable()],
+      runnables: runnables,
       occurred_at: @visible_at
     })
   end
@@ -204,8 +248,8 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
     })
   end
 
-  defp attempt_scheduled do
-    entry!(:attempt_scheduled, scheduled_attrs())
+  defp attempt_scheduled(overrides \\ []) do
+    entry!(:attempt_scheduled, scheduled_attrs(overrides))
   end
 
   defp attempt_claimed do
@@ -233,12 +277,14 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
     })
   end
 
-  defp planned_runnable do
-    Map.delete(scheduled_attrs(), :occurred_at)
+  defp planned_runnable(overrides \\ []) do
+    overrides
+    |> scheduled_attrs()
+    |> Map.delete(:occurred_at)
   end
 
-  defp scheduled_attrs do
-    %{
+  defp scheduled_attrs(overrides) do
+    base = %{
       run_id: @run_id,
       runnable_key: @runnable_key,
       idempotency_key: @idempotency_key,
@@ -249,6 +295,8 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
       visible_at: @visible_at,
       occurred_at: @started_at
     }
+
+    Map.merge(base, Map.new(overrides))
   end
 
   defp entry!(type, attrs) do

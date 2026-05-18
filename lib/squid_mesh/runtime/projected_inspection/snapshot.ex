@@ -10,6 +10,10 @@ defmodule SquidMesh.Runtime.ProjectedInspection.Snapshot do
   Terminal runs keep both `terminal?` and `terminal_status` so operator-facing
   surfaces can suppress recovery actions while still distinguishing completed,
   failed, and cancelled histories.
+
+  Future-visible attempts are kept separate from currently visible attempts.
+  This lets operator-facing surfaces explain delayed retry or deferred dispatch
+  state without treating the run as idle or recoverable.
   """
 
   @type reason ::
@@ -19,6 +23,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection.Snapshot do
           | :expired_claim
           | :attempt_claimed
           | :attempt_visible
+          | :attempt_scheduled_for_later
           | :run_started
           | :idle
           | :waiting_for_dispatch
@@ -55,6 +60,8 @@ defmodule SquidMesh.Runtime.ProjectedInspection.Snapshot do
           pending_dispatches: [map()],
           pending_results: [attempt()],
           visible_attempts: [attempt()],
+          scheduled_attempts: [attempt()],
+          next_visible_at: DateTime.t() | nil,
           expired_claims: [attempt()],
           attempts: [attempt()],
           anomalies: [map()]
@@ -86,6 +93,8 @@ defmodule SquidMesh.Runtime.ProjectedInspection.Snapshot do
     pending_dispatches: [],
     pending_results: [],
     visible_attempts: [],
+    scheduled_attempts: [],
+    next_visible_at: nil,
     expired_claims: [],
     attempts: [],
     anomalies: []
