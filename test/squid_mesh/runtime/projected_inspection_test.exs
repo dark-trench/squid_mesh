@@ -167,6 +167,26 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
              snapshot.attempts
   end
 
+  test "shows manual pause state without suggesting dispatch recovery" do
+    append_run_entries([run_started(), runnables_planned(), manual_step_paused()])
+    append_dispatch_entries([attempt_scheduled()])
+
+    assert {:ok, %Snapshot{} = snapshot} =
+             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @visible_at)
+
+    assert snapshot.status == :paused
+    assert snapshot.reason == :manual_intervention_required
+
+    assert snapshot.manual_state == %{
+             step: "wait_for_review",
+             kind: "approval",
+             paused_at: @completed_at,
+             metadata: %{output_key: "approval"}
+           }
+
+    assert [%{runnable_key: @runnable_key, status: :available}] = snapshot.visible_attempts
+  end
+
   test "uses terminal run facts to suppress dispatch redelivery views" do
     append_run_entries([run_started(), runnables_planned(), run_terminal(:completed)])
     append_dispatch_entries([attempt_scheduled(), attempt_claimed()])
@@ -193,6 +213,7 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
 
     assert snapshot.status == :cancelled
     assert snapshot.reason == :terminal
+    assert snapshot.manual_state == nil
     assert snapshot.scheduled_attempts == []
     assert snapshot.visible_attempts == []
     assert [%{runnable_key: @runnable_key, status: :available}] = snapshot.attempts
@@ -283,6 +304,16 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     entry!(:run_terminal, %{
       run_id: @run_id,
       status: status,
+      occurred_at: @completed_at
+    })
+  end
+
+  defp manual_step_paused do
+    entry!(:manual_step_paused, %{
+      run_id: @run_id,
+      step: :wait_for_review,
+      kind: :approval,
+      metadata: %{output_key: "approval"},
       occurred_at: @completed_at
     })
   end

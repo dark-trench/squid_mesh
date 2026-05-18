@@ -62,6 +62,36 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
     assert index_entry.data.workflow == Atom.to_string(__MODULE__)
   end
 
+  test "normalizes manual step lifecycle entries on the run thread" do
+    assert {:ok, paused_entry} =
+             DispatchProtocol.new_entry(:manual_step_paused, %{
+               run_id: @run_id,
+               step: :wait_for_review,
+               kind: :approval,
+               metadata: %{output_key: "approval"},
+               occurred_at: @started_at
+             })
+
+    assert {:ok, resolved_entry} =
+             DispatchProtocol.new_entry(:manual_step_resolved, %{
+               run_id: @run_id,
+               step: :wait_for_review,
+               action: :approved,
+               result: %{actor: "ops_123"},
+               occurred_at: @visible_at
+             })
+
+    assert paused_entry.thread == {:run, @run_id}
+    assert paused_entry.data.step == "wait_for_review"
+    assert paused_entry.data.kind == "approval"
+    assert paused_entry.data.metadata == %{output_key: "approval"}
+
+    assert resolved_entry.thread == {:run, @run_id}
+    assert resolved_entry.data.step == "wait_for_review"
+    assert resolved_entry.data.action == "approved"
+    assert resolved_entry.data.result == %{actor: "ops_123"}
+  end
+
   test "rejects required fields with nil values" do
     assert {:error, {:missing_fields, [:visible_at]}} =
              DispatchProtocol.new_entry(
@@ -86,6 +116,22 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
                run_id: @run_id,
                workflow: nil,
                occurred_at: @started_at
+             })
+
+    assert {:error, {:missing_fields, [:kind]}} =
+             DispatchProtocol.new_entry(:manual_step_paused, %{
+               run_id: @run_id,
+               step: :wait_for_review,
+               kind: nil,
+               occurred_at: @started_at
+             })
+
+    assert {:error, {:missing_fields, [:action]}} =
+             DispatchProtocol.new_entry(:manual_step_resolved, %{
+               run_id: @run_id,
+               step: :wait_for_review,
+               action: nil,
+               occurred_at: @visible_at
              })
   end
 

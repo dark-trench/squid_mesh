@@ -24,6 +24,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection.Snapshot do
           | :attempt_claimed
           | :attempt_visible
           | :attempt_scheduled_for_later
+          | :manual_intervention_required
           | :run_started
           | :idle
           | :waiting_for_dispatch
@@ -53,6 +54,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection.Snapshot do
           reason: reason(),
           terminal?: boolean(),
           terminal_status: atom() | nil,
+          manual_state: map() | nil,
           thread_revisions: %{run: non_neg_integer(), dispatch: non_neg_integer()},
           planned_runnables: [map()],
           planned_runnable_keys: [String.t()],
@@ -87,6 +89,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection.Snapshot do
     :terminal?,
     :terminal_status,
     :thread_revisions,
+    manual_state: nil,
     planned_runnables: [],
     planned_runnable_keys: [],
     applied_runnable_keys: [],

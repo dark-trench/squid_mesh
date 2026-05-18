@@ -32,7 +32,8 @@ inside a host application's supervision tree and infrastructure.
 `SquidMesh.Runtime.WorkflowAgent`
 
 - rebuilds per-run workflow coordination state from durable run-thread journal
-  entries and checkpoints
+  entries and checkpoints, including planned runnables, applied results,
+  manual pause or approval state, and terminal status
 
 `SquidMesh.Runtime.DispatchAgent`
 
@@ -64,7 +65,7 @@ inside a host application's supervision tree and infrastructure.
 - rebuilds workflow and dispatch agent projections into a read-only inspection
   snapshot for the Jido-native runtime path, including pending dispatches,
   unapplied results, scheduled attempts, visible attempts, expired claims,
-  terminal state, and projection anomalies
+  manual intervention state, terminal state, and projection anomalies
 
 `SquidMesh.Runtime.ProjectedExplanation`
 

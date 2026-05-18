@@ -129,6 +129,28 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
            }
   end
 
+  test "explains manual pause state as operator intervention" do
+    append_run_entries([run_started(), runnables_planned(), manual_step_paused()])
+    append_dispatch_entries([attempt_scheduled()])
+
+    assert {:ok, %Explanation{} = explanation} =
+             ProjectedExplanation.explain(@storage, @run_id, queue: @queue, now: @visible_at)
+
+    assert explanation.status == :paused
+    assert explanation.reason == :manual_intervention_required
+    assert explanation.step == "wait_for_review"
+    assert explanation.next_actions == [:resolve_manual_step]
+
+    assert explanation.details == %{
+             step: "wait_for_review",
+             kind: "approval",
+             paused_at: @completed_at,
+             metadata: %{output_key: "approval"}
+           }
+
+    assert explanation.evidence.manual_state == explanation.details
+  end
+
   test "explains terminal runs without suggesting dispatch recovery" do
     append_run_entries([run_started(), runnables_planned(), run_terminal(:completed)])
     append_dispatch_entries([attempt_scheduled(), attempt_claimed()])
@@ -244,6 +266,16 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
     entry!(:run_terminal, %{
       run_id: @run_id,
       status: status,
+      occurred_at: @completed_at
+    })
+  end
+
+  defp manual_step_paused do
+    entry!(:manual_step_paused, %{
+      run_id: @run_id,
+      step: :wait_for_review,
+      kind: :approval,
+      metadata: %{output_key: "approval"},
       occurred_at: @completed_at
     })
   end
