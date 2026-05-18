@@ -4,3 +4,8 @@
 # Jido Signal release contains that update yet. Ecto and Postgrex latest Hex
 # releases still constrain Decimal to 2.x.
 GHSA-rhv4-8758-jx7v
+
+# Cowlib 2.16.1 fixes GHSA-32p9-57cr-4x65 and GHSA-hv23-4qp7-8c8r.
+# GHSA-g2wm-735q-3f56 remains reported against the latest Hex release with no
+# patched version available.
+GHSA-g2wm-735q-3f56
