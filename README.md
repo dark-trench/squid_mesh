@@ -2,11 +2,11 @@
   <h2>SquidMesh—Durable workflows for Elixir apps</h2>
   <img width="350" alt="sm-logo" src="https://github.com/user-attachments/assets/37bdd955-aacf-448e-b050-4d3305020c32" />
   <p>
-    <a href="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml">
-      <img alt="CI" src="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml/badge.svg" />
+    <a href="https://github.com/dark-trench/squid_mesh/actions/workflows/ci.yml">
+      <img alt="CI" src="https://github.com/dark-trench/squid_mesh/actions/workflows/ci.yml/badge.svg" />
     </a>
-    <a href="https://codecov.io/gh/ccarvalho-eng/squid_mesh">
-      <img alt="Codecov" src="https://codecov.io/gh/ccarvalho-eng/squid_mesh/branch/main/graph/badge.svg" />
+    <a href="https://codecov.io/gh/dark-trench/squid_mesh">
+      <img alt="Codecov" src="https://codecov.io/gh/dark-trench/squid_mesh/branch/main/graph/badge.svg" />
     </a>
     <a href="https://hex.pm/packages/squid_mesh">
       <img alt="Hex" src="https://img.shields.io/hexpm/v/squid_mesh" />
@@ -20,7 +20,7 @@
     <a href="https://discord.com/channels/1323353012235796550/1504122798027571331">
       <img alt="Discord" src="https://img.shields.io/badge/Discord-Join_Channel-5865F2?logo=discord&logoColor=white" />
     </a>
-    <a href="https://github.com/ccarvalho-eng/squid_mesh/blob/main/LICENSE">
+    <a href="https://github.com/dark-trench/squid_mesh/blob/main/LICENSE">
       <img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" />
     </a>
   </p>
@@ -51,7 +51,7 @@ different abstraction layers.
 
 ## Companion Dashboard
 
-[SquidSonar](https://github.com/ccarvalho-eng/squid_sonar) is the optional
+[SquidSonar](https://github.com/dark-trench/squid_sonar) is the optional
 read-only Phoenix LiveView dashboard for Squid Mesh. Mount it inside a Phoenix
 host app to inspect recent workflow runs, filter by status, search runtime
 metadata, and view run detail pages with diagnosis, history counts, last error
@@ -427,7 +427,7 @@ Use the docs index for setup, workflow authoring, operations, and architecture:
 - [Host app integration](docs/host_app_integration.md)
 - [Workflow authoring guide](docs/workflow_authoring.md)
 - [Positioning guide](docs/positioning.md)
-- [Example host app](https://github.com/ccarvalho-eng/squid_mesh/tree/main/examples/minimal_host_app)
+- [Example host app](https://github.com/dark-trench/squid_mesh/tree/main/examples/minimal_host_app)
 
 ## Contributing
 
