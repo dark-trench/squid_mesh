@@ -13,7 +13,15 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
           required(:reason) => atom(),
           required(:entry_type) => atom(),
           optional(:runnable_key) => String.t(),
-          optional(:run_id) => String.t()
+          optional(:run_id) => String.t(),
+          optional(:step) => String.t()
+        }
+
+  @type manual_state :: %{
+          required(:step) => String.t(),
+          required(:kind) => String.t(),
+          required(:paused_at) => DateTime.t(),
+          required(:metadata) => map()
         }
 
   @type string_set :: MapSet.t(String.t()) | %MapSet{}
@@ -25,6 +33,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
           planned_runnables: %{optional(String.t()) => map()},
           applied_runnable_keys: string_set(),
           applied_results: %{optional(String.t()) => map() | nil},
+          manual_state: manual_state() | nil,
           terminal_status: atom() | nil,
           anomalies: [anomaly()]
         }
@@ -35,6 +44,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
             planned_runnables: %{},
             applied_runnable_keys: MapSet.new(),
             applied_results: %{},
+            manual_state: nil,
             terminal_status: nil,
             anomalies: []
 
@@ -68,6 +78,10 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   @doc false
   @spec terminal_status(t()) :: atom() | nil
   def terminal_status(%__MODULE__{terminal_status: terminal_status}), do: terminal_status
+
+  @doc false
+  @spec manual_state(t()) :: manual_state() | nil
+  def manual_state(%__MODULE__{manual_state: manual_state}), do: manual_state
 
   @doc false
   @spec planned_runnable_keys(t()) :: [String.t()]
@@ -145,6 +159,28 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
     end
   end
 
+  defp apply_entry(
+         %Entry{type: :manual_step_paused, data: data} = entry,
+         %__MODULE__{} = projection
+       ) do
+    if manual_pause_data?(data) do
+      pause_manual_step(projection, entry, data)
+    else
+      add_anomaly(projection, entry, :malformed_entry)
+    end
+  end
+
+  defp apply_entry(
+         %Entry{type: :manual_step_resolved, data: data} = entry,
+         %__MODULE__{} = projection
+       ) do
+    if manual_resolution_data?(data) do
+      resolve_manual_step(projection, entry, data)
+    else
+      add_anomaly(projection, entry, :malformed_entry)
+    end
+  end
+
   defp apply_entry(%Entry{type: :run_terminal, data: data} = entry, %__MODULE__{} = projection) do
     if required_present?(data, [:run_id, :status]) do
       status = Map.fetch!(data, :status)
@@ -153,6 +189,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
         projection
         | run_id: projection.run_id || Map.fetch!(data, :run_id),
           status: status,
+          manual_state: nil,
           terminal_status: status
       }
     else
@@ -192,15 +229,68 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
     end
   end
 
-  defp applied_results(%__MODULE__{} = projection) do
-    Map.get(projection, :applied_results, %{})
+  defp pause_manual_step(
+         %__MODULE__{terminal_status: nil, manual_state: nil} = projection,
+         entry,
+         data
+       ) do
+    manual_state = %{
+      step: data.step,
+      kind: data.kind,
+      paused_at: entry.occurred_at,
+      metadata: Map.get(data, :metadata, %{})
+    }
+
+    projection
+    |> Map.put(:run_id, projection.run_id || data.run_id)
+    |> Map.put(:manual_state, manual_state)
+    |> refresh_status()
   end
 
-  defp refresh_status(
-         %__MODULE__{terminal_status: nil, planned_runnables: planned_runnables} = projection
+  defp pause_manual_step(
+         %__MODULE__{terminal_status: nil, manual_state: manual_state} = projection,
+         entry,
+         data
+       ) do
+    duplicate_state = %{
+      step: data.step,
+      kind: data.kind,
+      paused_at: entry.occurred_at,
+      metadata: Map.get(data, :metadata, %{})
+    }
+
+    if manual_state == duplicate_state do
+      projection
+    else
+      add_anomaly(projection, entry, :active_manual_step)
+    end
+  end
+
+  defp pause_manual_step(%__MODULE__{} = projection, entry, _data) do
+    add_anomaly(projection, entry, :terminal_run)
+  end
+
+  defp resolve_manual_step(
+         %__MODULE__{terminal_status: nil, manual_state: %{step: step}} = projection,
+         _entry,
+         data
        )
-       when map_size(planned_runnables) == 0 do
-    %__MODULE__{projection | status: :started}
+       when step == data.step do
+    projection
+    |> Map.put(:manual_state, nil)
+    |> refresh_status()
+  end
+
+  defp resolve_manual_step(%__MODULE__{terminal_status: nil} = projection, entry, _data) do
+    add_anomaly(projection, entry, :stale_manual_resolution)
+  end
+
+  defp resolve_manual_step(%__MODULE__{} = projection, entry, _data) do
+    add_anomaly(projection, entry, :terminal_run)
+  end
+
+  defp applied_results(%__MODULE__{} = projection) do
+    Map.get(projection, :applied_results, %{})
   end
 
   defp refresh_status(%__MODULE__{terminal_status: terminal_status} = projection)
@@ -208,7 +298,19 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
     %__MODULE__{projection | status: terminal_status}
   end
 
-  defp refresh_status(%__MODULE__{} = projection) do
+  defp refresh_status(
+         %__MODULE__{
+           manual_state: nil,
+           terminal_status: nil,
+           planned_runnables: planned_runnables
+         } =
+           projection
+       )
+       when map_size(planned_runnables) == 0 do
+    %__MODULE__{projection | status: :started}
+  end
+
+  defp refresh_status(%__MODULE__{manual_state: nil} = projection) do
     planned_keys =
       projection.planned_runnables
       |> Map.keys()
@@ -221,6 +323,10 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
     end
   end
 
+  defp refresh_status(%__MODULE__{} = projection) do
+    %__MODULE__{projection | status: :paused}
+  end
+
   defp runnable_key(runnable) when is_map(runnable) do
     Map.get(runnable, :runnable_key) || Map.get(runnable, "runnable_key") ||
       Map.get(runnable, :key) || Map.get(runnable, "key")
@@ -229,6 +335,18 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   defp runnable_key(_runnable), do: nil
 
   defp normalize_runnable(runnable) when is_map(runnable), do: Map.new(runnable)
+
+  defp manual_pause_data?(data) when is_map(data) do
+    required_present?(data, [:run_id, :step, :kind]) and is_map(Map.get(data, :metadata, %{}))
+  end
+
+  defp manual_pause_data?(_data), do: false
+
+  defp manual_resolution_data?(data) when is_map(data) do
+    required_present?(data, [:run_id, :step, :action]) and is_map(Map.get(data, :result, %{}))
+  end
+
+  defp manual_resolution_data?(_data), do: false
 
   defp add_anomaly(%__MODULE__{} = projection, %Entry{} = entry, reason) do
     data = data_map(entry)
@@ -240,6 +358,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
       }
       |> maybe_put_run_id(Map.get(data, :run_id))
       |> maybe_put_runnable_key(Map.get(data, :runnable_key))
+      |> maybe_put_step(Map.get(data, :step))
 
     %__MODULE__{projection | anomalies: [anomaly | projection.anomalies]}
   end
@@ -260,5 +379,11 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
 
   defp maybe_put_runnable_key(anomaly, runnable_key) do
     Map.put(anomaly, :runnable_key, runnable_key)
+  end
+
+  defp maybe_put_step(anomaly, nil), do: anomaly
+
+  defp maybe_put_step(anomaly, step) do
+    Map.put(anomaly, :step, step)
   end
 end

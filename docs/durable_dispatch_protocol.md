@@ -8,7 +8,8 @@ thread journals and checkpoints.
 ## Threads
 
 - Run thread: workflow lifecycle facts such as run start, planned runnables,
-  applied runnable results, and terminal status.
+  applied runnable results, manual pause/resolution boundaries, and terminal
+  status.
 - Dispatch thread: runnable intent, claim, heartbeat, completion, failure, retry
   visibility, and live wakeup facts.
 - Run index thread: rebuildable lookup entries for finding runs by workflow or
@@ -153,9 +154,36 @@ derive completed-but-unapplied attempts from their durable projections and appen
 the missing run-thread applications in order, using the latest run-thread fence
 after each append.
 
+## Manual Boundaries
+
+Manual pause and approval states are run-thread facts, not dispatch-thread
+facts. `manual_step_paused` records the current manual boundary with its step,
+kind, timestamp, and persisted metadata. `manual_step_resolved` records that the
+same boundary was completed by an operator action such as resume, approve, or
+reject.
+
+The workflow projection exposes only the current manual state. Duplicate pause
+facts are idempotent when they match. A second active manual boundary, a stale
+resolution, or a manual fact appended after the run is terminal becomes a
+projection anomaly instead of changing the current state.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running: run_started
+    Running --> Paused: manual_step_paused
+    Paused --> Running: manual_step_resolved
+    Running --> Terminal: run_terminal
+    Paused --> Terminal: run_terminal
+
+    Paused --> Paused: duplicate matching pause
+    Paused --> Anomaly: second active pause
+    Running --> Anomaly: stale resolution
+    Terminal --> Anomaly: later manual fact
+```
+
 ## Terminal Runs
 
 A `run_terminal` entry fences remaining dispatch work for the run. Rebuilt
 projections exclude terminal-run attempts from visible and expired-claim
-redelivery views, and later wakeup, claim, completion, failure, or apply entries
-for that run are surfaced as anomalies.
+redelivery views, clear current manual state, and surface later wakeup, claim,
+completion, failure, apply, or manual entries for that run as anomalies.

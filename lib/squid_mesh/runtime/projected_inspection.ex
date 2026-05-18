@@ -87,6 +87,9 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
 
     terminal? = WorkflowAgent.Projection.terminal?(workflow_projection)
 
+    manual_state =
+      if terminal?, do: nil, else: WorkflowAgent.Projection.manual_state(workflow_projection)
+
     attempts = run_attempts(dispatch_projection, run_id)
 
     {visible_attempts, scheduled_attempts, expired_claims} =
@@ -110,6 +113,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
           workflow_projection,
           pending_dispatches,
           pending_results,
+          manual_state,
           visible_attempts,
           scheduled_attempts,
           expired_claims,
@@ -117,6 +121,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
         ),
       terminal?: terminal?,
       terminal_status: WorkflowAgent.Projection.terminal_status(workflow_projection),
+      manual_state: manual_state,
       thread_revisions: %{run: run_thread_rev, dispatch: dispatch_thread_rev},
       planned_runnables: normalize_runnables(WorkflowAgent.planned_runnables(workflow_agent)),
       planned_runnable_keys: WorkflowAgent.planned_runnable_keys(workflow_agent),
@@ -140,6 +145,7 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
          %WorkflowAgent.Projection{} = workflow_projection,
          pending_dispatches,
          pending_results,
+         manual_state,
          visible_attempts,
          scheduled_attempts,
          expired_claims,
@@ -148,6 +154,9 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
     cond do
       WorkflowAgent.Projection.terminal?(workflow_projection) ->
         :terminal
+
+      not is_nil(manual_state) ->
+        :manual_intervention_required
 
       pending_results != [] ->
         :completed_result_pending_apply

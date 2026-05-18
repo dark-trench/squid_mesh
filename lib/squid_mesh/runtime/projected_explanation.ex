@@ -152,6 +152,17 @@ defmodule SquidMesh.Runtime.ProjectedExplanation do
     }
   end
 
+  defp explanation_parts(%Snapshot{reason: :manual_intervention_required} = snapshot) do
+    manual_state = snapshot.manual_state || %{}
+
+    {
+      "The run is paused for manual intervention.",
+      manual_state,
+      [:resolve_manual_step],
+      item_value(manual_state, :step)
+    }
+  end
+
   defp explanation_parts(%Snapshot{reason: :terminal} = snapshot) do
     {
       "The run is terminal according to the run journal.",
@@ -196,6 +207,7 @@ defmodule SquidMesh.Runtime.ProjectedExplanation do
       snapshot_reason: snapshot.reason,
       thread_revisions: snapshot.thread_revisions,
       terminal_status: snapshot.terminal_status,
+      manual_state: snapshot.manual_state,
       planned_runnable_keys: snapshot.planned_runnable_keys,
       applied_runnable_keys: snapshot.applied_runnable_keys,
       next_visible_at: snapshot.next_visible_at,

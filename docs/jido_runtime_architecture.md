@@ -101,7 +101,7 @@ crash and restart because their projections can be rebuilt from durable facts.
 | Workflow DSL | Business triggers, payload contracts, step graph, retry declarations | Queue leases, worker lifecycle, storage adapter details |
 | Squid Mesh core | Validation, planning, replay/cancellation semantics, inspection model | Host scheduling infrastructure or external side-effect idempotency |
 | Runtime journal | Append-only facts, thread revisions, checkpoints through `Jido.Storage` | Business decisions hidden outside entries |
-| `WorkflowAgent` | Per-run coordination projection, planned runnables, applied results, terminal state | Executing step code directly |
+| `WorkflowAgent` | Per-run coordination projection, planned runnables, applied results, manual state, terminal state | Executing step code directly |
 | `DispatchAgent` | Queue projection, visible attempts, claims, leases, heartbeats, completions, failures | Choosing the workflow graph |
 | Executor adapter | Waking workers and integrating a delivery backend such as IntentLedger | Rewriting Squid Mesh workflow semantics |
 | Jido actions | Step callback contract and action execution boundary | Whole-workflow orchestration |
@@ -143,6 +143,7 @@ erDiagram
         string type
         string run_id
         string runnable_key
+        string manual_step
         datetime occurred_at
     }
     DISPATCH_ENTRY {
@@ -388,13 +389,13 @@ Design questions before adding such a construct:
 These are intentionally not first-slice requirements. The first
 projection-backed inspection snapshot already rebuilds workflow and dispatch
 agent projections into a read-only view of pending dispatches, unapplied
-results, scheduled attempts, visible attempts, expired claims, terminal state,
-and projection anomalies. Run-index projections now rebuild workflow-scoped run
-lookup state from durable index entries and keep malformed or conflicting index
-facts visible as anomalies. The first projected explanation layer derives
-deterministic reason-specific details and next actions from the inspection
-snapshot. The public `SquidMesh.inspect_run/2` and `SquidMesh.explain_run/2`
-APIs now expose this read model behind the explicit
+results, scheduled attempts, visible attempts, expired claims, manual pause or
+approval state, terminal state, and projection anomalies. Run-index projections
+now rebuild workflow-scoped run lookup state from durable index entries and keep
+malformed or conflicting index facts visible as anomalies. The first projected
+explanation layer derives deterministic reason-specific details and next
+actions from the inspection snapshot. The public `SquidMesh.inspect_run/2` and
+`SquidMesh.explain_run/2` APIs now expose this read model behind the explicit
 `read_model: :journal_projection` option with `journal_storage:`, while the
 stable runtime-table read model remains the default. Callers that opt into
 projection reads pass both options together, for example

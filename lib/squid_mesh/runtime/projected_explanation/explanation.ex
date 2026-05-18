@@ -15,7 +15,9 @@ defmodule SquidMesh.Runtime.ProjectedExplanation.Explanation do
           | :apply_pending_result
           | :recover_expired_claim
           | :wait_for_worker_claim
+          | :wait_until_attempt_visible
           | :wait_for_attempt_completion
+          | :resolve_manual_step
           | :inspect_terminal_run
           | :wait_for_new_runnables
           | :inspect_dispatch_state

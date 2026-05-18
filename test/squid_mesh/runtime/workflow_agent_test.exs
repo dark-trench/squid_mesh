@@ -412,6 +412,143 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
     assert {:error, :not_found} = Journal.load_entries(@storage, {:dispatch, "default"})
   end
 
+  test "projects manual pause and resolution facts from the run thread" do
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, paused} =
+             DispatchProtocol.new_entry(:manual_step_paused, %{
+               run_id: @run_id,
+               step: :wait_for_review,
+               kind: :approval,
+               metadata: %{output_key: "approval"},
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, [run_started, paused])
+
+    assert {:ok, paused_agent} = WorkflowAgent.rebuild(@storage, @run_id)
+
+    assert WorkflowAgent.status(paused_agent) == :paused
+
+    assert Projection.manual_state(paused_agent.state.projection) == %{
+             step: "wait_for_review",
+             kind: "approval",
+             paused_at: @visible_at,
+             metadata: %{output_key: "approval"}
+           }
+
+    assert {:ok, resolved} =
+             DispatchProtocol.new_entry(:manual_step_resolved, %{
+               run_id: @run_id,
+               step: :wait_for_review,
+               action: :approved,
+               result: %{actor: "ops_123"},
+               occurred_at: @completed_at
+             })
+
+    assert {:ok, %{rev: 3}} = Journal.append_entries(@storage, [resolved], expected_rev: 2)
+
+    assert {:ok, resolved_agent} = WorkflowAgent.rebuild(@storage, @run_id)
+
+    assert WorkflowAgent.status(resolved_agent) == :started
+    assert Projection.manual_state(resolved_agent.state.projection) == nil
+  end
+
+  test "reports conflicting manual lifecycle facts as workflow anomalies" do
+    projection =
+      Projection.rebuild([
+        workflow_entry(:run_started, %{
+          run_id: @run_id,
+          workflow: @workflow
+        }),
+        workflow_entry(:manual_step_paused, %{
+          run_id: @run_id,
+          step: "wait_for_review",
+          kind: "approval",
+          metadata: %{}
+        }),
+        workflow_entry(:manual_step_paused, %{
+          run_id: @run_id,
+          step: "wait_for_approval",
+          kind: "pause",
+          metadata: %{}
+        }),
+        workflow_entry(:manual_step_resolved, %{
+          run_id: @run_id,
+          step: "wait_for_approval",
+          action: "resumed",
+          result: %{}
+        })
+      ])
+
+    assert Projection.status(projection) == :paused
+
+    assert Projection.manual_state(projection) == %{
+             step: "wait_for_review",
+             kind: "approval",
+             paused_at: @started_at,
+             metadata: %{}
+           }
+
+    assert [
+             %{
+               entry_type: :manual_step_paused,
+               reason: :active_manual_step,
+               run_id: @run_id,
+               step: "wait_for_approval"
+             },
+             %{
+               entry_type: :manual_step_resolved,
+               reason: :stale_manual_resolution,
+               run_id: @run_id,
+               step: "wait_for_approval"
+             }
+           ] = Projection.anomalies(projection)
+  end
+
+  test "terminal run facts clear current manual state and reject later manual pause facts" do
+    projection =
+      Projection.rebuild([
+        workflow_entry(:run_started, %{
+          run_id: @run_id,
+          workflow: @workflow
+        }),
+        workflow_entry(:manual_step_paused, %{
+          run_id: @run_id,
+          step: "wait_for_review",
+          kind: "approval",
+          metadata: %{}
+        }),
+        workflow_entry(:run_terminal, %{
+          run_id: @run_id,
+          status: :cancelled
+        }),
+        workflow_entry(:manual_step_paused, %{
+          run_id: @run_id,
+          step: "wait_for_approval",
+          kind: "pause",
+          metadata: %{}
+        })
+      ])
+
+    assert Projection.status(projection) == :cancelled
+    assert Projection.manual_state(projection) == nil
+
+    assert [
+             %{
+               entry_type: :manual_step_paused,
+               reason: :terminal_run,
+               run_id: @run_id,
+               step: "wait_for_approval"
+             }
+           ] = Projection.anomalies(projection)
+  end
+
   test "treats applying the same completed dispatch result as idempotent" do
     assert {:ok, run_started} =
              DispatchProtocol.new_entry(:run_started, %{

@@ -21,6 +21,8 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
           :run_started
           | :runnables_planned
           | :runnable_applied
+          | :manual_step_paused
+          | :manual_step_resolved
           | :run_terminal
           | :run_indexed
           | :attempt_scheduled
@@ -30,7 +32,16 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
           | :attempt_failed
           | :live_wakeup_emitted
 
-  @run_entry_types [:run_started, :runnables_planned, :runnable_applied, :run_terminal]
+  @manual_entry_types [:manual_step_paused, :manual_step_resolved]
+
+  @run_entry_types [
+    :run_started,
+    :runnables_planned,
+    :runnable_applied,
+    :manual_step_paused,
+    :manual_step_resolved,
+    :run_terminal
+  ]
 
   @dispatch_entry_types [
     :attempt_scheduled,
@@ -47,6 +58,8 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
     run_started: [:run_id, :workflow, :occurred_at],
     runnables_planned: [:run_id, :runnables, :occurred_at],
     runnable_applied: [:run_id, :runnable_key, :occurred_at],
+    manual_step_paused: [:run_id, :step, :kind, :occurred_at],
+    manual_step_resolved: [:run_id, :step, :action, :occurred_at],
     run_terminal: [:run_id, :status, :occurred_at],
     run_indexed: [:run_id, :workflow, :occurred_at],
     attempt_scheduled: [
@@ -128,6 +141,15 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
     Map.update(attrs, :queue, "default", &normalize_queue/1)
   end
 
+  defp normalize_attrs(attrs, type) when type in @manual_entry_types do
+    attrs
+    |> Map.update(:step, nil, &normalize_manual_value/1)
+    |> Map.update(:kind, nil, &normalize_manual_value/1)
+    |> Map.update(:action, nil, &normalize_manual_value/1)
+    |> Map.put_new(:metadata, %{})
+    |> Map.put_new(:result, %{})
+  end
+
   defp normalize_attrs(attrs, type) when type in @run_index_entry_types do
     Map.update(attrs, :workflow, nil, &normalize_workflow/1)
   end
@@ -164,6 +186,9 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
 
   defp normalize_queue(nil), do: nil
   defp normalize_queue(queue), do: normalize_thread_id(queue)
+
+  defp normalize_manual_value(nil), do: nil
+  defp normalize_manual_value(value), do: normalize_thread_id(value)
 
   defp normalize_thread_id(id) when is_binary(id), do: id
   defp normalize_thread_id(id), do: to_string(id)
