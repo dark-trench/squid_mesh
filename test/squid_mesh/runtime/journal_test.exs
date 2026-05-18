@@ -6,9 +6,12 @@ defmodule SquidMesh.Runtime.JournalTest do
   alias SquidMesh.Runtime.DispatchProtocol.Projection
   alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.Journal.Checkpoint
+  alias SquidMesh.Runtime.RunIndexProjection
 
   @storage {ETS, table: :squid_mesh_journal_test}
   @run_id "run_123"
+  @second_run_id "run_456"
+  @workflow "BillingWorkflow"
   @runnable_key "run_123:charge_card:1"
   @idempotency_key "run_123:charge_card:payment_456"
   @claim_id "claim_1"
@@ -90,6 +93,57 @@ defmodule SquidMesh.Runtime.JournalTest do
               rev: 2,
               entries: ^entries
             }} = Journal.load_thread(@storage, {:dispatch, "default"})
+  end
+
+  test "appends run index entries and rebuilds run index projections" do
+    assert {:ok, first_entry} =
+             DispatchProtocol.new_entry(:run_indexed, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, second_entry} =
+             DispatchProtocol.new_entry(:run_indexed, %{
+               run_id: @second_run_id,
+               workflow: @workflow,
+               occurred_at: @completed_at
+             })
+
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, [first_entry, second_entry])
+
+    assert {:ok, %RunIndexProjection{} = projection} =
+             Journal.rebuild_run_index_projection(@storage, @workflow)
+
+    assert RunIndexProjection.run_ids(projection) == [@run_id, @second_run_id]
+  end
+
+  test "returns an empty run index projection for absent index threads" do
+    assert {:ok, %RunIndexProjection{} = projection} =
+             Journal.rebuild_run_index_projection(@storage, @workflow)
+
+    assert RunIndexProjection.workflow(projection) == @workflow
+    assert RunIndexProjection.run_ids(projection) == []
+    assert RunIndexProjection.anomalies(projection) == []
+  end
+
+  test "normalizes atom workflows when rebuilding run index projections" do
+    workflow = Atom.to_string(__MODULE__)
+
+    assert {:ok, index_entry} =
+             DispatchProtocol.new_entry(:run_indexed, %{
+               run_id: @run_id,
+               workflow: __MODULE__,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [index_entry])
+
+    assert {:ok, %RunIndexProjection{} = projection} =
+             Journal.rebuild_run_index_projection(@storage, __MODULE__)
+
+    assert RunIndexProjection.workflow(projection) == workflow
+    assert RunIndexProjection.run_ids(projection) == [@run_id]
   end
 
   @tag :tmp_dir

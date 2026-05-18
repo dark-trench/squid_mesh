@@ -53,12 +53,18 @@ inside a host application's supervision tree and infrastructure.
   `Jido.Storage`, preserving Jido thread revision pointers for rebuildable
   runtime projections
 
+`SquidMesh.Runtime.RunIndexProjection`
+
+- rebuilds workflow-scoped run lookup state from run-index journal entries,
+  keeping duplicate index facts idempotent and surfacing malformed or
+  conflicting index facts as anomalies
+
 `SquidMesh.Runtime.ProjectedInspection`
 
 - rebuilds workflow and dispatch agent projections into a read-only inspection
   snapshot for the Jido-native runtime path, including pending dispatches,
-  unapplied results, visible attempts, expired claims, terminal state, and
-  projection anomalies
+  unapplied results, scheduled attempts, visible attempts, expired claims,
+  terminal state, and projection anomalies
 
 `SquidMesh.Runtime.ProjectedExplanation`
 
