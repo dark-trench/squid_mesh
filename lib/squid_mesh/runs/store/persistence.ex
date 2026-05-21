@@ -127,15 +127,6 @@ defmodule SquidMesh.Runs.Store.Persistence do
     end
   end
 
-  defp dispatch_inserted_run({:ok, run}, repo, dispatch_fun) do
-    case dispatch_fun.(run) do
-      {:ok, _result} -> run
-      {:error, reason} -> repo.rollback(reason)
-    end
-  end
-
-  defp dispatch_inserted_run({:error, reason}, repo, _dispatch_fun), do: repo.rollback(reason)
-
   @doc false
   @spec noop_dispatch(Run.t()) :: {:ok, :noop}
   def noop_dispatch(_run), do: {:ok, :noop}
@@ -148,6 +139,15 @@ defmodule SquidMesh.Runs.Store.Persistence do
   def cancellation_target_status(:retrying), do: {:ok, :cancelling}
   def cancellation_target_status(:paused), do: {:ok, :cancelled}
   def cancellation_target_status(state), do: {:error, {:invalid_transition, state, :cancelling}}
+
+  defp dispatch_inserted_run({:ok, run}, repo, dispatch_fun) do
+    case dispatch_fun.(run) do
+      {:ok, _result} -> run
+      {:error, reason} -> repo.rollback(reason)
+    end
+  end
+
+  defp dispatch_inserted_run({:error, reason}, repo, _dispatch_fun), do: repo.rollback(reason)
 
   defp initial_current_step(definition) do
     if SquidMesh.Workflow.Definition.dependency_mode?(definition) do

@@ -26,6 +26,18 @@ defmodule SquidMesh.Runtime.ManualAction do
     end
   end
 
+  @doc false
+  @spec build(type(), attrs()) :: persisted()
+  def build(type, attrs) when type in [:resumed, :approved, :rejected] and is_map(attrs) do
+    %{
+      "event" => Atom.to_string(type),
+      "at" => DateTime.to_iso8601(DateTime.utc_now(:microsecond))
+    }
+    |> maybe_put("actor", Map.get(attrs, :actor))
+    |> maybe_put("comment", Map.get(attrs, :comment))
+    |> maybe_put("metadata", Map.get(attrs, :metadata))
+  end
+
   defp validation_errors(attrs, required_actor?) do
     []
     |> validate_actor(attrs, required_actor?)
@@ -59,18 +71,6 @@ defmodule SquidMesh.Runtime.ManualAction do
     else
       errors
     end
-  end
-
-  @doc false
-  @spec build(type(), attrs()) :: persisted()
-  def build(type, attrs) when type in [:resumed, :approved, :rejected] and is_map(attrs) do
-    %{
-      "event" => Atom.to_string(type),
-      "at" => DateTime.to_iso8601(DateTime.utc_now(:microsecond))
-    }
-    |> maybe_put("actor", Map.get(attrs, :actor))
-    |> maybe_put("comment", Map.get(attrs, :comment))
-    |> maybe_put("metadata", Map.get(attrs, :metadata))
   end
 
   defp valid_actor?(actor),

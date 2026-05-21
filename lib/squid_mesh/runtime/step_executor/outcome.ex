@@ -72,6 +72,29 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     end
   end
 
+  @doc false
+  @spec reconcile_completed_step(
+          Config.t(),
+          SquidMesh.Workflow.Definition.t(),
+          Run.t(),
+          PreparedStep.t()
+        ) ::
+          :ok | {:error, execution_error() | term()}
+  def reconcile_completed_step(
+        %Config{} = config,
+        definition,
+        %Run{} = run,
+        %PreparedStep{step_name: step_name, step_run: %{output: output}}
+      ) do
+    mapped_output = StepInput.normalize_map_keys(output || %{})
+
+    with {:ok, events} <-
+           advance_after_completed_step(config, definition, run, step_name, mapped_output, []) do
+      Events.emit(events)
+      :ok
+    end
+  end
+
   defp rollback_execution_error({:ok, events}, _config), do: events
   defp rollback_execution_error({:error, reason}, config), do: config.repo.rollback(reason)
 
@@ -323,29 +346,6 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
       {:error, reason} ->
         {:error, reason}
-    end
-  end
-
-  @doc false
-  @spec reconcile_completed_step(
-          Config.t(),
-          SquidMesh.Workflow.Definition.t(),
-          Run.t(),
-          PreparedStep.t()
-        ) ::
-          :ok | {:error, execution_error() | term()}
-  def reconcile_completed_step(
-        %Config{} = config,
-        definition,
-        %Run{} = run,
-        %PreparedStep{step_name: step_name, step_run: %{output: output}}
-      ) do
-    mapped_output = StepInput.normalize_map_keys(output || %{})
-
-    with {:ok, events} <-
-           advance_after_completed_step(config, definition, run, step_name, mapped_output, []) do
-      Events.emit(events)
-      :ok
     end
   end
 
