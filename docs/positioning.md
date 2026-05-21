@@ -72,7 +72,7 @@ host-executor path until the journal-backed execution path is wired through.
 | Host executor boundary | Supported | Squid Mesh delegates queueing, delayed scheduling, redelivery, and cron activation to `SquidMesh.Executor`. |
 | Human approval workflows | Supported | Pause and approval flows are durable for transition-based workflows. |
 | Replay and cancellation | Supported | Replay respects irreversible and non-compensatable steps; cancellation converges through persisted run state. |
-| Inspection and explanation | Supported, evolving | Current inspection reads persisted runtime tables. The new core will rebuild views from durable journals and checkpoints in [#163](https://github.com/dark-trench/squid_mesh/issues/163). |
+| Inspection and explanation | Supported, evolving | Runtime-table inspection remains the default. Callers can opt into journal-backed inspection and explanation with `read_model: :journal_projection` and `journal_storage:`; [#163](https://github.com/dark-trench/squid_mesh/issues/163) tracks remaining projection coverage. |
 | Durable dispatch protocol | In progress | The pure protocol, projection, and `Jido.Storage` journal boundary define runnable intent, claims, leases, heartbeats, completion, failure, retries, terminal-run fencing, and checkpoint pointers. It is implemented as a foundation, but not yet the full live execution path. |
 | Jido.Storage-backed core | In progress | Protocol entries and projection checkpoints can be persisted through `Jido.Storage`; live runtime adoption remains follow-up work after [#162](https://github.com/dark-trench/squid_mesh/issues/162). |
 | Jido-native runtime agents | In progress | Workflow and dispatch agents can rebuild from durable journals and checkpoints; [#164](https://github.com/dark-trench/squid_mesh/issues/164) covers the completed agent foundation. |
@@ -177,7 +177,9 @@ are being prepared for the next runtime generation.
 
 Use the current runtime when you need the supported workflow DSL, persisted run
 history, host-executor integration, retries, approvals, replay, cancellation,
-and inspection backed by the existing Postgres tables.
+and inspection backed by the existing Postgres tables. Use
+`read_model: :journal_projection` with `journal_storage:` when you need the
+Jido-native journal-backed inspection or explanation read model.
 
 Treat the durable dispatch protocol as an architectural foundation. It defines
 the vocabulary for runnable intent, claim fencing, leases, heartbeats, retries,
@@ -190,7 +192,7 @@ Track the linked issues for the larger runtime transition:
 - [#170](https://github.com/dark-trench/squid_mesh/issues/170) covers the
   lease, heartbeat, and fencing guarantees expected from the durable executor
   integration.
-- [#163](https://github.com/dark-trench/squid_mesh/issues/163) covers
-  journal-backed inspection and explanation projections.
+- [#163](https://github.com/dark-trench/squid_mesh/issues/163) covers remaining
+  journal-backed inspection and explanation projection coverage.
 Oban can still be a practical executor choice in a host application. It is an
 executor implementation detail, not the core Squid Mesh runtime model.
