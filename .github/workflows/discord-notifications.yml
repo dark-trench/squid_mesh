@@ -1,0 +1,73 @@
+name: Discord Notifications
+
+on:
+  watch:
+    types: [started]
+  issues:
+    types: [opened]
+  pull_request:
+    types: [opened, ready_for_review]
+  release:
+    types: [published]
+  workflow_run:
+    workflows: ["CI", "Security Scan"]
+    types: [completed]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      ACTOR: ${{ github.actor }}
+      EVENT_NAME: ${{ github.event_name }}
+      REPO: ${{ github.repository }}
+
+    steps:
+      - name: Notify Discord
+        if: env.DISCORD_WEBHOOK != ''
+        run: |
+          set -euo pipefail
+
+          case "$EVENT_NAME" in
+            watch)
+              content="⭐ **${ACTOR}** starred **${REPO}**\nhttps://github.com/${REPO}\nhttps://github.com/${ACTOR}"
+              ;;
+            issues)
+              title="$(jq -r '.issue.title' "$GITHUB_EVENT_PATH")"
+              url="$(jq -r '.issue.html_url' "$GITHUB_EVENT_PATH")"
+              content="📝 New issue in **${REPO}** by **${ACTOR}**\n${title}\n${url}"
+              ;;
+            pull_request)
+              action="$(jq -r '.action' "$GITHUB_EVENT_PATH")"
+              title="$(jq -r '.pull_request.title' "$GITHUB_EVENT_PATH")"
+              url="$(jq -r '.pull_request.html_url' "$GITHUB_EVENT_PATH")"
+              label="New PR"
+              if [ "$action" = "ready_for_review" ]; then
+                label="PR ready for review"
+              fi
+              content="🔀 ${label} in **${REPO}** by **${ACTOR}**\n${title}\n${url}"
+              ;;
+            release)
+              tag="$(jq -r '.release.tag_name' "$GITHUB_EVENT_PATH")"
+              url="$(jq -r '.release.html_url' "$GITHUB_EVENT_PATH")"
+              content="🚀 **${REPO}** released **${tag}**\n${url}"
+              ;;
+            workflow_run)
+              conclusion="$(jq -r '.workflow_run.conclusion' "$GITHUB_EVENT_PATH")"
+              default_branch="$(jq -r '.repository.default_branch' "$GITHUB_EVENT_PATH")"
+              workflow="$(jq -r '.workflow_run.name' "$GITHUB_EVENT_PATH")"
+              branch="$(jq -r '.workflow_run.head_branch' "$GITHUB_EVENT_PATH")"
+              url="$(jq -r '.workflow_run.html_url' "$GITHUB_EVENT_PATH")"
+              if [ "$conclusion" != "failure" ] || [ "$branch" != "$default_branch" ]; then
+                exit 0
+              fi
+              content="❌ **${workflow}** failed on **${branch}** for **${REPO}**\n${url}"
+              ;;
+          esac
+
+          payload="$(jq -n --arg content "$content" '{content: $content}')"
+
+          curl -H "Content-Type: application/json" \
+            -X POST \
+            -d "$payload" \
+            "$DISCORD_WEBHOOK"
