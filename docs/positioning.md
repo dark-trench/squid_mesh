@@ -21,9 +21,11 @@ Squid Mesh sits between a job backend and a standalone workflow service.
 - It is less than a separate workflow platform: Squid Mesh runs inside the host
   app and delegates queueing, delayed scheduling, redelivery, and cron
   activation to the host's chosen executor.
-- It is not a generic replacement for Jido, Runic, Reactor, Ash Reactor, Sage,
-  or FlowStone: those projects solve adjacent problems at different abstraction
-  layers.
+- Jido, Runic, and Spark are foundation layers in the current architecture.
+- Reactor, Ash Reactor, Sage, and FlowStone solve adjacent workflow and
+  orchestration problems at different abstraction layers.
+- Squid Mesh is not a generic replacement for all of them; it targets durable,
+  inspectable workflow runs inside Phoenix and OTP applications.
 
 That boundary is deliberate. The host application keeps its domain contexts,
 database, supervision tree, observability stack, and job infrastructure. Squid
@@ -128,12 +130,19 @@ operator inspection; explanation; and executor-backed recovery. Reactor and Ash
 Reactor are useful comparison points for orchestration semantics, while Squid
 Mesh focuses on long-running, inspectable, host-app workflow state.
 
-## Adjacent Projects
+## Foundation Layers
 
 | Project | Primary fit | Relationship to Squid Mesh |
 | --- | --- | --- |
 | [Jido](https://hex.pm/packages/jido) | OTP-native agents, actions, signals, directives, and supervised autonomous systems. | Runtime foundation and interop layer. Squid Mesh keeps raw Jido primitives out of the common workflow authoring path. |
 | [Runic](https://hex.pm/packages/runic) | Data-driven workflow graphs, dependency planning, and runnable extraction. | Planner foundation. Squid Mesh maps declared workflow structure and readiness into durable runnable intent. |
+| [Spark](https://hex.pm/packages/spark) | Declarative Elixir DSL and extension framework. | Authoring foundation. Squid Mesh uses Spark to define the workflow DSL and normalized workflow spec. |
+| Durable executor backends | Concrete delivery mechanics such as queues, scheduled work, leases, redelivery, and worker infrastructure. | Delivery foundation. Squid Mesh keeps this boundary backend-neutral while tracking IntentLedger as the preferred durable executor direction. |
+
+## Adjacent Choices
+
+| Project | Primary fit | Relationship to Squid Mesh |
+| --- | --- | --- |
 | [Reactor](https://hex.pm/packages/reactor) | Concurrent dependency-resolving saga orchestration for Elixir applications, with compensation and undo semantics. | Closest adjacent orchestrator. Squid Mesh emphasizes durable host-app workflow state, operator inspection, approvals, replay, cancellation, and executor-backed recovery. |
 | [Ash Reactor](https://hexdocs.pm/ash/reactor.html) | Ash-native orchestration over resources and actions, built on Reactor. | Strong fit for Ash applications that want saga orchestration inside the Ash domain model. Squid Mesh targets broader Phoenix/OTP workflow runs with durable history, HITL, replay, cancellation, and recovery. |
 | [Sage](https://hex.pm/packages/sage) | Dependency-free saga composition with transaction and compensation callbacks. | Good fit for local saga execution. Squid Mesh targets longer-lived inspectable workflow runs with persisted step and attempt history. |
