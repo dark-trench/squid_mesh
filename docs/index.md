@@ -10,7 +10,7 @@ reference material.
 - [Workflow authoring](workflow_authoring.md) for the workflow DSL, payloads,
   steps, transitions, and cron triggers
 - [Positioning](positioning.md) for Squid Mesh's product lane relative to Jido,
-  Runic, Reactor, Sage, and FlowStone
+  Runic, Reactor, Ash Reactor, Sage, and FlowStone
 - [Compatibility matrix](compatibility.md) for the supported baseline
 
 ## Example Workflow Shapes

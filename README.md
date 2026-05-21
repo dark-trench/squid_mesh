@@ -34,8 +34,8 @@ history, retries, approvals, replay, cancellation, and operator inspection.
 It sits between a job backend and a standalone workflow service: more
 structured and inspectable than a job queue, but still embedded in the host app
 instead of running as a separate platform. It is not a generic replacement for
-Runic, Reactor, Sage, or FlowStone; those projects solve adjacent problems at
-different abstraction layers.
+Runic, Reactor, Ash Reactor, Sage, or FlowStone; those projects solve adjacent
+problems at different abstraction layers.
 
 ## What It Does
 
