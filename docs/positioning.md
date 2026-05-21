@@ -21,8 +21,9 @@ Squid Mesh sits between a job backend and a standalone workflow service.
 - It is less than a separate workflow platform: Squid Mesh runs inside the host
   app and delegates queueing, delayed scheduling, redelivery, and cron
   activation to the host's chosen executor.
-- It is not a generic replacement for Jido, Runic, Reactor, Sage, or FlowStone:
-  those projects solve adjacent problems at different abstraction layers.
+- It is not a generic replacement for Jido, Runic, Reactor, Ash Reactor, Sage,
+  or FlowStone: those projects solve adjacent problems at different abstraction
+  layers.
 
 That boundary is deliberate. The host application keeps its domain contexts,
 database, supervision tree, observability stack, and job infrastructure. Squid
@@ -106,13 +107,35 @@ Use Jido directly when the main abstraction is an autonomous or supervised
 agent. Use Squid Mesh when the main abstraction is a durable workflow run that
 operators need to inspect, resume, retry, replay, or cancel.
 
+## Reactor And Ash Reactor
+
+[Reactor](https://hex.pm/packages/reactor) is the closest adjacent project at
+the orchestration layer. It is a strong fit for in-process dependency graphs,
+concurrent step execution, saga compensation, and undo behavior. Teams that need
+a short-lived saga or dependency-resolving operation inside regular Elixir code
+should evaluate Reactor directly.
+
+[Ash Reactor](https://hexdocs.pm/ash/reactor.html) is Reactor's Ash integration
+layer. It is especially compelling for Ash-first applications because workflow
+steps can call Ash resources and actions with Ash actor, context, and domain
+semantics. In an Ash application, Ash Reactor is often the most natural way to
+orchestrate Ash actions.
+
+Squid Mesh intentionally sits one layer farther out. It treats the durable
+workflow run as the product surface: persisted run, step, attempt, and audit
+history; approvals and manual unblocking; replay and cancellation policy;
+operator inspection; explanation; and executor-backed recovery. Reactor and Ash
+Reactor are useful comparison points for orchestration semantics, while Squid
+Mesh focuses on long-running, inspectable, host-app workflow state.
+
 ## Adjacent Projects
 
 | Project | Primary fit | Relationship to Squid Mesh |
 | --- | --- | --- |
 | [Jido](https://hex.pm/packages/jido) | OTP-native agents, actions, signals, directives, and supervised autonomous systems. | Runtime foundation and interop layer. Squid Mesh keeps raw Jido primitives out of the common workflow authoring path. |
 | [Runic](https://hex.pm/packages/runic) | Data-driven workflow graphs, dependency planning, and runnable extraction. | Planner foundation. Squid Mesh maps declared workflow structure and readiness into durable runnable intent. |
-| [Reactor](https://hex.pm/packages/reactor) | Concurrent dependency-resolving saga orchestration for Elixir applications, with Ash integration available through Ash Reactor. | Adjacent orchestrator. Squid Mesh emphasizes durable host-app workflow state, operator inspection, approvals, replay, and the Jido-native runtime direction. |
+| [Reactor](https://hex.pm/packages/reactor) | Concurrent dependency-resolving saga orchestration for Elixir applications, with compensation and undo semantics. | Closest adjacent orchestrator. Squid Mesh emphasizes durable host-app workflow state, operator inspection, approvals, replay, cancellation, and executor-backed recovery. |
+| [Ash Reactor](https://hexdocs.pm/ash/reactor.html) | Ash-native orchestration over resources and actions, built on Reactor. | Strong fit for Ash applications that want saga orchestration inside the Ash domain model. Squid Mesh targets broader Phoenix/OTP workflow runs with durable history, HITL, replay, cancellation, and recovery. |
 | [Sage](https://hex.pm/packages/sage) | Dependency-free saga composition with transaction and compensation callbacks. | Good fit for local saga execution. Squid Mesh targets longer-lived inspectable workflow runs with persisted step and attempt history. |
 | [FlowStone](https://hex.pm/packages/flowstone) | Asset-first data orchestration and dependency-aware pipelines. | Adjacent data-pipeline tool. Squid Mesh focuses on application workflows, approvals, recovery policy, dispatch semantics, and inspection. |
 
