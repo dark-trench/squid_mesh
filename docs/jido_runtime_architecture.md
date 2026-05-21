@@ -30,7 +30,7 @@ The final intended shape is anchored in the public issue roadmap:
 | [#164](https://github.com/dark-trench/squid_mesh/issues/164) | Closed | Adds rebuildable workflow and dispatch agents |
 | [#165](https://github.com/dark-trench/squid_mesh/issues/165) | Closed | Compiles Spark workflow specs into Runic planner state |
 | [#170](https://github.com/dark-trench/squid_mesh/issues/170) | Open | Adds IntentLedger-backed leases, heartbeats, and fencing for running attempts |
-| [#163](https://github.com/dark-trench/squid_mesh/issues/163) | Open | Rebuilds inspection and explanation as projections over journals and checkpoints |
+| [#163](https://github.com/dark-trench/squid_mesh/issues/163) | Closed | Rebuilds inspection and explanation as projections over journals and checkpoints |
 | [#140](https://github.com/dark-trench/squid_mesh/issues/140) | Open | Adds conditional and deferred continuation through durable planner facts |
 | [#141](https://github.com/dark-trench/squid_mesh/issues/141) | Open | Adds dynamic graph expansion after the static Jido-native core is proven |
 | [#109](https://github.com/dark-trench/squid_mesh/issues/109) | Open | Adds reference workflows that demonstrate the target product surface |
@@ -403,7 +403,7 @@ projection reads pass both options together, for example
 
 | Feature | Issue | Runtime dependency |
 | --- | --- | --- |
-| Projection-backed inspection and explanation completion | [#163](https://github.com/dark-trench/squid_mesh/issues/163) | Complete coverage for paused, retrying, cancelled, failed, and ambiguous attempt states |
+| Projection-backed inspection and explanation hardening | No active issue | Additional coverage for ambiguous attempt states and operator-facing edge cases |
 | Conditional paths and deferred continuation | [#140](https://github.com/dark-trench/squid_mesh/issues/140) | Durable planner facts and wakeup metadata |
 | Dynamic graph expansion | [#141](https://github.com/dark-trench/squid_mesh/issues/141) | Proven static Runic planning, stable identifiers, inspectable origin metadata |
 | Advanced reference workflows | [#109](https://github.com/dark-trench/squid_mesh/issues/109) | Implemented target features only, without Oban-specific assumptions |

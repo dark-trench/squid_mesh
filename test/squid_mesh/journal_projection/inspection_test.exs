@@ -1,12 +1,12 @@
-defmodule SquidMesh.ReadModel.InspectionTest do
+defmodule SquidMesh.JournalProjection.InspectionTest do
   use ExUnit.Case, async: false
 
-  alias SquidMesh.ReadModel.Inspection
-  alias SquidMesh.ReadModel.Inspection.Snapshot
+  alias SquidMesh.JournalProjection.Inspection
+  alias SquidMesh.JournalProjection.Inspection.Snapshot
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.Journal
 
-  @storage {Jido.Storage.ETS, table: :squid_mesh_read_model_inspection_test}
+  @storage {Jido.Storage.ETS, table: :squid_mesh_journal_projection_inspection_test}
   @run_id "run_123"
   @workflow "BillingWorkflow"
   @queue "default"
@@ -374,9 +374,9 @@ defmodule SquidMesh.ReadModel.InspectionTest do
     entry
   end
 
-  defp table_name(:checkpoints), do: :squid_mesh_read_model_inspection_test_checkpoints
-  defp table_name(:threads), do: :squid_mesh_read_model_inspection_test_threads
-  defp table_name(:thread_meta), do: :squid_mesh_read_model_inspection_test_thread_meta
+  defp table_name(:checkpoints), do: :squid_mesh_journal_projection_inspection_test_checkpoints
+  defp table_name(:threads), do: :squid_mesh_journal_projection_inspection_test_threads
+  defp table_name(:thread_meta), do: :squid_mesh_journal_projection_inspection_test_thread_meta
 
   defp cleanup_storage do
     for suffix <- [:checkpoints, :threads, :thread_meta] do

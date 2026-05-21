@@ -2,9 +2,13 @@ defmodule SquidMeshTest do
   use SquidMesh.DataCase, async: false
 
   alias SquidMesh.Executor.Payload
+  alias SquidMesh.JournalProjection.Explanation.Diagnostic
+  alias SquidMesh.JournalProjection.Inspection.Snapshot
   alias SquidMesh.Run
   alias SquidMesh.Runs
   alias SquidMesh.Runs.StepState
+  alias SquidMesh.Runtime.DispatchProtocol
+  alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.Runner
   alias SquidMesh.Runtime.Unblocker
   alias SquidMesh.Test.Job
@@ -1601,5 +1605,180 @@ defmodule SquidMeshTest do
       assert {:error, {:invalid_review, %{actor: :required}}} =
                SquidMesh.approve_run(run.id, %{actor: %{}}, repo: Repo)
     end
+  end
+
+  describe "journal projection read model" do
+    @journal_projection_storage {Jido.Storage.ETS,
+                                 table: :squid_mesh_journal_projection_squid_mesh_test}
+    @journal_projection_run_id "run_123"
+    @journal_projection_workflow "BillingWorkflow"
+    @journal_projection_queue "default"
+    @journal_projection_runnable_key "run_123:charge_card:1"
+    @journal_projection_idempotency_key "run_123:charge_card:payment_456"
+    @journal_projection_started_at ~U[2026-05-15 00:00:00Z]
+    @journal_projection_visible_at ~U[2026-05-15 00:00:10Z]
+
+    setup do
+      cleanup_journal_projection_storage()
+      on_exit(&cleanup_journal_projection_storage/0)
+    end
+
+    test "inspect_run/2 can read from the journal projection" do
+      append_journal_projection_run_entries([
+        journal_projection_run_started(),
+        journal_projection_runnables_planned()
+      ])
+
+      append_journal_projection_dispatch_entries([journal_projection_attempt_scheduled()])
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.inspect_run(@journal_projection_run_id,
+                 read_model: :journal_projection,
+                 journal_storage: @journal_projection_storage,
+                 queue: @journal_projection_queue,
+                 now: @journal_projection_visible_at
+               )
+
+      assert snapshot.run_id == @journal_projection_run_id
+      assert snapshot.workflow == @journal_projection_workflow
+      assert snapshot.queue == @journal_projection_queue
+      assert snapshot.reason == :attempt_visible
+
+      assert [%{runnable_key: @journal_projection_runnable_key, status: :available}] =
+               snapshot.visible_attempts
+    end
+
+    test "explain_run/2 can read from the journal projection" do
+      append_journal_projection_run_entries([
+        journal_projection_run_started(),
+        journal_projection_runnables_planned()
+      ])
+
+      assert {:ok, %Diagnostic{} = explanation} =
+               SquidMesh.explain_run(@journal_projection_run_id,
+                 read_model: :journal_projection,
+                 journal_storage: @journal_projection_storage,
+                 queue: @journal_projection_queue,
+                 now: @journal_projection_visible_at
+               )
+
+      assert explanation.run_id == @journal_projection_run_id
+      assert explanation.workflow == @journal_projection_workflow
+      assert explanation.queue == @journal_projection_queue
+      assert explanation.reason == :planned_dispatch_pending_schedule
+      assert explanation.next_actions == [:schedule_pending_dispatch]
+    end
+
+    test "journal projection requires explicit journal storage" do
+      assert {:error, {:invalid_option, {:journal_storage, nil}}} =
+               SquidMesh.inspect_run(@journal_projection_run_id, read_model: :journal_projection)
+
+      assert {:error, {:invalid_option, {:journal_storage, nil}}} =
+               SquidMesh.explain_run(@journal_projection_run_id, read_model: :journal_projection)
+    end
+
+    test "returns a structured error for unsupported read models" do
+      assert {:error, {:invalid_option, {:read_model, :unknown}}} =
+               SquidMesh.inspect_run(@journal_projection_run_id, read_model: :unknown)
+
+      assert {:error, {:invalid_option, {:read_model, :unknown}}} =
+               SquidMesh.explain_run(@journal_projection_run_id, read_model: :unknown)
+    end
+
+    test "returns a structured error for malformed option lists" do
+      assert {:error, {:invalid_option, {:opts, [:bad]}}} =
+               SquidMesh.inspect_run(@journal_projection_run_id, [:bad])
+
+      assert {:error, {:invalid_option, {:opts, [:bad]}}} =
+               SquidMesh.explain_run(@journal_projection_run_id, [:bad])
+    end
+
+    test "journal projection rejects malformed run ids without raising" do
+      assert {:error, {:invalid_option, {:run_id, 123}}} =
+               SquidMesh.inspect_run(123,
+                 read_model: :journal_projection,
+                 journal_storage: @journal_projection_storage
+               )
+
+      assert {:error, {:invalid_option, {:run_id, 123}}} =
+               SquidMesh.explain_run(123,
+                 read_model: :journal_projection,
+                 journal_storage: @journal_projection_storage
+               )
+    end
+  end
+
+  defp append_journal_projection_run_entries(entries) do
+    assert {:ok, _thread} = Journal.append_entries(@journal_projection_storage, entries)
+  end
+
+  defp append_journal_projection_dispatch_entries(entries) do
+    assert {:ok, _thread} = Journal.append_entries(@journal_projection_storage, entries)
+  end
+
+  defp journal_projection_run_started do
+    journal_projection_entry!(:run_started, %{
+      run_id: @journal_projection_run_id,
+      workflow: @journal_projection_workflow,
+      occurred_at: @journal_projection_started_at
+    })
+  end
+
+  defp journal_projection_runnables_planned do
+    journal_projection_entry!(:runnables_planned, %{
+      run_id: @journal_projection_run_id,
+      runnables: [journal_projection_planned_runnable()],
+      occurred_at: @journal_projection_visible_at
+    })
+  end
+
+  defp journal_projection_attempt_scheduled do
+    journal_projection_entry!(:attempt_scheduled, journal_projection_scheduled_attrs())
+  end
+
+  defp journal_projection_planned_runnable do
+    Map.delete(journal_projection_scheduled_attrs(), :occurred_at)
+  end
+
+  defp journal_projection_scheduled_attrs do
+    %{
+      run_id: @journal_projection_run_id,
+      runnable_key: @journal_projection_runnable_key,
+      idempotency_key: @journal_projection_idempotency_key,
+      attempt_number: 1,
+      queue: @journal_projection_queue,
+      step: "charge_card",
+      input: %{"payment_id" => "pay_123"},
+      visible_at: @journal_projection_visible_at,
+      occurred_at: @journal_projection_started_at
+    }
+  end
+
+  defp journal_projection_entry!(type, attrs) do
+    assert {:ok, entry} = DispatchProtocol.new_entry(type, attrs)
+    entry
+  end
+
+  defp journal_projection_table_name(:checkpoints),
+    do: :squid_mesh_journal_projection_squid_mesh_test_checkpoints
+
+  defp journal_projection_table_name(:threads),
+    do: :squid_mesh_journal_projection_squid_mesh_test_threads
+
+  defp journal_projection_table_name(:thread_meta),
+    do: :squid_mesh_journal_projection_squid_mesh_test_thread_meta
+
+  defp cleanup_journal_projection_storage do
+    for suffix <- [:checkpoints, :threads, :thread_meta] do
+      delete_table_if_present(journal_projection_table_name(suffix))
+    end
+  end
+
+  defp delete_table_if_present(table) do
+    if :ets.whereis(table) != :undefined do
+      :ets.delete(table)
+    end
+  rescue
+    ArgumentError -> :ok
   end
 end
