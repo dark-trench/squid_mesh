@@ -44,7 +44,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias SquidMesh.Runtime.StepExecutor
   alias SquidMesh.Runtime.StepExecutor.Outcome
   alias SquidMesh.Runtime.StepExecutor.Preparation
-  alias SquidMesh.StepRunStore
+  alias SquidMesh.Steps
   alias SquidMesh.Test.Job
   alias SquidMesh.Test.StepWorker
 
@@ -1544,10 +1544,10 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
       assert {:ok, run} = SquidMesh.start_run(SuccessfulWorkflow, input, repo: Repo)
-      assert {:ok, running_run} = SquidMesh.RunStore.transition_run(Repo, run.id, :running)
+      assert {:ok, running_run} = SquidMesh.Runs.Store.transition_run(Repo, run.id, :running)
 
       assert {:ok, step_run, :execute} =
-               StepRunStore.begin_step(Repo, running_run.id, :load_invoice, input)
+               Steps.Store.begin_step(Repo, running_run.id, :load_invoice, input)
 
       assert :ok =
                StepWorker.perform(%Job{
@@ -1563,7 +1563,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     test "marks the run failed when dispatching the next step fails after a successful step" do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
-      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, SuccessfulWorkflow, input)
+      assert {:ok, run} = SquidMesh.Runs.Store.create_run(Repo, SuccessfulWorkflow, input)
       assert :ok = StepExecutor.execute(run.id, nil, repo: Repo, executor: MissingExecutor)
 
       assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
@@ -1637,24 +1637,24 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       config = Config.load!(repo: Repo)
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
-      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, DependencyWorkflow, input)
+      assert {:ok, run} = SquidMesh.Runs.Store.create_run(Repo, DependencyWorkflow, input)
 
       assert {:ok, completed_root, :execute} =
-               StepRunStore.begin_step(Repo, run.id, :load_account, input)
+               Steps.Store.begin_step(Repo, run.id, :load_account, input)
 
       assert {:ok, _completed_root} =
-               StepRunStore.complete_step(Repo, completed_root.id, %{
+               Steps.Store.complete_step(Repo, completed_root.id, %{
                  account: %{id: "acct_123", tier: "pro"}
                })
 
       assert {:ok, prepared_run} =
-               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :running, %{
                  current_step: :load_invoice,
                  context: %{account: %{id: "acct_123", tier: "pro"}}
                })
 
       assert {:ok, step_run, :execute} =
-               StepRunStore.begin_step(Repo, prepared_run.id, :load_invoice, input)
+               Steps.Store.begin_step(Repo, prepared_run.id, :load_invoice, input)
 
       assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
 
@@ -1700,24 +1700,24 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       config = Config.load!(repo: Repo)
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
-      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, DependencyWorkflow, input)
+      assert {:ok, run} = SquidMesh.Runs.Store.create_run(Repo, DependencyWorkflow, input)
 
       assert {:ok, completed_root, :execute} =
-               StepRunStore.begin_step(Repo, run.id, :load_account, input)
+               Steps.Store.begin_step(Repo, run.id, :load_account, input)
 
       assert {:ok, _completed_root} =
-               StepRunStore.complete_step(Repo, completed_root.id, %{
+               Steps.Store.complete_step(Repo, completed_root.id, %{
                  account: %{id: "acct_123", tier: "pro"}
                })
 
       assert {:ok, prepared_run} =
-               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :running, %{
                  current_step: :load_invoice,
                  context: %{account: %{id: "acct_123", tier: "pro"}}
                })
 
       assert {:ok, step_run, :execute} =
-               StepRunStore.begin_step(Repo, prepared_run.id, :load_invoice, input)
+               Steps.Store.begin_step(Repo, prepared_run.id, :load_invoice, input)
 
       assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
 
@@ -1768,7 +1768,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
     test "marks the run failed when scheduling a retry fails" do
       assert {:ok, run} =
-               SquidMesh.RunStore.create_run(Repo, BackoffWorkflow, %{account_id: "acct_123"})
+               SquidMesh.Runs.Store.create_run(Repo, BackoffWorkflow, %{account_id: "acct_123"})
 
       assert :ok = StepExecutor.execute(run.id, nil, repo: Repo, executor: MissingExecutor)
 
@@ -1792,21 +1792,21 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     test "reconciles completed step history when redelivery finds run state behind it" do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
-      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, SuccessfulWorkflow, input)
+      assert {:ok, run} = SquidMesh.Runs.Store.create_run(Repo, SuccessfulWorkflow, input)
 
       assert {:ok, running_run} =
-               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :running, %{
                  current_step: :load_invoice
                })
 
       assert {:ok, step_run, :execute} =
-               StepRunStore.begin_step(Repo, running_run.id, :load_invoice, input)
+               Steps.Store.begin_step(Repo, running_run.id, :load_invoice, input)
 
       assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
       assert {:ok, _attempt} = AttemptStore.complete_attempt(Repo, attempt.id)
 
       assert {:ok, _step_run} =
-               StepRunStore.complete_step(Repo, step_run.id, %{
+               Steps.Store.complete_step(Repo, step_run.id, %{
                  account: %{id: "acct_123"},
                  invoice: %{id: "inv_456", status: "open"}
                })
@@ -1831,15 +1831,15 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     test "reclaims stale running attempts before executing a redelivered step" do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
-      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, SuccessfulWorkflow, input)
+      assert {:ok, run} = SquidMesh.Runs.Store.create_run(Repo, SuccessfulWorkflow, input)
 
       assert {:ok, running_run} =
-               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :running, %{
                  current_step: :load_invoice
                })
 
       assert {:ok, step_run, :execute} =
-               StepRunStore.begin_step(Repo, running_run.id, :load_invoice, input)
+               Steps.Store.begin_step(Repo, running_run.id, :load_invoice, input)
 
       assert {:ok, first_attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
       first_attempt_id = first_attempt.id
@@ -1879,15 +1879,15 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     test "skips stale running attempts by default" do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
-      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, SuccessfulWorkflow, input)
+      assert {:ok, run} = SquidMesh.Runs.Store.create_run(Repo, SuccessfulWorkflow, input)
 
       assert {:ok, running_run} =
-               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :running, %{
                  current_step: :load_invoice
                })
 
       assert {:ok, step_run, :execute} =
-               StepRunStore.begin_step(Repo, running_run.id, :load_invoice, input)
+               Steps.Store.begin_step(Repo, running_run.id, :load_invoice, input)
 
       assert {:ok, first_attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
 
@@ -1919,7 +1919,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
       assert {:ok, config} = Config.load(repo: Repo)
-      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, DependencyWorkflow, input)
+      assert {:ok, run} = SquidMesh.Runs.Store.create_run(Repo, DependencyWorkflow, input)
 
       assert {:error, {:unknown_step, :missing_step}} =
                Dispatcher.dispatch_steps(
@@ -1938,7 +1938,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
       assert {:ok, config} = Config.load(repo: Repo, executor: MissingExecutor)
-      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, DependencyWorkflow, input)
+      assert {:ok, run} = SquidMesh.Runs.Store.create_run(Repo, DependencyWorkflow, input)
 
       assert {:error, _reason} =
                Dispatcher.dispatch_steps(config, run, [:load_account, :load_invoice],
@@ -1952,10 +1952,10 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
       assert {:ok, config} = Config.load(repo: Repo, executor: MissingExecutor)
-      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, DependencyWorkflow, input)
+      assert {:ok, run} = SquidMesh.Runs.Store.create_run(Repo, DependencyWorkflow, input)
 
       assert {:ok, [:load_account]} =
-               StepRunStore.schedule_steps(Repo, run.id, [
+               Steps.Store.schedule_steps(Repo, run.id, [
                  {:load_account, %{account_id: "acct_123"}}
                ])
 
@@ -1992,10 +1992,10 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     test "does not claim a step when preparation observes a stale running run after cancellation" do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
-      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, SuccessfulWorkflow, input)
+      assert {:ok, run} = SquidMesh.Runs.Store.create_run(Repo, SuccessfulWorkflow, input)
 
       assert {:ok, stale_running_run} =
-               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :running, %{
                  current_step: :load_invoice
                })
 
@@ -2070,12 +2070,12 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                )
 
       assert {:ok, running_run} =
-               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :running, %{
                  current_step: :wait_for_approval
                })
 
       assert {:ok, step_run, :execute} =
-               StepRunStore.begin_step(Repo, run.id, :wait_for_approval, %{
+               Steps.Store.begin_step(Repo, run.id, :wait_for_approval, %{
                  account_id: "acct_123"
                })
 
@@ -2134,22 +2134,24 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                )
 
       assert {:ok, running_run} =
-               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :running, %{
                  current_step: :wait_for_approval
                })
 
       assert {:ok, step_run, :execute} =
-               StepRunStore.begin_step(Repo, run.id, :wait_for_approval, %{
+               Steps.Store.begin_step(Repo, run.id, :wait_for_approval, %{
                  account_id: "acct_123"
                })
 
       assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
 
-      assert {:ok, cancelling_run} = SquidMesh.RunStore.transition_run(Repo, run.id, :cancelling)
+      assert {:ok, cancelling_run} =
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :cancelling)
+
       assert cancelling_run.status == :cancelling
 
       assert {:ok, cancelled_run} =
-               SquidMesh.RunStore.transition_run(Repo, run.id, :cancelled, %{current_step: nil})
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :cancelled, %{current_step: nil})
 
       assert cancelled_run.status == :cancelled
 

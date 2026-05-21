@@ -3,8 +3,8 @@ defmodule SquidMeshTest do
 
   alias SquidMesh.Executor.Payload
   alias SquidMesh.Run
+  alias SquidMesh.Runs
   alias SquidMesh.RunStepState
-  alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Runner
   alias SquidMesh.Runtime.Unblocker
   alias SquidMesh.Test.Job
@@ -1143,7 +1143,7 @@ defmodule SquidMeshTest do
                  repo: Repo
                )
 
-      assert {:ok, _failed_run} = RunStore.transition_run(Repo, pending_run.id, :failed)
+      assert {:ok, _failed_run} = Runs.Store.transition_run(Repo, pending_run.id, :failed)
 
       assert {:ok, runs} = SquidMesh.list_runs([status: :failed], repo: Repo)
 
@@ -1197,7 +1197,7 @@ defmodule SquidMeshTest do
                  repo: Repo
                )
 
-      assert {:ok, running_run} = RunStore.transition_run(Repo, run.id, :running)
+      assert {:ok, running_run} = Runs.Store.transition_run(Repo, run.id, :running)
       assert {:ok, cancelling_run} = SquidMesh.cancel_run(running_run.id, repo: Repo)
 
       assert cancelling_run.status == :cancelling
@@ -1272,7 +1272,7 @@ defmodule SquidMeshTest do
 
     test "rolls back replay creation when dispatching the replayed run fails" do
       assert {:ok, source_run} =
-               RunStore.create_run(
+               Runs.Store.create_run(
                  Repo,
                  InvoiceReminderWorkflow,
                  %{account_id: "acct_123", invoice_id: "inv_123"}

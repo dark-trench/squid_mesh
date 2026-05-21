@@ -5,10 +5,10 @@ defmodule SquidMesh.ObservabilityTest do
 
   alias SquidMesh.AttemptStore
   alias SquidMesh.Config
-  alias SquidMesh.RunStore
+  alias SquidMesh.Runs
   alias SquidMesh.Runtime.StepExecutor.Outcome
   alias SquidMesh.Runtime.StepExecutor.Preparation
-  alias SquidMesh.StepRunStore
+  alias SquidMesh.Steps
   alias SquidMesh.Test.StepWorker
 
   @events [
@@ -276,13 +276,13 @@ defmodule SquidMesh.ObservabilityTest do
 
     assert {:ok, config} = Config.load(repo: Repo)
     assert {:ok, definition} = SquidMesh.Workflow.Definition.load(SuccessfulWorkflow)
-    assert {:ok, run} = RunStore.create_run(Repo, SuccessfulWorkflow, %{account_id: "acct_123"})
+    assert {:ok, run} = Runs.Store.create_run(Repo, SuccessfulWorkflow, %{account_id: "acct_123"})
 
     assert {:ok, running_run} =
-             RunStore.transition_run(Repo, run.id, :running, %{current_step: :deliver_invoice})
+             Runs.Store.transition_run(Repo, run.id, :running, %{current_step: :deliver_invoice})
 
     assert {:ok, step_run, :execute} =
-             StepRunStore.begin_step(Repo, run.id, :deliver_invoice, %{account_id: "acct_123"})
+             Steps.Store.begin_step(Repo, run.id, :deliver_invoice, %{account_id: "acct_123"})
 
     assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
 
@@ -327,7 +327,7 @@ defmodule SquidMesh.ObservabilityTest do
 
     assert {:ok, config} = Config.load(repo: Repo)
     assert {:ok, definition} = SquidMesh.Workflow.Definition.load(SuccessfulWorkflow)
-    assert {:ok, run} = RunStore.create_run(Repo, SuccessfulWorkflow, %{account_id: "acct_123"})
+    assert {:ok, run} = Runs.Store.create_run(Repo, SuccessfulWorkflow, %{account_id: "acct_123"})
 
     flush_telemetry_events()
     flush_preparation_tx_events()
@@ -357,13 +357,13 @@ defmodule SquidMesh.ObservabilityTest do
 
     assert {:ok, config} = Config.load(repo: Repo)
     assert {:ok, definition} = SquidMesh.Workflow.Definition.load(DispatchWorkflow)
-    assert {:ok, run} = RunStore.create_run(Repo, DispatchWorkflow, %{account_id: "acct_123"})
+    assert {:ok, run} = Runs.Store.create_run(Repo, DispatchWorkflow, %{account_id: "acct_123"})
 
     assert {:ok, running_run} =
-             RunStore.transition_run(Repo, run.id, :running, %{current_step: :prepare_invoice})
+             Runs.Store.transition_run(Repo, run.id, :running, %{current_step: :prepare_invoice})
 
     assert {:ok, step_run, :execute} =
-             StepRunStore.begin_step(Repo, run.id, :prepare_invoice, %{account_id: "acct_123"})
+             Steps.Store.begin_step(Repo, run.id, :prepare_invoice, %{account_id: "acct_123"})
 
     assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
 
@@ -439,13 +439,13 @@ defmodule SquidMesh.ObservabilityTest do
   test "does not emit retry scheduled telemetry when retry dispatch fails" do
     assert {:ok, config} = Config.load(repo: Repo, executor: MissingExecutor)
     assert {:ok, definition} = SquidMesh.Workflow.Definition.load(RetryWorkflow)
-    assert {:ok, run} = RunStore.create_run(Repo, RetryWorkflow, %{account_id: "acct_123"})
+    assert {:ok, run} = Runs.Store.create_run(Repo, RetryWorkflow, %{account_id: "acct_123"})
 
     assert {:ok, running_run} =
-             RunStore.transition_run(Repo, run.id, :running, %{current_step: :check_gateway})
+             Runs.Store.transition_run(Repo, run.id, :running, %{current_step: :check_gateway})
 
     assert {:ok, step_run, :execute} =
-             StepRunStore.begin_step(Repo, run.id, :check_gateway, %{account_id: "acct_123"})
+             Steps.Store.begin_step(Repo, run.id, :check_gateway, %{account_id: "acct_123"})
 
     assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
 
@@ -541,13 +541,13 @@ defmodule SquidMesh.ObservabilityTest do
   test "emits paused step failure before the cancelled run transition when cancellation wins during pause progression" do
     assert {:ok, config} = Config.load(repo: Repo)
     assert {:ok, definition} = SquidMesh.Workflow.Definition.load(PauseWorkflow)
-    assert {:ok, run} = RunStore.create_run(Repo, PauseWorkflow, %{account_id: "acct_123"})
+    assert {:ok, run} = Runs.Store.create_run(Repo, PauseWorkflow, %{account_id: "acct_123"})
 
     assert {:ok, running_run} =
-             RunStore.transition_run(Repo, run.id, :running, %{current_step: :wait_for_approval})
+             Runs.Store.transition_run(Repo, run.id, :running, %{current_step: :wait_for_approval})
 
     assert {:ok, step_run, :execute} =
-             StepRunStore.begin_step(Repo, run.id, :wait_for_approval, %{account_id: "acct_123"})
+             Steps.Store.begin_step(Repo, run.id, :wait_for_approval, %{account_id: "acct_123"})
 
     assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
     assert {:ok, cancelling_run} = SquidMesh.cancel_run(run.id, repo: Repo)
