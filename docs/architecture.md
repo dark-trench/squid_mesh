@@ -13,11 +13,11 @@ inside a host application's supervision tree and infrastructure.
 
 - public runtime API for starting, inspecting, listing, cancelling, and replaying runs
 
-`SquidMesh.RunStore`
+`SquidMesh.Runs.Store`
 
 - durable run persistence and run lifecycle transitions
 
-`SquidMesh.StepRunStore`
+`SquidMesh.Steps.Store`
 
 - durable state for individual workflow steps
 
@@ -60,14 +60,14 @@ inside a host application's supervision tree and infrastructure.
   keeping duplicate index facts idempotent and surfacing malformed or
   conflicting index facts as anomalies
 
-`SquidMesh.Runtime.ProjectedInspection`
+`SquidMesh.JournalProjection.Inspection`
 
 - rebuilds workflow and dispatch agent projections into a read-only inspection
   snapshot for the Jido-native runtime path, including pending dispatches,
   unapplied results, scheduled attempts, visible attempts, expired claims,
   manual intervention state, terminal state, and projection anomalies
 
-`SquidMesh.Runtime.ProjectedExplanation`
+`SquidMesh.JournalProjection.Explanation`
 
 - turns a projection-backed inspection snapshot into a deterministic operator
   explanation with reason-specific details, suggested runtime next actions, and

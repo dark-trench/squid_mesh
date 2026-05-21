@@ -1,13 +1,13 @@
-defmodule SquidMesh.Runtime.ProjectedExplanationTest do
+defmodule SquidMesh.JournalProjection.ExplanationTest do
   use ExUnit.Case, async: false
 
+  alias SquidMesh.JournalProjection.Explanation
+  alias SquidMesh.JournalProjection.Explanation.Diagnostic
+  alias SquidMesh.JournalProjection.Inspection.Snapshot
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.Journal
-  alias SquidMesh.Runtime.ProjectedExplanation
-  alias SquidMesh.Runtime.ProjectedExplanation.Explanation
-  alias SquidMesh.Runtime.ProjectedInspection.Snapshot
 
-  @storage {Jido.Storage.ETS, table: :squid_mesh_projected_explanation_test}
+  @storage {Jido.Storage.ETS, table: :squid_mesh_journal_projection_explanation_test}
   @run_id "run_123"
   @workflow "BillingWorkflow"
   @queue "default"
@@ -31,8 +31,8 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
   test "explains planned runnables that are missing dispatch entries" do
     append_run_entries([run_started(), runnables_planned()])
 
-    assert {:ok, %Explanation{} = explanation} =
-             ProjectedExplanation.explain(@storage, @run_id, queue: @queue, now: @visible_at)
+    assert {:ok, %Diagnostic{} = explanation} =
+             Explanation.explain(@storage, @run_id, queue: @queue, now: @visible_at)
 
     assert explanation.run_id == @run_id
     assert explanation.workflow == @workflow
@@ -75,8 +75,8 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
       )
     ])
 
-    assert {:ok, %Explanation{} = explanation} =
-             ProjectedExplanation.explain(@storage, @run_id, queue: @queue, now: @started_at)
+    assert {:ok, %Diagnostic{} = explanation} =
+             Explanation.explain(@storage, @run_id, queue: @queue, now: @started_at)
 
     assert explanation.reason == :attempt_scheduled_for_later
     assert explanation.step == "charge_card"
@@ -96,8 +96,8 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
     append_run_entries([run_started(), runnables_planned()])
     append_dispatch_entries([attempt_scheduled(), attempt_claimed(), attempt_completed()])
 
-    assert {:ok, %Explanation{} = explanation} =
-             ProjectedExplanation.explain(@storage, @run_id, queue: @queue, now: @completed_at)
+    assert {:ok, %Diagnostic{} = explanation} =
+             Explanation.explain(@storage, @run_id, queue: @queue, now: @completed_at)
 
     assert explanation.reason == :completed_result_pending_apply
     assert explanation.step == "charge_card"
@@ -115,8 +115,8 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
     append_run_entries([run_started(), runnables_planned()])
     append_dispatch_entries([attempt_scheduled(), attempt_claimed()])
 
-    assert {:ok, %Explanation{} = explanation} =
-             ProjectedExplanation.explain(@storage, @run_id, queue: @queue, now: @expired_at)
+    assert {:ok, %Diagnostic{} = explanation} =
+             Explanation.explain(@storage, @run_id, queue: @queue, now: @expired_at)
 
     assert explanation.reason == :expired_claim
     assert explanation.step == "charge_card"
@@ -133,8 +133,8 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
     append_run_entries([run_started(), runnables_planned(), manual_step_paused()])
     append_dispatch_entries([attempt_scheduled()])
 
-    assert {:ok, %Explanation{} = explanation} =
-             ProjectedExplanation.explain(@storage, @run_id, queue: @queue, now: @visible_at)
+    assert {:ok, %Diagnostic{} = explanation} =
+             Explanation.explain(@storage, @run_id, queue: @queue, now: @visible_at)
 
     assert explanation.status == :paused
     assert explanation.reason == :manual_intervention_required
@@ -155,8 +155,8 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
     append_run_entries([run_started(), runnables_planned(), run_terminal(:completed)])
     append_dispatch_entries([attempt_scheduled(), attempt_claimed()])
 
-    assert {:ok, %Explanation{} = explanation} =
-             ProjectedExplanation.explain(@storage, @run_id, queue: @queue, now: @expired_at)
+    assert {:ok, %Diagnostic{} = explanation} =
+             Explanation.explain(@storage, @run_id, queue: @queue, now: @expired_at)
 
     assert explanation.status == :completed
     assert explanation.reason == :terminal
@@ -172,8 +172,8 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
       append_run_entries([run_started(), runnables_planned(), run_terminal(status)])
       append_dispatch_entries([attempt_scheduled(), attempt_claimed()])
 
-      assert {:ok, %Explanation{} = explanation} =
-               ProjectedExplanation.explain(@storage, @run_id, queue: @queue, now: @expired_at)
+      assert {:ok, %Diagnostic{} = explanation} =
+               Explanation.explain(@storage, @run_id, queue: @queue, now: @expired_at)
 
       assert explanation.status == status
       assert explanation.reason == :terminal
@@ -213,7 +213,7 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
       ]
     }
 
-    explanation = ProjectedExplanation.from_snapshot(snapshot)
+    explanation = Explanation.from_snapshot(snapshot)
 
     assert explanation.reason == :attempt_visible
     assert explanation.step == "charge_card"
@@ -224,18 +224,18 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
 
   test "returns projected inspection errors unchanged" do
     assert {:error, :not_found} =
-             ProjectedExplanation.explain(@storage, "missing_run",
+             Explanation.explain(@storage, "missing_run",
                queue: @queue,
                now: @visible_at
              )
 
     assert {:error, {:invalid_option, {:option, :unknown}}} =
-             ProjectedExplanation.explain(@storage, @run_id, unknown: true)
+             Explanation.explain(@storage, @run_id, unknown: true)
   end
 
   test "returns a structured error for invalid run identifiers" do
     assert {:error, {:invalid_option, {:run_id, 123}}} =
-             ProjectedExplanation.explain(@storage, 123, queue: @queue, now: @visible_at)
+             Explanation.explain(@storage, 123, queue: @queue, now: @visible_at)
   end
 
   defp append_run_entries(entries) do
@@ -336,9 +336,9 @@ defmodule SquidMesh.Runtime.ProjectedExplanationTest do
     entry
   end
 
-  defp table_name(:checkpoints), do: :squid_mesh_projected_explanation_test_checkpoints
-  defp table_name(:threads), do: :squid_mesh_projected_explanation_test_threads
-  defp table_name(:thread_meta), do: :squid_mesh_projected_explanation_test_thread_meta
+  defp table_name(:checkpoints), do: :squid_mesh_journal_projection_explanation_test_checkpoints
+  defp table_name(:threads), do: :squid_mesh_journal_projection_explanation_test_threads
+  defp table_name(:thread_meta), do: :squid_mesh_journal_projection_explanation_test_thread_meta
 
   defp cleanup_storage do
     for suffix <- [:checkpoints, :threads, :thread_meta] do

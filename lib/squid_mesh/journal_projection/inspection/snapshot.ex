@@ -1,4 +1,4 @@
-defmodule SquidMesh.Runtime.ProjectedInspection.Snapshot do
+defmodule SquidMesh.JournalProjection.Inspection.Snapshot do
   @moduledoc """
   Projection-backed inspection snapshot for one Jido-native workflow run.
 

@@ -14,7 +14,7 @@ defmodule SquidMesh.Runtime.Compensation do
   alias SquidMesh.Config
   alias SquidMesh.Run
   alias SquidMesh.Runtime.StepInput
-  alias SquidMesh.StepRunStore
+  alias SquidMesh.Steps
 
   @type compensation_error :: {:compensation_failed, [map()]}
 
@@ -29,7 +29,7 @@ defmodule SquidMesh.Runtime.Compensation do
           boolean()
   def compensation_available?(repo, definition, run_id) do
     repo
-    |> StepRunStore.completed_step_runs_for_compensation(run_id)
+    |> Steps.Store.completed_step_runs_for_compensation(run_id)
     |> Enum.any?(fn step_run ->
       step_name = SquidMesh.Workflow.Definition.deserialize_step(definition, step_run.step)
 
@@ -55,7 +55,7 @@ defmodule SquidMesh.Runtime.Compensation do
   def compensate_completed_steps(%Config{} = config, definition, %Run{} = run, failure)
       when is_map(failure) do
     config.repo
-    |> StepRunStore.completed_step_runs_for_compensation(run.id)
+    |> Steps.Store.completed_step_runs_for_compensation(run.id)
     |> Enum.reduce_while({:ok, []}, fn step_run, {:ok, failures} ->
       case compensate_step(config, definition, run, step_run, failure) do
         :ok -> {:cont, {:ok, failures}}
@@ -104,7 +104,7 @@ defmodule SquidMesh.Runtime.Compensation do
         started_at: DateTime.to_iso8601(DateTime.utc_now())
       })
 
-    with {:ok, _step_run} <- StepRunStore.update_recovery(config.repo, step_run.id, recovery) do
+    with {:ok, _step_run} <- Steps.Store.update_recovery(config.repo, step_run.id, recovery) do
       {:ok, recovery}
     end
   end
@@ -171,7 +171,7 @@ defmodule SquidMesh.Runtime.Compensation do
 
     recovery = Map.put(recovery, :compensation, compensation)
 
-    with {:ok, _step_run} <- StepRunStore.update_recovery(config.repo, step_run.id, recovery) do
+    with {:ok, _step_run} <- Steps.Store.update_recovery(config.repo, step_run.id, recovery) do
       :ok
     end
   end
@@ -185,7 +185,7 @@ defmodule SquidMesh.Runtime.Compensation do
 
     recovery = Map.put(recovery, :compensation, compensation)
 
-    with {:ok, _step_run} <- StepRunStore.update_recovery(config.repo, step_run.id, recovery) do
+    with {:ok, _step_run} <- Steps.Store.update_recovery(config.repo, step_run.id, recovery) do
       :ok
     end
   end

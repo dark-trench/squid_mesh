@@ -16,11 +16,11 @@ defmodule SquidMesh.Runtime.Reviewer do
   alias SquidMesh.Persistence.StepAttempt
   alias SquidMesh.Persistence.StepRun
   alias SquidMesh.Run
-  alias SquidMesh.RunStore.Persistence
-  alias SquidMesh.RunStore.Serialization
+  alias SquidMesh.Runs.Store.Persistence
+  alias SquidMesh.Runs.Store.Serialization
   alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.ManualAction
-  alias SquidMesh.StepRunStore
+  alias SquidMesh.Steps
 
   @type decision :: :approved | :rejected
   @type review_attrs :: %{
@@ -60,7 +60,7 @@ defmodule SquidMesh.Runtime.Reviewer do
          {:ok, attempt} <- running_attempt(config.repo, step_run.id),
          {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt.id),
          {:ok, _step_run} <-
-           StepRunStore.complete_manual_step(
+           Steps.Store.complete_manual_step(
              config.repo,
              step_run.id,
              mapped_output,

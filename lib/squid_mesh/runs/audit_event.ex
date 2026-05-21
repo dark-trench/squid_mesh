@@ -1,4 +1,4 @@
-defmodule SquidMesh.RunAuditEvent do
+defmodule SquidMesh.Runs.AuditEvent do
   @moduledoc """
   Public representation of one durable workflow audit event.
 

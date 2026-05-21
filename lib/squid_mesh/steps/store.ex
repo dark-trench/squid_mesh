@@ -1,4 +1,4 @@
-defmodule SquidMesh.StepRunStore do
+defmodule SquidMesh.Steps.Store do
   @moduledoc """
   Durable store for per-step workflow execution state.
 
@@ -225,19 +225,6 @@ defmodule SquidMesh.StepRunStore do
     end
   end
 
-  defp update_failure_recovery(repo, step_run_id, recovery, failure) do
-    updated_recovery = Map.put(recovery || %{}, "failure", serialize_recovery_value(failure))
-    updates = [recovery: updated_recovery, updated_at: now_utc()]
-
-    StepRun
-    |> where([step_run], step_run.id == ^step_run_id and step_run.status == "failed")
-    |> repo.update_all(set: updates)
-    |> case do
-      {1, _rows} -> {:ok, repo.get!(StepRun, step_run_id)}
-      {0, _rows} -> stale_step_run_error(repo, step_run_id)
-    end
-  end
-
   @doc """
   Persists pause-resume metadata for a running pause step without completing it.
   """
@@ -379,6 +366,19 @@ defmodule SquidMesh.StepRunStore do
     |> select([step_run], {step_run.step, step_run.status})
     |> repo.all()
     |> Map.new(fn {step, status} -> {step, deserialize_status(status)} end)
+  end
+
+  defp update_failure_recovery(repo, step_run_id, recovery, failure) do
+    updated_recovery = Map.put(recovery || %{}, "failure", serialize_recovery_value(failure))
+    updates = [recovery: updated_recovery, updated_at: now_utc()]
+
+    StepRun
+    |> where([step_run], step_run.id == ^step_run_id and step_run.status == "failed")
+    |> repo.update_all(set: updates)
+    |> case do
+      {1, _rows} -> {:ok, repo.get!(StepRun, step_run_id)}
+      {0, _rows} -> stale_step_run_error(repo, step_run_id)
+    end
   end
 
   @spec insert_step_run(module(), map()) :: {:ok, StepRun.t()} | :duplicate

@@ -1,12 +1,12 @@
-defmodule SquidMesh.Runtime.ProjectedInspectionTest do
+defmodule SquidMesh.JournalProjection.InspectionTest do
   use ExUnit.Case, async: false
 
+  alias SquidMesh.JournalProjection.Inspection
+  alias SquidMesh.JournalProjection.Inspection.Snapshot
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.Journal
-  alias SquidMesh.Runtime.ProjectedInspection
-  alias SquidMesh.Runtime.ProjectedInspection.Snapshot
 
-  @storage {Jido.Storage.ETS, table: :squid_mesh_projected_inspection_test}
+  @storage {Jido.Storage.ETS, table: :squid_mesh_journal_projection_inspection_test}
   @run_id "run_123"
   @workflow "BillingWorkflow"
   @queue "default"
@@ -32,7 +32,7 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     append_dispatch_entries([attempt_scheduled()])
 
     assert {:ok, %Snapshot{} = snapshot} =
-             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @visible_at)
+             Inspection.snapshot(@storage, @run_id, queue: @queue, now: @visible_at)
 
     assert snapshot.run_id == @run_id
     assert snapshot.workflow == @workflow
@@ -54,7 +54,7 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     append_dispatch_entries([attempt_scheduled()])
 
     assert {:ok, %Snapshot{} = snapshot} =
-             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @started_at)
+             Inspection.snapshot(@storage, @run_id, queue: @queue, now: @started_at)
 
     assert snapshot.status == :running
     assert snapshot.reason == :attempt_scheduled_for_later
@@ -95,7 +95,7 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     ])
 
     assert {:ok, %Snapshot{} = snapshot} =
-             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @started_at)
+             Inspection.snapshot(@storage, @run_id, queue: @queue, now: @started_at)
 
     assert snapshot.reason == :attempt_scheduled_for_later
     assert snapshot.next_visible_at == @visible_at
@@ -110,7 +110,7 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     append_run_entries([run_started(), runnables_planned()])
 
     assert {:ok, %Snapshot{} = snapshot} =
-             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @visible_at)
+             Inspection.snapshot(@storage, @run_id, queue: @queue, now: @visible_at)
 
     assert snapshot.status == :running
     assert snapshot.reason == :planned_dispatch_pending_schedule
@@ -133,7 +133,7 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     append_dispatch_entries([attempt_scheduled(), attempt_claimed(), attempt_completed()])
 
     assert {:ok, %Snapshot{} = snapshot} =
-             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @completed_at)
+             Inspection.snapshot(@storage, @run_id, queue: @queue, now: @completed_at)
 
     assert snapshot.status == :running
     assert snapshot.reason == :completed_result_pending_apply
@@ -156,7 +156,7 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     append_dispatch_entries([attempt_scheduled(), attempt_claimed(), attempt_completed()])
 
     assert {:ok, %Snapshot{} = snapshot} =
-             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @completed_at)
+             Inspection.snapshot(@storage, @run_id, queue: @queue, now: @completed_at)
 
     assert snapshot.status == :idle
     assert snapshot.reason == :idle
@@ -172,7 +172,7 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     append_dispatch_entries([attempt_scheduled()])
 
     assert {:ok, %Snapshot{} = snapshot} =
-             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @visible_at)
+             Inspection.snapshot(@storage, @run_id, queue: @queue, now: @visible_at)
 
     assert snapshot.status == :paused
     assert snapshot.reason == :manual_intervention_required
@@ -192,7 +192,7 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     append_dispatch_entries([attempt_scheduled(), attempt_claimed()])
 
     assert {:ok, %Snapshot{} = snapshot} =
-             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @expired_at)
+             Inspection.snapshot(@storage, @run_id, queue: @queue, now: @expired_at)
 
     assert snapshot.status == :completed
     assert snapshot.reason == :terminal
@@ -209,7 +209,7 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     append_dispatch_entries([attempt_scheduled()])
 
     assert {:ok, %Snapshot{} = snapshot} =
-             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @started_at)
+             Inspection.snapshot(@storage, @run_id, queue: @queue, now: @started_at)
 
     assert snapshot.status == :cancelled
     assert snapshot.reason == :terminal
@@ -226,7 +226,7 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
       append_dispatch_entries([attempt_scheduled(), attempt_claimed()])
 
       assert {:ok, %Snapshot{} = snapshot} =
-               ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: @expired_at)
+               Inspection.snapshot(@storage, @run_id, queue: @queue, now: @expired_at)
 
       assert snapshot.status == status
       assert snapshot.reason == :terminal
@@ -239,7 +239,7 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
 
   test "returns not found when the run thread is missing" do
     assert {:error, :not_found} =
-             ProjectedInspection.snapshot(@storage, "missing_run",
+             Inspection.snapshot(@storage, "missing_run",
                queue: @queue,
                now: @visible_at
              )
@@ -247,10 +247,10 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
 
   test "returns invalid option errors for invalid option values" do
     assert {:error, {:invalid_option, {:now, :soon}}} =
-             ProjectedInspection.snapshot(@storage, @run_id, queue: @queue, now: :soon)
+             Inspection.snapshot(@storage, @run_id, queue: @queue, now: :soon)
 
     assert {:error, {:invalid_option, {:queue, %{name: @queue}}}} =
-             ProjectedInspection.snapshot(@storage, @run_id,
+             Inspection.snapshot(@storage, @run_id,
                queue: %{name: @queue},
                now: @visible_at
              )
@@ -258,13 +258,13 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
 
   test "returns invalid option errors for malformed or unsupported options" do
     assert {:error, {:invalid_option, {:opts, %{queue: @queue}}}} =
-             ProjectedInspection.snapshot(@storage, @run_id, %{queue: @queue})
+             Inspection.snapshot(@storage, @run_id, %{queue: @queue})
 
     assert {:error, {:invalid_option, {:opts, [:bad]}}} =
-             ProjectedInspection.snapshot(@storage, @run_id, [:bad])
+             Inspection.snapshot(@storage, @run_id, [:bad])
 
     assert {:error, {:invalid_option, {:option, :unknown}}} =
-             ProjectedInspection.snapshot(@storage, @run_id, unknown: true)
+             Inspection.snapshot(@storage, @run_id, unknown: true)
   end
 
   defp append_run_entries(entries) do
@@ -374,9 +374,9 @@ defmodule SquidMesh.Runtime.ProjectedInspectionTest do
     entry
   end
 
-  defp table_name(:checkpoints), do: :squid_mesh_projected_inspection_test_checkpoints
-  defp table_name(:threads), do: :squid_mesh_projected_inspection_test_threads
-  defp table_name(:thread_meta), do: :squid_mesh_projected_inspection_test_thread_meta
+  defp table_name(:checkpoints), do: :squid_mesh_journal_projection_inspection_test_checkpoints
+  defp table_name(:threads), do: :squid_mesh_journal_projection_inspection_test_threads
+  defp table_name(:thread_meta), do: :squid_mesh_journal_projection_inspection_test_thread_meta
 
   defp cleanup_storage do
     for suffix <- [:checkpoints, :threads, :thread_meta] do

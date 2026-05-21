@@ -1,4 +1,4 @@
-defmodule SquidMesh.StepAttempt do
+defmodule SquidMesh.Steps.Attempt do
   @moduledoc """
   Public representation of one workflow step attempt.
 

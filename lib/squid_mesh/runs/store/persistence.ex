@@ -1,14 +1,14 @@
-defmodule SquidMesh.RunStore.Persistence do
+defmodule SquidMesh.Runs.Store.Persistence do
   @moduledoc """
   Write-side persistence helpers for workflow runs.
 
   These helpers keep record construction and serialization close to the
-  database-facing code while `SquidMesh.RunStore` continues to expose the
+  database-facing code while `SquidMesh.Runs.Store` continues to expose the
   public lifecycle API.
   """
 
   alias SquidMesh.Run
-  alias SquidMesh.RunStore.Serialization
+  alias SquidMesh.Runs.Store.Serialization
 
   # Replays intentionally drop step-derived context. Only reserved run-level
   # facts that describe how the run was started are copied into the new run.
@@ -127,15 +127,6 @@ defmodule SquidMesh.RunStore.Persistence do
     end
   end
 
-  defp dispatch_inserted_run({:ok, run}, repo, dispatch_fun) do
-    case dispatch_fun.(run) do
-      {:ok, _result} -> run
-      {:error, reason} -> repo.rollback(reason)
-    end
-  end
-
-  defp dispatch_inserted_run({:error, reason}, repo, _dispatch_fun), do: repo.rollback(reason)
-
   @doc false
   @spec noop_dispatch(Run.t()) :: {:ok, :noop}
   def noop_dispatch(_run), do: {:ok, :noop}
@@ -148,6 +139,15 @@ defmodule SquidMesh.RunStore.Persistence do
   def cancellation_target_status(:retrying), do: {:ok, :cancelling}
   def cancellation_target_status(:paused), do: {:ok, :cancelled}
   def cancellation_target_status(state), do: {:error, {:invalid_transition, state, :cancelling}}
+
+  defp dispatch_inserted_run({:ok, run}, repo, dispatch_fun) do
+    case dispatch_fun.(run) do
+      {:ok, _result} -> run
+      {:error, reason} -> repo.rollback(reason)
+    end
+  end
+
+  defp dispatch_inserted_run({:error, reason}, repo, _dispatch_fun), do: repo.rollback(reason)
 
   defp initial_current_step(definition) do
     if SquidMesh.Workflow.Definition.dependency_mode?(definition) do

@@ -157,28 +157,6 @@ defmodule SquidMesh.Workflow.Definition do
     end
   end
 
-  defp invalid_payload_type(payload, field, acc) do
-    case Map.fetch(payload, field.name) do
-      {:ok, value} -> maybe_put_invalid_payload_type(acc, field, value)
-      :error -> acc
-    end
-  end
-
-  defp maybe_put_invalid_payload_type(acc, field, value) do
-    if input_matches_type?(value, field.type), do: acc, else: Map.put(acc, field.name, field.type)
-  end
-
-  defp put_payload_default(field, acc) do
-    if Map.has_key?(acc, field.name), do: acc, else: fetch_payload_default(field, acc)
-  end
-
-  defp fetch_payload_default(field, acc) do
-    case Keyword.fetch(field.opts, :default) do
-      {:ok, default} -> Map.put(acc, field.name, resolve_default!(default))
-      :error -> acc
-    end
-  end
-
   @doc """
   Returns the workflow entry step.
   """
@@ -331,31 +309,6 @@ defmodule SquidMesh.Workflow.Definition do
     }
     |> maybe_put_compensation(normalize_compensation(recovery_value(policy, :compensation, nil)))
     |> maybe_put(:failure, normalize_failure_recovery(recovery_value(policy, :failure, nil)))
-  end
-
-  defp recovery_compensatable?(_policy, true), do: false
-
-  defp recovery_compensatable?(policy, false),
-    do: boolean_recovery_value(policy, :compensatable?, true)
-
-  defp recovery_replay(policy, irreversible?, compensatable?) do
-    case recovery_value(policy, :replay, nil) do
-      value when value in [:manual_review_required, "manual_review_required"] ->
-        :manual_review_required
-
-      _other ->
-        if irreversible? or not compensatable?, do: :manual_review_required, else: :allowed
-    end
-  end
-
-  defp recovery_mode(policy, replay) do
-    case recovery_value(policy, :recovery, nil) do
-      value when value in [:manual_intervention, "manual_intervention"] ->
-        :manual_intervention
-
-      _other ->
-        if replay == :manual_review_required, do: :manual_intervention, else: :automatic
-    end
   end
 
   @doc """
@@ -550,6 +503,136 @@ defmodule SquidMesh.Workflow.Definition do
     end)
   end
 
+  @doc """
+  Deserializes persisted payload keys back to declared workflow field names.
+  """
+  @spec deserialize_payload(t() | nil, map()) :: map()
+  def deserialize_payload(nil, payload), do: payload
+
+  def deserialize_payload(definition, payload) when is_map(payload) do
+    known_fields =
+      definition.payload
+      |> Enum.map(&{Atom.to_string(&1.name), &1.name})
+      |> Map.new()
+
+    Map.new(payload, fn
+      {key, value} when is_binary(key) ->
+        {Map.get(known_fields, key, key), value}
+
+      entry ->
+        entry
+    end)
+  end
+
+  @doc """
+  Serializes a workflow module name for persistence.
+  """
+  @spec serialize_workflow(module()) :: String.t()
+  def serialize_workflow(workflow) when is_atom(workflow), do: Atom.to_string(workflow)
+
+  @doc """
+  Serializes a trigger identifier for persistence.
+  """
+  @spec serialize_trigger(atom() | String.t() | nil) :: String.t() | nil
+  def serialize_trigger(nil), do: nil
+  def serialize_trigger(trigger) when is_atom(trigger), do: Atom.to_string(trigger)
+  def serialize_trigger(trigger) when is_binary(trigger), do: trigger
+
+  @doc """
+  Serializes a step identifier for persistence.
+  """
+  @spec serialize_step(atom() | String.t() | nil) :: String.t() | nil
+  def serialize_step(nil), do: nil
+  def serialize_step(step) when is_atom(step), do: Atom.to_string(step)
+  def serialize_step(step) when is_binary(step), do: step
+
+  @doc """
+  Returns true when the workflow uses dependency-based step progression.
+  """
+  @spec dependency_mode?(t()) :: boolean()
+  def dependency_mode?(definition) do
+    Enum.any?(definition.steps, fn step ->
+      case Keyword.get(step.opts, :after) do
+        dependencies when is_list(dependencies) -> dependencies != []
+        _other -> false
+      end
+    end)
+  end
+
+  @doc """
+  Deserializes a persisted trigger name back to the declared workflow trigger.
+  """
+  @spec deserialize_trigger(t() | nil, String.t() | nil) :: atom() | String.t() | nil
+  def deserialize_trigger(_definition, nil), do: nil
+  def deserialize_trigger(nil, trigger_name) when is_binary(trigger_name), do: trigger_name
+
+  def deserialize_trigger(definition, trigger_name) when is_binary(trigger_name) do
+    Enum.find_value(definition.triggers, trigger_name, fn
+      %{name: trigger} ->
+        if Atom.to_string(trigger) == trigger_name, do: trigger, else: false
+    end)
+  end
+
+  @doc """
+  Deserializes a persisted step name back to the declared workflow step.
+  """
+  @spec deserialize_step(t(), String.t() | nil) :: atom() | String.t() | nil
+  def deserialize_step(_definition, nil), do: nil
+
+  def deserialize_step(definition, step_name) when is_binary(step_name) do
+    Enum.find_value(definition.steps, step_name, fn
+      %{name: step} ->
+        if Atom.to_string(step) == step_name, do: step, else: false
+    end)
+  end
+
+  defp invalid_payload_type(payload, field, acc) do
+    case Map.fetch(payload, field.name) do
+      {:ok, value} -> maybe_put_invalid_payload_type(acc, field, value)
+      :error -> acc
+    end
+  end
+
+  defp maybe_put_invalid_payload_type(acc, field, value) do
+    if input_matches_type?(value, field.type), do: acc, else: Map.put(acc, field.name, field.type)
+  end
+
+  defp put_payload_default(field, acc) do
+    if Map.has_key?(acc, field.name), do: acc, else: fetch_payload_default(field, acc)
+  end
+
+  defp fetch_payload_default(field, acc) do
+    case Keyword.fetch(field.opts, :default) do
+      {:ok, default} -> Map.put(acc, field.name, resolve_default!(default))
+      :error -> acc
+    end
+  end
+
+  defp recovery_compensatable?(_policy, true), do: false
+
+  defp recovery_compensatable?(policy, false),
+    do: boolean_recovery_value(policy, :compensatable?, true)
+
+  defp recovery_replay(policy, irreversible?, compensatable?) do
+    case recovery_value(policy, :replay, nil) do
+      value when value in [:manual_review_required, "manual_review_required"] ->
+        :manual_review_required
+
+      _other ->
+        if irreversible? or not compensatable?, do: :manual_review_required, else: :allowed
+    end
+  end
+
+  defp recovery_mode(policy, replay) do
+    case recovery_value(policy, :recovery, nil) do
+      value when value in [:manual_intervention, "manual_intervention"] ->
+        :manual_intervention
+
+      _other ->
+        if replay == :manual_review_required, do: :manual_intervention, else: :automatic
+    end
+  end
+
   defp recovery_policy({:ok, step}), do: recovery_policy(step)
 
   defp recovery_policy(%{opts: opts}) do
@@ -695,62 +778,6 @@ defmodule SquidMesh.Workflow.Definition do
     end
   end
 
-  @doc """
-  Deserializes persisted payload keys back to declared workflow field names.
-  """
-  @spec deserialize_payload(t() | nil, map()) :: map()
-  def deserialize_payload(nil, payload), do: payload
-
-  def deserialize_payload(definition, payload) when is_map(payload) do
-    known_fields =
-      definition.payload
-      |> Enum.map(&{Atom.to_string(&1.name), &1.name})
-      |> Map.new()
-
-    Map.new(payload, fn
-      {key, value} when is_binary(key) ->
-        {Map.get(known_fields, key, key), value}
-
-      entry ->
-        entry
-    end)
-  end
-
-  @doc """
-  Serializes a workflow module name for persistence.
-  """
-  @spec serialize_workflow(module()) :: String.t()
-  def serialize_workflow(workflow) when is_atom(workflow), do: Atom.to_string(workflow)
-
-  @doc """
-  Serializes a trigger identifier for persistence.
-  """
-  @spec serialize_trigger(atom() | String.t() | nil) :: String.t() | nil
-  def serialize_trigger(nil), do: nil
-  def serialize_trigger(trigger) when is_atom(trigger), do: Atom.to_string(trigger)
-  def serialize_trigger(trigger) when is_binary(trigger), do: trigger
-
-  @doc """
-  Serializes a step identifier for persistence.
-  """
-  @spec serialize_step(atom() | String.t() | nil) :: String.t() | nil
-  def serialize_step(nil), do: nil
-  def serialize_step(step) when is_atom(step), do: Atom.to_string(step)
-  def serialize_step(step) when is_binary(step), do: step
-
-  @doc """
-  Returns true when the workflow uses dependency-based step progression.
-  """
-  @spec dependency_mode?(t()) :: boolean()
-  def dependency_mode?(definition) do
-    Enum.any?(definition.steps, fn step ->
-      case Keyword.get(step.opts, :after) do
-        dependencies when is_list(dependencies) -> dependencies != []
-        _other -> false
-      end
-    end)
-  end
-
   defp next_dependency_step(definition, completed_steps) do
     completed_steps =
       completed_steps
@@ -867,33 +894,6 @@ defmodule SquidMesh.Workflow.Definition do
         |> List.wrap()
 
       {name, explicit_dependencies}
-    end)
-  end
-
-  @doc """
-  Deserializes a persisted trigger name back to the declared workflow trigger.
-  """
-  @spec deserialize_trigger(t() | nil, String.t() | nil) :: atom() | String.t() | nil
-  def deserialize_trigger(_definition, nil), do: nil
-  def deserialize_trigger(nil, trigger_name) when is_binary(trigger_name), do: trigger_name
-
-  def deserialize_trigger(definition, trigger_name) when is_binary(trigger_name) do
-    Enum.find_value(definition.triggers, trigger_name, fn
-      %{name: trigger} ->
-        if Atom.to_string(trigger) == trigger_name, do: trigger, else: false
-    end)
-  end
-
-  @doc """
-  Deserializes a persisted step name back to the declared workflow step.
-  """
-  @spec deserialize_step(t(), String.t() | nil) :: atom() | String.t() | nil
-  def deserialize_step(_definition, nil), do: nil
-
-  def deserialize_step(definition, step_name) when is_binary(step_name) do
-    Enum.find_value(definition.steps, step_name, fn
-      %{name: step} ->
-        if Atom.to_string(step) == step_name, do: step, else: false
     end)
   end
 

@@ -113,7 +113,7 @@ defmodule MinimalHostApp.WorkflowRuns do
     SquidMesh.inspect_run(run_id, opts)
   end
 
-  @spec explain_run(Ecto.UUID.t()) :: {:ok, SquidMesh.RunExplanation.t()} | {:error, term()}
+  @spec explain_run(Ecto.UUID.t()) :: {:ok, SquidMesh.Runs.Explanation.t()} | {:error, term()}
   def explain_run(run_id) do
     SquidMesh.explain_run(run_id)
   end

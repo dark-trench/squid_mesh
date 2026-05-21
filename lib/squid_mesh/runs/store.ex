@@ -1,4 +1,4 @@
-defmodule SquidMesh.RunStore do
+defmodule SquidMesh.Runs.Store do
   @moduledoc """
   Durable run persistence and lifecycle operations.
 
@@ -15,10 +15,10 @@ defmodule SquidMesh.RunStore do
   alias SquidMesh.Persistence.StepAttempt
   alias SquidMesh.Persistence.StepRun
   alias SquidMesh.Run
-  alias SquidMesh.RunStore.Persistence
-  alias SquidMesh.RunStore.Serialization
+  alias SquidMesh.Runs.Store.Persistence
+  alias SquidMesh.Runs.Store.Serialization
   alias SquidMesh.Runtime.StateMachine
-  alias SquidMesh.StepRunStore
+  alias SquidMesh.Steps
 
   @type list_filter :: {:workflow, module()} | {:status, Run.status()} | {:limit, pos_integer()}
   @type list_filters :: [list_filter()]
@@ -57,6 +57,20 @@ defmodule SquidMesh.RunStore do
           | {:transition_or_dispatch, Run.status(), dispatch_fun()}
           | {:transition_or_dispatch_or_fail, Run.status(), dispatch_fun(), failure_attrs_fun()}
   @type progress_result :: Run.t() | :noop
+  @type pause_result ::
+          %{
+            run: Run.t(),
+            from_status: Run.status(),
+            to_status: Run.status(),
+            terminal_noop?: true,
+            finalized_step?: boolean(),
+            error: map()
+          }
+          | %{
+              run: Run.t(),
+              from_status: Run.status(),
+              to_status: Run.status()
+            }
 
   @doc """
   Creates a new run for a workflow using the workflow's default trigger.
@@ -267,6 +281,164 @@ defmodule SquidMesh.RunStore do
     end
   end
 
+  @doc false
+  @spec transition_and_dispatch_run(
+          module(),
+          Ecto.UUID.t(),
+          Run.status(),
+          transition_attrs(),
+          dispatch_fun()
+        ) :: {:ok, Run.t()} | {:error, transition_error() | term()}
+  def transition_and_dispatch_run(repo, run_id, to_status, attrs, dispatch_fun)
+      when is_map(attrs) and is_function(dispatch_fun, 1) do
+    case repo.transaction(fn ->
+           transition_and_dispatch_for_update(repo, run_id, to_status, attrs, dispatch_fun)
+         end) do
+      {:ok, {run, from_status}} ->
+        Observability.emit_run_transition(run, from_status, to_status)
+        {:ok, run}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc """
+  Requests cancellation for a run if its current status allows it.
+  """
+  @spec cancel_run(module(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, transition_error()}
+  def cancel_run(repo, run_id) do
+    cancellation_error = pause_cancellation_error()
+
+    with {:ok, valid_run_id} <- cast_run_id(run_id) do
+      cancel_valid_run(repo, valid_run_id, cancellation_error)
+    end
+  end
+
+  @doc """
+  Updates durable run fields without changing the run state machine directly.
+  """
+  @spec update_run(module(), Ecto.UUID.t(), transition_attrs()) ::
+          {:ok, Run.t()} | {:error, update_error()}
+  def update_run(repo, run_id, attrs) when is_map(attrs) do
+    repo.transaction(fn -> update_run_for_update(repo, run_id, attrs) end)
+  end
+
+  @doc false
+  @spec update_run_with(module(), Ecto.UUID.t(), attrs_fun()) ::
+          {:ok, Run.t()} | {:error, update_error()}
+  def update_run_with(repo, run_id, attrs_fun) when is_function(attrs_fun, 1) do
+    repo.transaction(fn ->
+      update_run_for_update(repo, run_id, fn run ->
+        run
+        |> Serialization.to_public_run()
+        |> attrs_fun.()
+      end)
+    end)
+  end
+
+  @doc false
+  @spec progress_run_with(module(), Ecto.UUID.t(), attrs_fun(), progress_operation()) ::
+          {:ok, progress_result()} | {:error, update_error() | transition_error() | term()}
+  def progress_run_with(repo, run_id, attrs_fun, operation)
+      when is_function(attrs_fun, 1) do
+    case progress_run_with_events(repo, run_id, attrs_fun, operation) do
+      {:ok, result, events} ->
+        emit_run_transition_events(events)
+        {:ok, result}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc false
+  @spec progress_run_with_events(module(), Ecto.UUID.t(), attrs_fun(), progress_operation()) ::
+          {:ok, progress_result(), [progress_event()]}
+          | {:error, update_error() | transition_error() | term()}
+  def progress_run_with_events(repo, run_id, attrs_fun, operation)
+      when is_function(attrs_fun, 1) do
+    case repo.transaction(fn -> do_progress_run(repo, run_id, attrs_fun, operation) end) do
+      {:ok, result} ->
+        {run, events} = normalize_progress_events(result)
+        {:ok, run, events}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc false
+  @spec update_and_dispatch_run(module(), Ecto.UUID.t(), transition_attrs(), dispatch_fun()) ::
+          {:ok, Run.t()} | {:error, update_error() | term()}
+  def update_and_dispatch_run(repo, run_id, attrs, dispatch_fun)
+      when is_map(attrs) and is_function(dispatch_fun, 1) do
+    case repo.transaction(fn ->
+           update_and_dispatch_for_update(repo, run_id, constant_attrs_fun(attrs), dispatch_fun)
+         end) do
+      {:ok, run} -> {:ok, run}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc false
+  @spec update_and_dispatch_run_with(module(), Ecto.UUID.t(), attrs_fun(), dispatch_fun()) ::
+          {:ok, Run.t()} | {:error, update_error() | term()}
+  def update_and_dispatch_run_with(repo, run_id, attrs_fun, dispatch_fun)
+      when is_function(attrs_fun, 1) and is_function(dispatch_fun, 1) do
+    case repo.transaction(fn ->
+           update_and_dispatch_for_update(
+             repo,
+             run_id,
+             public_attrs_fun(attrs_fun),
+             dispatch_fun
+           )
+         end) do
+      {:ok, run} -> {:ok, run}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc false
+  @spec pause_run(module(), Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), transition_attrs()) ::
+          {:ok, pause_result()} | {:error, update_error() | transition_error() | term()}
+  def pause_run(repo, run_id, step_run_id, attempt_id, attrs) when is_map(attrs) do
+    cancellation_error = pause_cancellation_error()
+
+    case repo.transaction(fn ->
+           pause_run_for_update(repo, run_id, step_run_id, attempt_id, attrs, cancellation_error)
+         end) do
+      {:ok, %{} = result} ->
+        {:ok, result}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc false
+  @spec transition_run_with(module(), Ecto.UUID.t(), Run.status(), attrs_fun()) ::
+          {:ok, Run.t()} | {:error, transition_error()}
+  def transition_run_with(repo, run_id, to_status, attrs_fun)
+      when is_function(attrs_fun, 1) do
+    repo.transaction(fn -> transition_run_with_for_update(repo, run_id, to_status, attrs_fun) end)
+  end
+
+  @doc """
+  Returns whether a run in the given state should schedule additional step work.
+  """
+  @spec schedule_next_step?(Run.t() | Run.status()) :: boolean()
+  def schedule_next_step?(%Run{status: status}), do: StateMachine.schedule_next_step?(status)
+
+  def schedule_next_step?(status) when is_atom(status),
+    do: StateMachine.schedule_next_step?(status)
+
+  @doc false
+  @spec pause_cancellation_error() :: map()
+  def pause_cancellation_error do
+    %{message: "run cancelled while paused", reason: "cancelled"}
+  end
+
   defp transition_for_update(repo, run_id, to_status, attrs) do
     case get_run_record_for_update(repo, run_id) do
       %SquidMesh.Persistence.Run{} = run -> transition_locked_run(repo, run, to_status, attrs)
@@ -301,28 +473,6 @@ defmodule SquidMesh.RunStore do
     end
   end
 
-  @doc false
-  @spec transition_and_dispatch_run(
-          module(),
-          Ecto.UUID.t(),
-          Run.status(),
-          transition_attrs(),
-          dispatch_fun()
-        ) :: {:ok, Run.t()} | {:error, transition_error() | term()}
-  def transition_and_dispatch_run(repo, run_id, to_status, attrs, dispatch_fun)
-      when is_map(attrs) and is_function(dispatch_fun, 1) do
-    case repo.transaction(fn ->
-           transition_and_dispatch_for_update(repo, run_id, to_status, attrs, dispatch_fun)
-         end) do
-      {:ok, {run, from_status}} ->
-        Observability.emit_run_transition(run, from_status, to_status)
-        {:ok, run}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
   defp transition_and_dispatch_for_update(repo, run_id, to_status, attrs, dispatch_fun) do
     case get_run_record_for_update(repo, run_id) do
       %SquidMesh.Persistence.Run{} = run ->
@@ -347,18 +497,6 @@ defmodule SquidMesh.RunStore do
       {updated_run, from_status}
     else
       {:error, reason} -> repo.rollback(reason)
-    end
-  end
-
-  @doc """
-  Requests cancellation for a run if its current status allows it.
-  """
-  @spec cancel_run(module(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, transition_error()}
-  def cancel_run(repo, run_id) do
-    cancellation_error = pause_cancellation_error()
-
-    with {:ok, valid_run_id} <- cast_run_id(run_id) do
-      cancel_valid_run(repo, valid_run_id, cancellation_error)
     end
   end
 
@@ -409,28 +547,6 @@ defmodule SquidMesh.RunStore do
     end
   end
 
-  @doc """
-  Updates durable run fields without changing the run state machine directly.
-  """
-  @spec update_run(module(), Ecto.UUID.t(), transition_attrs()) ::
-          {:ok, Run.t()} | {:error, update_error()}
-  def update_run(repo, run_id, attrs) when is_map(attrs) do
-    repo.transaction(fn -> update_run_for_update(repo, run_id, attrs) end)
-  end
-
-  @doc false
-  @spec update_run_with(module(), Ecto.UUID.t(), attrs_fun()) ::
-          {:ok, Run.t()} | {:error, update_error()}
-  def update_run_with(repo, run_id, attrs_fun) when is_function(attrs_fun, 1) do
-    repo.transaction(fn ->
-      update_run_for_update(repo, run_id, fn run ->
-        run
-        |> Serialization.to_public_run()
-        |> attrs_fun.()
-      end)
-    end)
-  end
-
   defp update_run_for_update(repo, run_id, attrs) when is_map(attrs) do
     update_run_for_update(repo, run_id, fn _run -> attrs end)
   end
@@ -457,37 +573,6 @@ defmodule SquidMesh.RunStore do
     |> case do
       {:ok, updated_run} -> Serialization.to_public_run(updated_run)
       {:error, changeset} -> repo.rollback({:invalid_run, changeset})
-    end
-  end
-
-  @doc false
-  @spec progress_run_with(module(), Ecto.UUID.t(), attrs_fun(), progress_operation()) ::
-          {:ok, progress_result()} | {:error, update_error() | transition_error() | term()}
-  def progress_run_with(repo, run_id, attrs_fun, operation)
-      when is_function(attrs_fun, 1) do
-    case progress_run_with_events(repo, run_id, attrs_fun, operation) do
-      {:ok, result, events} ->
-        emit_run_transition_events(events)
-        {:ok, result}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  @doc false
-  @spec progress_run_with_events(module(), Ecto.UUID.t(), attrs_fun(), progress_operation()) ::
-          {:ok, progress_result(), [progress_event()]}
-          | {:error, update_error() | transition_error() | term()}
-  def progress_run_with_events(repo, run_id, attrs_fun, operation)
-      when is_function(attrs_fun, 1) do
-    case repo.transaction(fn -> do_progress_run(repo, run_id, attrs_fun, operation) end) do
-      {:ok, result} ->
-        {run, events} = normalize_progress_events(result)
-        {:ok, run, events}
-
-      {:error, _reason} = error ->
-        error
     end
   end
 
@@ -569,37 +654,6 @@ defmodule SquidMesh.RunStore do
     execute_progress_operation(repo, run, from_status, attrs, operation)
   end
 
-  @doc false
-  @spec update_and_dispatch_run(module(), Ecto.UUID.t(), transition_attrs(), dispatch_fun()) ::
-          {:ok, Run.t()} | {:error, update_error() | term()}
-  def update_and_dispatch_run(repo, run_id, attrs, dispatch_fun)
-      when is_map(attrs) and is_function(dispatch_fun, 1) do
-    case repo.transaction(fn ->
-           update_and_dispatch_for_update(repo, run_id, constant_attrs_fun(attrs), dispatch_fun)
-         end) do
-      {:ok, run} -> {:ok, run}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  @doc false
-  @spec update_and_dispatch_run_with(module(), Ecto.UUID.t(), attrs_fun(), dispatch_fun()) ::
-          {:ok, Run.t()} | {:error, update_error() | term()}
-  def update_and_dispatch_run_with(repo, run_id, attrs_fun, dispatch_fun)
-      when is_function(attrs_fun, 1) and is_function(dispatch_fun, 1) do
-    case repo.transaction(fn ->
-           update_and_dispatch_for_update(
-             repo,
-             run_id,
-             public_attrs_fun(attrs_fun),
-             dispatch_fun
-           )
-         end) do
-      {:ok, run} -> {:ok, run}
-      {:error, _reason} = error -> error
-    end
-  end
-
   defp constant_attrs_fun(attrs), do: fn _run -> attrs end
 
   defp public_attrs_fun(attrs_fun),
@@ -630,38 +684,6 @@ defmodule SquidMesh.RunStore do
       updated_run
     else
       {:error, reason} -> repo.rollback(reason)
-    end
-  end
-
-  @type pause_result ::
-          %{
-            run: Run.t(),
-            from_status: Run.status(),
-            to_status: Run.status(),
-            terminal_noop?: true,
-            finalized_step?: boolean(),
-            error: map()
-          }
-          | %{
-              run: Run.t(),
-              from_status: Run.status(),
-              to_status: Run.status()
-            }
-
-  @doc false
-  @spec pause_run(module(), Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), transition_attrs()) ::
-          {:ok, pause_result()} | {:error, update_error() | transition_error() | term()}
-  def pause_run(repo, run_id, step_run_id, attempt_id, attrs) when is_map(attrs) do
-    cancellation_error = pause_cancellation_error()
-
-    case repo.transaction(fn ->
-           pause_run_for_update(repo, run_id, step_run_id, attempt_id, attrs, cancellation_error)
-         end) do
-      {:ok, %{} = result} ->
-        {:ok, result}
-
-      {:error, _reason} = error ->
-        error
     end
   end
 
@@ -715,7 +737,7 @@ defmodule SquidMesh.RunStore do
          error
        ) do
     with {:ok, _attempt} <- AttemptStore.fail_attempt(repo, attempt_id, error),
-         {:ok, _step_run} <- StepRunStore.fail_step(repo, step_run_id, error),
+         {:ok, _step_run} <- Steps.Store.fail_step(repo, step_run_id, error),
          {:ok, _next_status} <- StateMachine.transition(:cancelling, :cancelled),
          {:ok, updated_run} <-
            Persistence.update_run_record(
@@ -752,14 +774,6 @@ defmodule SquidMesh.RunStore do
     else
       {:error, reason} -> repo.rollback(reason)
     end
-  end
-
-  @doc false
-  @spec transition_run_with(module(), Ecto.UUID.t(), Run.status(), attrs_fun()) ::
-          {:ok, Run.t()} | {:error, transition_error()}
-  def transition_run_with(repo, run_id, to_status, attrs_fun)
-      when is_function(attrs_fun, 1) do
-    repo.transaction(fn -> transition_run_with_for_update(repo, run_id, to_status, attrs_fun) end)
   end
 
   defp transition_run_with_for_update(repo, run_id, to_status, attrs_fun) do
@@ -802,15 +816,6 @@ defmodule SquidMesh.RunStore do
         repo.rollback({:invalid_run, changeset})
     end
   end
-
-  @doc """
-  Returns whether a run in the given state should schedule additional step work.
-  """
-  @spec schedule_next_step?(Run.t() | Run.status()) :: boolean()
-  def schedule_next_step?(%Run{status: status}), do: StateMachine.schedule_next_step?(status)
-
-  def schedule_next_step?(status) when is_atom(status),
-    do: StateMachine.schedule_next_step?(status)
 
   @spec query_runs(module(), list_filters()) :: [SquidMesh.Persistence.Run.t()]
   defp query_runs(repo, filters) do
@@ -1260,7 +1265,7 @@ defmodule SquidMesh.RunStore do
     case locked_step_run(repo, run_id, current_step) do
       %StepRun{id: step_run_id, status: "running"} ->
         with {:ok, failure_event} <- fail_running_attempt(repo, step_run_id, error),
-             {:ok, _step_run} <- StepRunStore.fail_step(repo, step_run_id, error) do
+             {:ok, _step_run} <- Steps.Store.fail_step(repo, step_run_id, error) do
           {:ok, failure_event}
         end
 
@@ -1330,7 +1335,7 @@ defmodule SquidMesh.RunStore do
   defp fail_step_if_running(repo, step_run_id, error) do
     case locked_step_run_by_id(repo, step_run_id) do
       %StepRun{status: "running"} ->
-        case StepRunStore.fail_step(repo, step_run_id, error) do
+        case Steps.Store.fail_step(repo, step_run_id, error) do
           {:ok, _step_run} -> {:ok, true}
           {:error, reason} -> {:error, reason}
         end
@@ -1354,12 +1359,6 @@ defmodule SquidMesh.RunStore do
       failure_event.duration_native,
       error
     )
-  end
-
-  @doc false
-  @spec pause_cancellation_error() :: map()
-  def pause_cancellation_error do
-    %{message: "run cancelled while paused", reason: "cancelled"}
   end
 
   @spec terminal_pause_error(Run.status()) :: map()

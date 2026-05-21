@@ -10,7 +10,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
   alias SquidMesh.Config
   alias SquidMesh.Observability
   alias SquidMesh.Run
-  alias SquidMesh.RunStore
+  alias SquidMesh.Runs
   alias SquidMesh.Runtime.Compensation
   alias SquidMesh.Runtime.StepExecutor.Execution
   alias SquidMesh.Runtime.StepExecutor.Outcome
@@ -36,7 +36,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
           :ok | {:error, execution_error() | term()}
   def execute(run_id, expected_step \\ nil, overrides \\ []) when is_binary(run_id) do
     with {:ok, config} <- Config.load(overrides),
-         {:ok, run} <- RunStore.get_run(config.repo, run_id) do
+         {:ok, run} <- Runs.Store.get_run(config.repo, run_id) do
       execute_run(config, run, expected_step)
     end
   end
@@ -52,7 +52,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
   @spec compensate(Ecto.UUID.t(), keyword()) :: :ok | {:error, execution_error() | term()}
   def compensate(run_id, overrides \\ []) when is_binary(run_id) do
     with {:ok, config} <- Config.load(overrides),
-         {:ok, %Run{} = run} <- RunStore.get_run(config.repo, run_id),
+         {:ok, %Run{} = run} <- Runs.Store.get_run(config.repo, run_id),
          :ok <- ensure_failed_compensation_run(run),
          {:ok, definition} <- SquidMesh.Workflow.Definition.load(run.workflow) do
       config
@@ -72,7 +72,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
     }
 
     config.repo
-    |> RunStore.update_run(run.id, %{
+    |> Runs.Store.update_run(run.id, %{
       current_step: run.current_step,
       last_error: compensation_error
     })
@@ -95,7 +95,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
   end
 
   defp execute_run(config, %Run{status: :cancelling} = run, _expected_step) do
-    case RunStore.transition_run(config.repo, run.id, :cancelled, %{
+    case Runs.Store.transition_run(config.repo, run.id, :cancelled, %{
            current_step: nil
          }) do
       {:ok, _cancelled_run} -> :ok
@@ -154,7 +154,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
   end
 
   defp converge_cancellation(config, %Run{status: :cancelling} = run) do
-    case RunStore.transition_run(config.repo, run.id, :cancelled, %{current_step: nil}) do
+    case Runs.Store.transition_run(config.repo, run.id, :cancelled, %{current_step: nil}) do
       {:ok, _cancelled_run} -> :ok
       {:error, reason} -> {:error, reason}
     end

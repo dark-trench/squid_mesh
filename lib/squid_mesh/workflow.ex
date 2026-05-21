@@ -212,6 +212,47 @@ defmodule SquidMesh.Workflow do
     |> quoted_definition()
   end
 
+  @doc """
+  Resolves late-bound runtime metadata for generated workflow definitions.
+
+  Workflow modules store a compile-time definition, but step modules may expose
+  Squid Mesh step metadata that should be read when the workflow definition is
+  consumed. This keeps generated workflow modules small while preserving the
+  runtime contract used by dispatch and inspection.
+  """
+  @spec __resolve_runtime_definition__(map()) :: map()
+  def __resolve_runtime_definition__(definition) when is_map(definition) do
+    Map.update!(definition, :steps, fn steps ->
+      Enum.map(steps, &resolve_step_metadata/1)
+    end)
+  end
+
+  @doc """
+  Adds one trigger definition to the workflow module currently being compiled.
+  """
+  @spec __push_current_trigger_definition__(module(), map()) :: :ok
+  def __push_current_trigger_definition__(module, definition)
+      when is_atom(module) and is_map(definition) do
+    definitions = Module.get_attribute(module, :squid_mesh_current_trigger_definitions) || []
+
+    Module.put_attribute(module, :squid_mesh_current_trigger_definitions, [
+      definition | definitions
+    ])
+
+    :ok
+  end
+
+  @doc """
+  Adds one payload field to the trigger currently being compiled.
+  """
+  @spec __push_current_trigger_payload_field__(module(), map()) :: :ok
+  def __push_current_trigger_payload_field__(module, field)
+      when is_atom(module) and is_map(field) do
+    fields = Module.get_attribute(module, :squid_mesh_current_trigger_payload_fields) || []
+    Module.put_attribute(module, :squid_mesh_current_trigger_payload_fields, [field | fields])
+    :ok
+  end
+
   defp quoted_definition(definition) do
     quote do
       @doc false
@@ -287,51 +328,10 @@ defmodule SquidMesh.Workflow do
   defp maybe_drop_interop_metadata(%{metadata: %{contract: :squid_mesh_step}} = step), do: step
   defp maybe_drop_interop_metadata(step), do: Map.delete(step, :metadata)
 
-  @doc """
-  Resolves late-bound runtime metadata for generated workflow definitions.
-
-  Workflow modules store a compile-time definition, but step modules may expose
-  Squid Mesh step metadata that should be read when the workflow definition is
-  consumed. This keeps generated workflow modules small while preserving the
-  runtime contract used by dispatch and inspection.
-  """
-  @spec __resolve_runtime_definition__(map()) :: map()
-  def __resolve_runtime_definition__(definition) when is_map(definition) do
-    Map.update!(definition, :steps, fn steps ->
-      Enum.map(steps, &resolve_step_metadata/1)
-    end)
-  end
-
   defp resolve_step_metadata(%{module: module} = step) do
     case SquidMesh.Step.metadata(module) do
       %{} = metadata -> Map.put(step, :metadata, metadata)
       nil -> maybe_drop_interop_metadata(step)
     end
-  end
-
-  @doc """
-  Adds one trigger definition to the workflow module currently being compiled.
-  """
-  @spec __push_current_trigger_definition__(module(), map()) :: :ok
-  def __push_current_trigger_definition__(module, definition)
-      when is_atom(module) and is_map(definition) do
-    definitions = Module.get_attribute(module, :squid_mesh_current_trigger_definitions) || []
-
-    Module.put_attribute(module, :squid_mesh_current_trigger_definitions, [
-      definition | definitions
-    ])
-
-    :ok
-  end
-
-  @doc """
-  Adds one payload field to the trigger currently being compiled.
-  """
-  @spec __push_current_trigger_payload_field__(module(), map()) :: :ok
-  def __push_current_trigger_payload_field__(module, field)
-      when is_atom(module) and is_map(field) do
-    fields = Module.get_attribute(module, :squid_mesh_current_trigger_payload_fields) || []
-    Module.put_attribute(module, :squid_mesh_current_trigger_payload_fields, [field | fields])
-    :ok
   end
 end

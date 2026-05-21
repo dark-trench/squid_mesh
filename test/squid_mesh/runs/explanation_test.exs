@@ -1,4 +1,4 @@
-defmodule SquidMesh.RunExplanationTest do
+defmodule SquidMesh.Runs.ExplanationTest do
   use SquidMesh.DataCase, async: false
 
   alias __MODULE__.ApprovalWorkflow
@@ -8,8 +8,8 @@ defmodule SquidMesh.RunExplanationTest do
   alias __MODULE__.PauseWorkflow
   alias __MODULE__.RetryExhaustedWorkflow
   alias __MODULE__.SuccessfulWorkflow
-  alias SquidMesh.RunExplanation
-  alias SquidMesh.StepRunStore
+  alias SquidMesh.Runs.Explanation
+  alias SquidMesh.Steps
   alias SquidMesh.Test.Executor
   alias SquidMesh.Test.Job
   alias SquidMesh.Test.StepWorker
@@ -37,7 +37,7 @@ defmodule SquidMesh.RunExplanationTest do
       assert {:ok, run} =
                SquidMesh.start_run(SuccessfulWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
-      assert {:ok, %RunExplanation{} = explanation} =
+      assert {:ok, %Explanation{} = explanation} =
                SquidMesh.explain_run(run.id,
                  read_model: :runtime_tables,
                  journal_storage: :not_used_by_runtime_tables,
@@ -58,7 +58,7 @@ defmodule SquidMesh.RunExplanationTest do
 
       assert success >= 2
 
-      assert {:ok, %RunExplanation{} = explanation} =
+      assert {:ok, %Explanation{} = explanation} =
                SquidMesh.explain_run(run.id, repo: Repo)
 
       assert explanation.status == :failed
@@ -262,12 +262,12 @@ defmodule SquidMesh.RunExplanationTest do
                SquidMesh.start_run(SuccessfulWorkflow, %{account_id: "acct_456"}, repo: Repo)
 
       assert {:ok, _step_run, :execute} =
-               StepRunStore.begin_step(Repo, cancellable_run.id, :load_account, %{
+               Steps.Store.begin_step(Repo, cancellable_run.id, :load_account, %{
                  account_id: "acct_456"
                })
 
       assert {:ok, _running} =
-               SquidMesh.RunStore.transition_run(Repo, cancellable_run.id, :running, %{
+               SquidMesh.Runs.Store.transition_run(Repo, cancellable_run.id, :running, %{
                  current_step: :load_account
                })
 
@@ -367,10 +367,10 @@ defmodule SquidMesh.RunExplanationTest do
                SquidMesh.start_run(SuccessfulWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
       assert {:ok, _step_run, :execute} =
-               StepRunStore.begin_step(Repo, run.id, :load_account, %{account_id: "acct_123"})
+               Steps.Store.begin_step(Repo, run.id, :load_account, %{account_id: "acct_123"})
 
       assert {:ok, _running} =
-               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :running, %{
                  current_step: :load_account
                })
 

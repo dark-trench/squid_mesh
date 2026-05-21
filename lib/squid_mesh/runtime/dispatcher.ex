@@ -10,7 +10,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
   alias SquidMesh.Observability
   alias SquidMesh.Run
   alias SquidMesh.Runtime.StepInput
-  alias SquidMesh.StepRunStore
+  alias SquidMesh.Steps
 
   @type dispatch_error :: Ecto.Changeset.t() | term()
   @type dispatch_opts :: [schedule_in: pos_integer()]
@@ -182,7 +182,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
   end
 
   defp cleanup_scheduled_steps(config, run, steps, true) do
-    StepRunStore.delete_pending_steps(config.repo, run.id, steps)
+    Steps.Store.delete_pending_steps(config.repo, run.id, steps)
   end
 
   defp cleanup_scheduled_steps(_config, _run, _steps, false), do: :ok
@@ -194,7 +194,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
       |> build_scheduled_step_inputs(config, run)
 
     case step_inputs_result do
-      {:ok, step_inputs} -> StepRunStore.schedule_steps(config.repo, run.id, step_inputs)
+      {:ok, step_inputs} -> Steps.Store.schedule_steps(config.repo, run.id, step_inputs)
       {:error, _reason} = error -> error
     end
   end

@@ -8,12 +8,11 @@ defmodule SquidMesh do
   """
 
   alias SquidMesh.Config
+  alias SquidMesh.JournalProjection.Inspection
   alias SquidMesh.Run
-  alias SquidMesh.RunExplanation
-  alias SquidMesh.RunStore
+  alias SquidMesh.Runs
+  alias SquidMesh.Runs.Explanation
   alias SquidMesh.Runtime.Dispatcher
-  alias SquidMesh.Runtime.ProjectedExplanation
-  alias SquidMesh.Runtime.ProjectedInspection
   alias SquidMesh.Runtime.Reviewer
   alias SquidMesh.Runtime.Unblocker
 
@@ -50,7 +49,7 @@ defmodule SquidMesh do
   @spec start_run(module(), map()) ::
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
-          | {:error, RunStore.create_error()}
+          | {:error, Runs.Store.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, payload) when is_map(payload) do
     start_run(workflow, payload, [])
@@ -60,7 +59,7 @@ defmodule SquidMesh do
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
           | {:error, {:invalid_option, atom()}}
-          | {:error, RunStore.create_error()}
+          | {:error, Runs.Store.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, payload, overrides) when is_map(payload) and is_list(overrides) do
     with :ok <- reject_public_start_options(overrides),
@@ -81,7 +80,7 @@ defmodule SquidMesh do
   @spec start_run(module(), atom(), map()) ::
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
-          | {:error, RunStore.create_error()}
+          | {:error, Runs.Store.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, trigger_name, payload)
       when is_atom(trigger_name) and is_map(payload) do
@@ -99,7 +98,7 @@ defmodule SquidMesh do
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
           | {:error, {:invalid_option, atom()}}
-          | {:error, RunStore.create_error()}
+          | {:error, Runs.Store.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, trigger_name, payload, overrides)
       when is_atom(trigger_name) and is_map(payload) and is_list(overrides) do
@@ -117,7 +116,7 @@ defmodule SquidMesh do
           | {:ok, {:duplicate_schedule_start, Run.t()}}
           | {:error, {:missing_config, [atom()]}}
           | {:error, {:invalid_option, atom()}}
-          | {:error, RunStore.create_error()}
+          | {:error, Runs.Store.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run_with_initial_context(workflow, trigger_name, payload, initial_context, overrides)
       when is_atom(trigger_name) and is_map(payload) and is_map(initial_context) and
@@ -127,6 +126,238 @@ defmodule SquidMesh do
       start_initial_context_run(config, workflow, trigger_name, payload, initial_context)
     else
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Fetches one workflow run by id.
+
+  By default this reads the stable runtime tables and returns `SquidMesh.Run`.
+  Pass `read_model: :journal_projection` with `journal_storage:` to rebuild the
+  Jido-native projection-backed snapshot from durable journal entries instead.
+  """
+  @spec inspect_run(String.t(), keyword()) ::
+          {:ok, Run.t() | SquidMesh.JournalProjection.Inspection.Snapshot.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | read_option_error()
+             | Config.config_error()
+             | Inspection.snapshot_error()}
+  def inspect_run(run_id, overrides \\ []) do
+    with {:ok, read_model} <- read_model(overrides) do
+      case read_model do
+        :runtime_tables -> inspect_runtime_table_run(run_id, overrides)
+        :journal_projection -> inspect_projected_run(run_id, overrides)
+      end
+    end
+  end
+
+  @doc """
+  Explains the current runtime state of one workflow run.
+
+  The result is structured diagnostic data for host apps, CLIs, and dashboards.
+  Use `inspect_run/2` for the factual run snapshot and `explain_run/2` when an
+  operator-facing surface needs the reason, evidence, and valid next actions for
+  the run's current state.
+
+  By default this reads the stable runtime tables and returns
+  `SquidMesh.Runs.Explanation`. Pass `read_model: :journal_projection` with
+  `journal_storage:` to derive the explanation from durable Jido journal
+  projections instead.
+  """
+  @spec explain_run(String.t(), keyword()) ::
+          {:ok, Explanation.t() | SquidMesh.JournalProjection.Explanation.Diagnostic.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | read_option_error()
+             | Config.config_error()
+             | SquidMesh.JournalProjection.Explanation.explanation_error()}
+  def explain_run(run_id, overrides \\ []) do
+    with {:ok, read_model} <- read_model(overrides) do
+      case read_model do
+        :runtime_tables -> explain_runtime_table_run(run_id, overrides)
+        :journal_projection -> explain_projected_run(run_id, overrides)
+      end
+    end
+  end
+
+  @doc """
+  Lists workflow runs with optional filters.
+  """
+  @spec list_runs(Runs.Store.list_filters(), keyword()) ::
+          {:ok, [Run.t()]} | {:error, {:missing_config, [atom()]}}
+  def list_runs(filters \\ [], overrides \\ []) do
+    with {:ok, config} <- Config.load(overrides) do
+      Runs.Store.list_runs(config.repo, filters)
+    end
+  end
+
+  @doc """
+  Requests cancellation for an eligible workflow run.
+  """
+  @spec cancel_run(Ecto.UUID.t(), keyword()) ::
+          {:ok, Run.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | Runs.Store.transition_error()}
+  def cancel_run(run_id, overrides \\ []) do
+    with {:ok, config} <- Config.load(overrides) do
+      Runs.Store.cancel_run(config.repo, run_id)
+    end
+  end
+
+  @doc """
+  Resumes a run that is intentionally paused for manual intervention.
+  """
+  @spec unblock_run(Ecto.UUID.t()) ::
+          {:ok, Run.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | Runs.Store.transition_error()
+             | term()}
+  def unblock_run(run_id), do: unblock_run(run_id, %{}, [])
+
+  @doc """
+  Resumes a paused run with either configuration overrides or manual action
+  attributes.
+
+  Pass a keyword list to override runtime configuration, or a map to provide
+  manual action attributes. Attribute maps are validated against the paused
+  step's manual action contract before the runtime appends resume events or
+  dispatches successor work.
+  """
+  @spec unblock_run(Ecto.UUID.t(), keyword()) ::
+          {:ok, Run.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | Runs.Store.transition_error()
+             | term()}
+  def unblock_run(run_id, overrides) when is_list(overrides) do
+    unblock_run(run_id, %{}, overrides)
+  end
+
+  @spec unblock_run(Ecto.UUID.t(), map()) ::
+          {:ok, Run.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | Runs.Store.transition_error()
+             | term()}
+  def unblock_run(run_id, attrs) when is_map(attrs) do
+    unblock_run(run_id, attrs, [])
+  end
+
+  @doc """
+  Resumes a paused run with manual action attributes and configuration overrides.
+  """
+  @spec unblock_run(Ecto.UUID.t(), map(), keyword()) ::
+          {:ok, Run.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | Runs.Store.transition_error()
+             | term()}
+  def unblock_run(run_id, attrs, overrides) when is_map(attrs) and is_list(overrides) do
+    with {:ok, config} <- Config.load(overrides),
+         {:ok, run} <- Runs.Store.get_run(config.repo, run_id),
+         :ok <- Unblocker.unblock(config, run, attrs) do
+      Runs.Store.get_run(config.repo, run_id)
+    end
+  end
+
+  @doc """
+  Approves a paused approval step and resumes the run through its success path.
+  """
+  @spec approve_run(Ecto.UUID.t(), map(), keyword()) ::
+          {:ok, Run.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | Runs.Store.transition_error()
+             | term()}
+  def approve_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
+    with {:ok, config} <- Config.load(overrides),
+         {:ok, run} <- Runs.Store.get_run(config.repo, run_id),
+         :ok <- Reviewer.review(config, run, :approved, attrs) do
+      Runs.Store.get_run(config.repo, run_id)
+    end
+  end
+
+  @doc """
+  Rejects a paused approval step and resumes the run through its rejection path.
+  """
+  @spec reject_run(Ecto.UUID.t(), map(), keyword()) ::
+          {:ok, Run.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | Runs.Store.transition_error()
+             | term()}
+  def reject_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
+    with {:ok, config} <- Config.load(overrides),
+         {:ok, run} <- Runs.Store.get_run(config.repo, run_id),
+         :ok <- Reviewer.review(config, run, :rejected, attrs) do
+      Runs.Store.get_run(config.repo, run_id)
+    end
+  end
+
+  @doc """
+  Creates a new run from a prior run and links it to the original run.
+
+  Replays are blocked by default once the source run completed an irreversible
+  or non-compensatable step. Pass `allow_irreversible: true` only after an
+  operator has reviewed the side effect and accepted re-execution.
+  """
+  @spec replay_run(Ecto.UUID.t(), keyword()) ::
+          {:ok, Run.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | Runs.Store.replay_error()}
+          | {:error, {:dispatch_failed, term()}}
+  def replay_run(run_id, overrides \\ []) do
+    {replay_opts, config_overrides} = Keyword.split(overrides, [:allow_irreversible])
+
+    with {:ok, config} <- Config.load(config_overrides),
+         {:ok, run} <-
+           Runs.Store.replay_and_dispatch_run(
+             config.repo,
+             run_id,
+             fn run ->
+               Dispatcher.dispatch_run(config, run)
+             end,
+             replay_opts
+           ) do
+      SquidMesh.Observability.emit_run_replayed(run)
+      {:ok, run}
+    else
+      {:error, reason} = error when reason in [:not_found, :invalid_run_id] ->
+        error
+
+      {:error, {:unsafe_replay, _details} = reason} ->
+        {:error, reason}
+
+      {:error, {:invalid_run, _changeset} = reason} ->
+        {:error, reason}
+
+      {:error, %_struct{} = reason} ->
+        {:error, {:dispatch_failed, reason}}
+
+      {:error, reason} ->
+        {:error, {:dispatch_failed, reason}}
     end
   end
 
@@ -140,7 +371,7 @@ defmodule SquidMesh do
 
   defp start_default_run(config, workflow, payload) do
     config.repo
-    |> RunStore.create_and_dispatch_run(workflow, payload, fn run ->
+    |> Runs.Store.create_and_dispatch_run(workflow, payload, fn run ->
       Dispatcher.dispatch_run(config, run)
     end)
     |> normalize_created_run()
@@ -148,7 +379,7 @@ defmodule SquidMesh do
 
   defp start_triggered_run(config, workflow, trigger_name, payload) do
     config.repo
-    |> RunStore.create_and_dispatch_run(workflow, trigger_name, payload, fn run ->
+    |> Runs.Store.create_and_dispatch_run(workflow, trigger_name, payload, fn run ->
       Dispatcher.dispatch_run(config, run)
     end)
     |> normalize_created_run()
@@ -163,7 +394,7 @@ defmodule SquidMesh do
 
   defp start_initial_context_run(config, workflow, trigger_name, payload, initial_context) do
     config.repo
-    |> RunStore.create_and_dispatch_run(
+    |> Runs.Store.create_and_dispatch_run(
       workflow,
       trigger_name,
       payload,
@@ -179,7 +410,7 @@ defmodule SquidMesh do
   end
 
   defp normalize_initial_context_run({:error, {:duplicate_schedule_start, identity}}, config) do
-    case RunStore.get_run_by_schedule_idempotency(config.repo, identity) do
+    case Runs.Store.get_run_by_schedule_idempotency(config.repo, identity) do
       {:ok, run} -> {:ok, {:duplicate_schedule_start, run}}
       {:error, reason} -> normalize_start_error(reason)
     end
@@ -200,66 +431,12 @@ defmodule SquidMesh do
     end
   end
 
-  @doc """
-  Fetches one workflow run by id.
-
-  By default this reads the stable runtime tables and returns `SquidMesh.Run`.
-  Pass `read_model: :journal_projection` with `journal_storage:` to rebuild the
-  Jido-native projection-backed snapshot from durable journal entries instead.
-  """
-  @spec inspect_run(String.t(), keyword()) ::
-          {:ok, Run.t() | SquidMesh.Runtime.ProjectedInspection.Snapshot.t()}
-          | {:error,
-             :not_found
-             | :invalid_run_id
-             | read_option_error()
-             | Config.config_error()
-             | ProjectedInspection.snapshot_error()}
-  def inspect_run(run_id, overrides \\ []) do
-    with {:ok, read_model} <- read_model(overrides) do
-      case read_model do
-        :runtime_tables -> inspect_runtime_table_run(run_id, overrides)
-        :journal_projection -> inspect_projected_run(run_id, overrides)
-      end
-    end
-  end
-
   defp inspect_runtime_table_run(run_id, overrides) do
     overrides = runtime_table_read_options(overrides)
     {inspect_opts, config_overrides} = Keyword.split(overrides, [:include_history])
 
     with {:ok, config} <- Config.load(config_overrides) do
-      RunStore.get_run(config.repo, run_id, inspect_opts)
-    end
-  end
-
-  @doc """
-  Explains the current runtime state of one workflow run.
-
-  The result is structured diagnostic data for host apps, CLIs, and dashboards.
-  Use `inspect_run/2` for the factual run snapshot and `explain_run/2` when an
-  operator-facing surface needs the reason, evidence, and valid next actions for
-  the run's current state.
-
-  By default this reads the stable runtime tables and returns
-  `SquidMesh.RunExplanation`. Pass `read_model: :journal_projection` with
-  `journal_storage:` to derive the explanation from durable Jido journal
-  projections instead.
-  """
-  @spec explain_run(String.t(), keyword()) ::
-          {:ok, RunExplanation.t() | SquidMesh.Runtime.ProjectedExplanation.Explanation.t()}
-          | {:error,
-             :not_found
-             | :invalid_run_id
-             | read_option_error()
-             | Config.config_error()
-             | ProjectedExplanation.explanation_error()}
-  def explain_run(run_id, overrides \\ []) do
-    with {:ok, read_model} <- read_model(overrides) do
-      case read_model do
-        :runtime_tables -> explain_runtime_table_run(run_id, overrides)
-        :journal_projection -> explain_projected_run(run_id, overrides)
-      end
+      Runs.Store.get_run(config.repo, run_id, inspect_opts)
     end
   end
 
@@ -267,13 +444,13 @@ defmodule SquidMesh do
     overrides = runtime_table_read_options(overrides)
 
     with {:ok, config} <- Config.load(overrides) do
-      RunExplanation.explain(config, run_id)
+      Explanation.explain(config, run_id)
     end
   end
 
   defp inspect_projected_run(run_id, overrides) when is_binary(run_id) do
     with {:ok, storage} <- journal_storage(overrides) do
-      ProjectedInspection.snapshot(storage, run_id, projected_snapshot_options(overrides))
+      Inspection.snapshot(storage, run_id, projected_snapshot_options(overrides))
     end
   end
 
@@ -283,7 +460,11 @@ defmodule SquidMesh do
 
   defp explain_projected_run(run_id, overrides) do
     with {:ok, storage} <- journal_storage(overrides) do
-      ProjectedExplanation.explain(storage, run_id, projected_snapshot_options(overrides))
+      SquidMesh.JournalProjection.Explanation.explain(
+        storage,
+        run_id,
+        projected_snapshot_options(overrides)
+      )
     end
   end
 
@@ -313,180 +494,5 @@ defmodule SquidMesh do
 
   defp runtime_table_read_options(overrides) do
     Keyword.drop(overrides, [:read_model | @projection_read_options])
-  end
-
-  @doc """
-  Lists workflow runs with optional filters.
-  """
-  @spec list_runs(RunStore.list_filters(), keyword()) ::
-          {:ok, [Run.t()]} | {:error, {:missing_config, [atom()]}}
-  def list_runs(filters \\ [], overrides \\ []) do
-    with {:ok, config} <- Config.load(overrides) do
-      RunStore.list_runs(config.repo, filters)
-    end
-  end
-
-  @doc """
-  Requests cancellation for an eligible workflow run.
-  """
-  @spec cancel_run(Ecto.UUID.t(), keyword()) ::
-          {:ok, Run.t()}
-          | {:error,
-             :not_found
-             | :invalid_run_id
-             | {:missing_config, [atom()]}
-             | RunStore.transition_error()}
-  def cancel_run(run_id, overrides \\ []) do
-    with {:ok, config} <- Config.load(overrides) do
-      RunStore.cancel_run(config.repo, run_id)
-    end
-  end
-
-  @doc """
-  Resumes a run that is intentionally paused for manual intervention.
-  """
-  @spec unblock_run(Ecto.UUID.t()) ::
-          {:ok, Run.t()}
-          | {:error,
-             :not_found
-             | :invalid_run_id
-             | {:missing_config, [atom()]}
-             | RunStore.transition_error()
-             | term()}
-  def unblock_run(run_id), do: unblock_run(run_id, %{}, [])
-
-  @doc """
-  Resumes a paused run with either configuration overrides or manual action
-  attributes.
-
-  Pass a keyword list to override runtime configuration, or a map to provide
-  manual action attributes. Attribute maps are validated against the paused
-  step's manual action contract before the runtime appends resume events or
-  dispatches successor work.
-  """
-  @spec unblock_run(Ecto.UUID.t(), keyword()) ::
-          {:ok, Run.t()}
-          | {:error,
-             :not_found
-             | :invalid_run_id
-             | {:missing_config, [atom()]}
-             | RunStore.transition_error()
-             | term()}
-  def unblock_run(run_id, overrides) when is_list(overrides) do
-    unblock_run(run_id, %{}, overrides)
-  end
-
-  @spec unblock_run(Ecto.UUID.t(), map()) ::
-          {:ok, Run.t()}
-          | {:error,
-             :not_found
-             | :invalid_run_id
-             | {:missing_config, [atom()]}
-             | RunStore.transition_error()
-             | term()}
-  def unblock_run(run_id, attrs) when is_map(attrs) do
-    unblock_run(run_id, attrs, [])
-  end
-
-  @doc """
-  Resumes a paused run with manual action attributes and configuration overrides.
-  """
-  @spec unblock_run(Ecto.UUID.t(), map(), keyword()) ::
-          {:ok, Run.t()}
-          | {:error,
-             :not_found
-             | :invalid_run_id
-             | {:missing_config, [atom()]}
-             | RunStore.transition_error()
-             | term()}
-  def unblock_run(run_id, attrs, overrides) when is_map(attrs) and is_list(overrides) do
-    with {:ok, config} <- Config.load(overrides),
-         {:ok, run} <- RunStore.get_run(config.repo, run_id),
-         :ok <- Unblocker.unblock(config, run, attrs) do
-      RunStore.get_run(config.repo, run_id)
-    end
-  end
-
-  @doc """
-  Approves a paused approval step and resumes the run through its success path.
-  """
-  @spec approve_run(Ecto.UUID.t(), map(), keyword()) ::
-          {:ok, Run.t()}
-          | {:error,
-             :not_found
-             | :invalid_run_id
-             | {:missing_config, [atom()]}
-             | RunStore.transition_error()
-             | term()}
-  def approve_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
-    with {:ok, config} <- Config.load(overrides),
-         {:ok, run} <- RunStore.get_run(config.repo, run_id),
-         :ok <- Reviewer.review(config, run, :approved, attrs) do
-      RunStore.get_run(config.repo, run_id)
-    end
-  end
-
-  @doc """
-  Rejects a paused approval step and resumes the run through its rejection path.
-  """
-  @spec reject_run(Ecto.UUID.t(), map(), keyword()) ::
-          {:ok, Run.t()}
-          | {:error,
-             :not_found
-             | :invalid_run_id
-             | {:missing_config, [atom()]}
-             | RunStore.transition_error()
-             | term()}
-  def reject_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
-    with {:ok, config} <- Config.load(overrides),
-         {:ok, run} <- RunStore.get_run(config.repo, run_id),
-         :ok <- Reviewer.review(config, run, :rejected, attrs) do
-      RunStore.get_run(config.repo, run_id)
-    end
-  end
-
-  @doc """
-  Creates a new run from a prior run and links it to the original run.
-
-  Replays are blocked by default once the source run completed an irreversible
-  or non-compensatable step. Pass `allow_irreversible: true` only after an
-  operator has reviewed the side effect and accepted re-execution.
-  """
-  @spec replay_run(Ecto.UUID.t(), keyword()) ::
-          {:ok, Run.t()}
-          | {:error,
-             :not_found | :invalid_run_id | {:missing_config, [atom()]} | RunStore.replay_error()}
-          | {:error, {:dispatch_failed, term()}}
-  def replay_run(run_id, overrides \\ []) do
-    {replay_opts, config_overrides} = Keyword.split(overrides, [:allow_irreversible])
-
-    with {:ok, config} <- Config.load(config_overrides),
-         {:ok, run} <-
-           RunStore.replay_and_dispatch_run(
-             config.repo,
-             run_id,
-             fn run ->
-               Dispatcher.dispatch_run(config, run)
-             end,
-             replay_opts
-           ) do
-      SquidMesh.Observability.emit_run_replayed(run)
-      {:ok, run}
-    else
-      {:error, reason} = error when reason in [:not_found, :invalid_run_id] ->
-        error
-
-      {:error, {:unsafe_replay, _details} = reason} ->
-        {:error, reason}
-
-      {:error, {:invalid_run, _changeset} = reason} ->
-        {:error, reason}
-
-      {:error, %_struct{} = reason} ->
-        {:error, {:dispatch_failed, reason}}
-
-      {:error, reason} ->
-        {:error, {:dispatch_failed, reason}}
-    end
   end
 end

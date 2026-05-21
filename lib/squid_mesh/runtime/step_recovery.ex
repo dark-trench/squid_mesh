@@ -8,7 +8,7 @@ defmodule SquidMesh.Runtime.StepRecovery do
   alias SquidMesh.AttemptStore
   alias SquidMesh.Persistence.StepAttempt
   alias SquidMesh.Persistence.StepRun
-  alias SquidMesh.StepRunStore
+  alias SquidMesh.Steps
 
   @type reclaim_status :: :reclaimed | :fresh | :not_running
   @type reclaim_result :: {:ok, reclaim_status()} | {:error, term()}
@@ -45,7 +45,7 @@ defmodule SquidMesh.Runtime.StepRecovery do
 
   defp reclaim_stale_step(repo, step_run, latest_attempt, error) do
     with :ok <- fail_latest_running_attempt(repo, latest_attempt, error),
-         {:ok, _step_run} <- StepRunStore.fail_step(repo, step_run.id, error) do
+         {:ok, _step_run} <- Steps.Store.fail_step(repo, step_run.id, error) do
       :reclaimed
     else
       {:error, reason} -> repo.rollback(reason)

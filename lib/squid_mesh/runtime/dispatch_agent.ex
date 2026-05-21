@@ -195,54 +195,6 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     end
   end
 
-  defp claim_attempt(storage, agent, queue, projection, thread_rev, owner_id, claim_options) do
-    projection
-    |> next_claimable_attempt(claim_options.now)
-    |> persist_claimable_attempt(
-      storage,
-      agent,
-      queue,
-      projection,
-      thread_rev,
-      owner_id,
-      claim_options
-    )
-  end
-
-  defp persist_claimable_attempt(
-         nil,
-         _storage,
-         _agent,
-         _queue,
-         _projection,
-         _thread_rev,
-         _owner,
-         _opts
-       ),
-       do: {:ok, :none}
-
-  defp persist_claimable_attempt(
-         attempt,
-         storage,
-         agent,
-         queue,
-         projection,
-         thread_rev,
-         owner_id,
-         opts
-       ) do
-    case run_status(storage, attempt.run_id) do
-      :active ->
-        persist_claim(storage, agent, queue, projection, thread_rev, attempt, owner_id, opts)
-
-      :terminal ->
-        {:ok, :none}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
   @doc """
   Extends the lease for a currently claimed attempt.
 
@@ -340,42 +292,6 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     end
   end
 
-  defp complete_target({:completed, %ActionAttempt{} = attempt}, %{agent: agent}) do
-    {:ok, %{agent: agent, attempt: attempt}}
-  end
-
-  defp complete_target(
-         {:claimed, %ActionAttempt{} = attempt},
-         %{
-           storage: storage,
-           agent: agent,
-           projection: projection,
-           thread_rev: thread_rev,
-           queue: queue,
-           claim_id: claim_id,
-           claim_token: claim_token,
-           result: result,
-           now: now
-         }
-       ) do
-    with :ok <- active_run(storage, attempt.run_id),
-         {:ok, completed_entry} <-
-           DispatchProtocol.new_entry(:attempt_completed, %{
-             run_id: attempt.run_id,
-             runnable_key: attempt.runnable_key,
-             claim_id: claim_id,
-             claim_token_hash: claim_token_hash(claim_token),
-             queue: queue,
-             result: result,
-             occurred_at: now
-           }),
-         {:ok, completed_agent} <-
-           persist_dispatch_entry(storage, agent, projection, thread_rev, completed_entry) do
-      {:ok,
-       %{agent: completed_agent, attempt: claimed_attempt!(completed_agent, attempt.runnable_key)}}
-    end
-  end
-
   @doc """
   Records a durable failure for a currently claimed attempt.
 
@@ -432,6 +348,90 @@ defmodule SquidMesh.Runtime.DispatchAgent do
          {:ok, failed_agent} <-
            persist_dispatch_entry(storage, agent, projection, thread_rev, failed_entry) do
       {:ok, %{agent: failed_agent, attempt: claimed_attempt!(failed_agent, runnable_key)}}
+    end
+  end
+
+  defp claim_attempt(storage, agent, queue, projection, thread_rev, owner_id, claim_options) do
+    projection
+    |> next_claimable_attempt(claim_options.now)
+    |> persist_claimable_attempt(
+      storage,
+      agent,
+      queue,
+      projection,
+      thread_rev,
+      owner_id,
+      claim_options
+    )
+  end
+
+  defp persist_claimable_attempt(
+         nil,
+         _storage,
+         _agent,
+         _queue,
+         _projection,
+         _thread_rev,
+         _owner,
+         _opts
+       ),
+       do: {:ok, :none}
+
+  defp persist_claimable_attempt(
+         attempt,
+         storage,
+         agent,
+         queue,
+         projection,
+         thread_rev,
+         owner_id,
+         opts
+       ) do
+    case run_status(storage, attempt.run_id) do
+      :active ->
+        persist_claim(storage, agent, queue, projection, thread_rev, attempt, owner_id, opts)
+
+      :terminal ->
+        {:ok, :none}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp complete_target({:completed, %ActionAttempt{} = attempt}, %{agent: agent}) do
+    {:ok, %{agent: agent, attempt: attempt}}
+  end
+
+  defp complete_target(
+         {:claimed, %ActionAttempt{} = attempt},
+         %{
+           storage: storage,
+           agent: agent,
+           projection: projection,
+           thread_rev: thread_rev,
+           queue: queue,
+           claim_id: claim_id,
+           claim_token: claim_token,
+           result: result,
+           now: now
+         }
+       ) do
+    with :ok <- active_run(storage, attempt.run_id),
+         {:ok, completed_entry} <-
+           DispatchProtocol.new_entry(:attempt_completed, %{
+             run_id: attempt.run_id,
+             runnable_key: attempt.runnable_key,
+             claim_id: claim_id,
+             claim_token_hash: claim_token_hash(claim_token),
+             queue: queue,
+             result: result,
+             occurred_at: now
+           }),
+         {:ok, completed_agent} <-
+           persist_dispatch_entry(storage, agent, projection, thread_rev, completed_entry) do
+      {:ok,
+       %{agent: completed_agent, attempt: claimed_attempt!(completed_agent, attempt.runnable_key)}}
     end
   end
 
