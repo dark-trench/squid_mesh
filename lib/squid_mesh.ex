@@ -8,11 +8,10 @@ defmodule SquidMesh do
   """
 
   alias SquidMesh.Config
-  alias SquidMesh.ReadModel.Explanation
   alias SquidMesh.ReadModel.Inspection
   alias SquidMesh.Run
-  alias SquidMesh.RunExplanation
   alias SquidMesh.Runs
+  alias SquidMesh.Runs.Explanation
   alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.Reviewer
   alias SquidMesh.Runtime.Unblocker
@@ -163,18 +162,18 @@ defmodule SquidMesh do
   the run's current state.
 
   By default this reads the stable runtime tables and returns
-  `SquidMesh.RunExplanation`. Pass `read_model: :journal_projection` with
+  `SquidMesh.Runs.Explanation`. Pass `read_model: :journal_projection` with
   `journal_storage:` to derive the explanation from durable Jido journal
   projections instead.
   """
   @spec explain_run(String.t(), keyword()) ::
-          {:ok, RunExplanation.t() | SquidMesh.ReadModel.Explanation.Diagnostic.t()}
+          {:ok, Explanation.t() | SquidMesh.ReadModel.Explanation.Diagnostic.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | read_option_error()
              | Config.config_error()
-             | Explanation.explanation_error()}
+             | SquidMesh.ReadModel.Explanation.explanation_error()}
   def explain_run(run_id, overrides \\ []) do
     with {:ok, read_model} <- read_model(overrides) do
       case read_model do
@@ -445,7 +444,7 @@ defmodule SquidMesh do
     overrides = runtime_table_read_options(overrides)
 
     with {:ok, config} <- Config.load(overrides) do
-      RunExplanation.explain(config, run_id)
+      Explanation.explain(config, run_id)
     end
   end
 
@@ -461,7 +460,11 @@ defmodule SquidMesh do
 
   defp explain_projected_run(run_id, overrides) do
     with {:ok, storage} <- journal_storage(overrides) do
-      Explanation.explain(storage, run_id, projected_snapshot_options(overrides))
+      SquidMesh.ReadModel.Explanation.explain(
+        storage,
+        run_id,
+        projected_snapshot_options(overrides)
+      )
     end
   end
 

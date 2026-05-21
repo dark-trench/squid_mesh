@@ -1,4 +1,4 @@
-defmodule SquidMesh.RunExplanation do
+defmodule SquidMesh.Runs.Explanation do
   @moduledoc """
   Structured diagnostic explanation for one workflow run.
 
@@ -12,10 +12,10 @@ defmodule SquidMesh.RunExplanation do
   alias SquidMesh.Config
   alias SquidMesh.Run
   alias SquidMesh.Runs
-  alias SquidMesh.RunStepState
+  alias SquidMesh.Runs.StepState
   alias SquidMesh.Runtime.RetryPolicy
-  alias SquidMesh.StepAttempt
-  alias SquidMesh.StepRun
+  alias SquidMesh.Steps.Attempt
+  alias SquidMesh.Steps.Execution
 
   @type reason ::
           :pending_dispatch
@@ -375,7 +375,7 @@ defmodule SquidMesh.RunExplanation do
 
   defp scheduled_dependency_join(%Run{steps: steps}) when is_list(steps) do
     Enum.find(steps, fn
-      %RunStepState{status: :pending, depends_on: dependencies} when dependencies != [] ->
+      %StepState{status: :pending, depends_on: dependencies} when dependencies != [] ->
         Enum.all?(dependencies, &(not dependency_incomplete?(steps, &1)))
 
       _step ->
@@ -390,8 +390,8 @@ defmodule SquidMesh.RunExplanation do
 
   defp dependency_incomplete?(steps, dependency) when is_list(steps) do
     case Enum.find(steps, &(&1.step == dependency)) do
-      %RunStepState{status: :completed} -> false
-      %RunStepState{} -> true
+      %StepState{status: :completed} -> false
+      %StepState{} -> true
       nil -> true
     end
   end
@@ -404,14 +404,14 @@ defmodule SquidMesh.RunExplanation do
 
   defp dependency_status(steps, dependency) when is_list(steps) do
     case Enum.find(steps, &(&1.step == dependency)) do
-      %RunStepState{status: status} -> status
+      %StepState{status: status} -> status
       nil -> :missing
     end
   end
 
   defp current_step_running?(run) do
     case current_step_run(run) do
-      %StepRun{status: :running} -> true
+      %Execution{status: :running} -> true
       _other -> false
     end
   end
@@ -427,19 +427,19 @@ defmodule SquidMesh.RunExplanation do
 
   defp current_step_run(_run), do: nil
 
-  defp latest_attempt(%StepRun{attempts: attempts}) when is_list(attempts) do
+  defp latest_attempt(%Execution{attempts: attempts}) when is_list(attempts) do
     Enum.max_by(attempts, & &1.attempt_number, fn -> nil end)
   end
 
   defp latest_attempt(_step_run), do: nil
 
-  defp next_attempt_number(%StepAttempt{attempt_number: attempt_number}), do: attempt_number + 1
+  defp next_attempt_number(%Attempt{attempt_number: attempt_number}), do: attempt_number + 1
   defp next_attempt_number(_attempt), do: nil
 
   defp failure_reason(%Run{workflow: workflow, current_step: step}, _step_run, attempt)
        when is_atom(workflow) and is_atom(step) do
     case {RetryPolicy.max_attempts(workflow, step), attempt} do
-      {{:ok, max_attempts}, %StepAttempt{attempt_number: attempt_number}}
+      {{:ok, max_attempts}, %Attempt{attempt_number: attempt_number}}
       when attempt_number >= max_attempts ->
         {:retry_exhausted, %{max_attempts: max_attempts, latest_attempt_number: attempt_number}}
 
@@ -630,7 +630,7 @@ defmodule SquidMesh.RunExplanation do
 
   defp step_run_evidence(nil), do: nil
 
-  defp step_run_evidence(%StepRun{} = step_run) do
+  defp step_run_evidence(%Execution{} = step_run) do
     %{
       id: step_run.id,
       step: step_run.step,
@@ -643,7 +643,7 @@ defmodule SquidMesh.RunExplanation do
 
   defp attempt_evidence(nil), do: nil
 
-  defp attempt_evidence(%StepAttempt{} = attempt) do
+  defp attempt_evidence(%Attempt{} = attempt) do
     %{
       id: attempt.id,
       attempt_number: attempt.attempt_number,
@@ -654,7 +654,7 @@ defmodule SquidMesh.RunExplanation do
     }
   end
 
-  defp step_state_evidence(%RunStepState{} = step) do
+  defp step_state_evidence(%StepState{} = step) do
     %{
       step: step.step,
       status: step.status,

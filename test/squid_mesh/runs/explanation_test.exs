@@ -1,4 +1,4 @@
-defmodule SquidMesh.RunExplanationTest do
+defmodule SquidMesh.Runs.ExplanationTest do
   use SquidMesh.DataCase, async: false
 
   alias __MODULE__.ApprovalWorkflow
@@ -8,7 +8,7 @@ defmodule SquidMesh.RunExplanationTest do
   alias __MODULE__.PauseWorkflow
   alias __MODULE__.RetryExhaustedWorkflow
   alias __MODULE__.SuccessfulWorkflow
-  alias SquidMesh.RunExplanation
+  alias SquidMesh.Runs.Explanation
   alias SquidMesh.Steps
   alias SquidMesh.Test.Executor
   alias SquidMesh.Test.Job
@@ -37,7 +37,7 @@ defmodule SquidMesh.RunExplanationTest do
       assert {:ok, run} =
                SquidMesh.start_run(SuccessfulWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
-      assert {:ok, %RunExplanation{} = explanation} =
+      assert {:ok, %Explanation{} = explanation} =
                SquidMesh.explain_run(run.id,
                  read_model: :runtime_tables,
                  journal_storage: :not_used_by_runtime_tables,
@@ -58,7 +58,7 @@ defmodule SquidMesh.RunExplanationTest do
 
       assert success >= 2
 
-      assert {:ok, %RunExplanation{} = explanation} =
+      assert {:ok, %Explanation{} = explanation} =
                SquidMesh.explain_run(run.id, repo: Repo)
 
       assert explanation.status == :failed

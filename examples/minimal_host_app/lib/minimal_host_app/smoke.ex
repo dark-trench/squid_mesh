@@ -320,9 +320,9 @@ defmodule MinimalHostApp.Smoke do
   defp ensure_paused(%SquidMesh.Run{status: :paused, current_step: :wait_for_approval}), do: :ok
   defp ensure_paused(%SquidMesh.Run{}), do: {:error, :unexpected_paused_status}
 
-  @spec ensure_paused_approval_explanation(SquidMesh.RunExplanation.t()) ::
+  @spec ensure_paused_approval_explanation(SquidMesh.Runs.Explanation.t()) ::
           :ok | {:error, :unexpected_explanation}
-  defp ensure_paused_approval_explanation(%SquidMesh.RunExplanation{
+  defp ensure_paused_approval_explanation(%SquidMesh.Runs.Explanation{
          status: :paused,
          reason: :paused_for_approval,
          step: :wait_for_approval,
@@ -330,7 +330,7 @@ defmodule MinimalHostApp.Smoke do
        }),
        do: :ok
 
-  defp ensure_paused_approval_explanation(%SquidMesh.RunExplanation{}),
+  defp ensure_paused_approval_explanation(%SquidMesh.Runs.Explanation{}),
     do: {:error, :unexpected_explanation}
 
   @spec ensure_resumed(SquidMesh.Run.t()) :: :ok | {:error, :unexpected_resumed_status}

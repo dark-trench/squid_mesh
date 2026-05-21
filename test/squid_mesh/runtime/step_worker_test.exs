@@ -406,7 +406,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert completed_run.status == :completed
       assert completed_run.context.gateway_check == %{account_id: "acct_123", status: "ok"}
 
-      assert [%SquidMesh.StepRun{} = step_run] = completed_run.step_runs
+      assert [%SquidMesh.Steps.Execution{} = step_run] = completed_run.step_runs
       assert step_run.step == :check_gateway
       assert step_run.status == :completed
 
@@ -537,11 +537,13 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert 0 ==
                SquidMesh.Test.Executor.available_count(run.id, "record_delivery")
 
-      assert [%SquidMesh.StepRun{} = paused_step] = paused_run.step_runs
+      assert [%SquidMesh.Steps.Execution{} = paused_step] = paused_run.step_runs
       assert paused_step.step == :wait_for_approval
       assert paused_step.status == :running
       assert paused_step.output == nil
-      assert [%SquidMesh.StepAttempt{attempt_number: 1, status: :running}] = paused_step.attempts
+
+      assert [%SquidMesh.Steps.Attempt{attempt_number: 1, status: :running}] =
+               paused_step.attempts
 
       assert {:ok, unblocked_run} = SquidMesh.unblock_run(run.id, repo: Repo)
       assert unblocked_run.status == :running
@@ -1576,7 +1578,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert failed_run.last_error.next_step == :send_email
       assert failed_run.last_error.cause == "executor_unavailable"
 
-      assert [%SquidMesh.StepRun{} = step_run] = failed_run.step_runs
+      assert [%SquidMesh.Steps.Execution{} = step_run] = failed_run.step_runs
       assert step_run.step == :load_invoice
       assert step_run.status == :completed
 
@@ -1780,7 +1782,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert failed_run.last_error.failed_step == :check_gateway
       assert failed_run.last_error.cause == %{message: "gateway timeout", code: "gateway_timeout"}
 
-      assert [%SquidMesh.StepRun{} = step_run] = failed_run.step_runs
+      assert [%SquidMesh.Steps.Execution{} = step_run] = failed_run.step_runs
       assert step_run.step == :check_gateway
       assert step_run.status == :failed
 
@@ -1867,7 +1869,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert progressed_run.current_step == :send_email
       assert progressed_run.context.invoice == %{id: "inv_456", status: "open"}
 
-      assert [%SquidMesh.StepRun{} = completed_step] = progressed_run.step_runs
+      assert [%SquidMesh.Steps.Execution{} = completed_step] = progressed_run.step_runs
       assert completed_step.status == :completed
 
       assert [
@@ -1909,7 +1911,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert inspected_run.status == :running
       assert inspected_run.current_step == :load_invoice
 
-      assert [%SquidMesh.StepRun{} = running_step] = inspected_run.step_runs
+      assert [%SquidMesh.Steps.Execution{} = running_step] = inspected_run.step_runs
       assert running_step.status == :running
       assert [%{id: attempt_id, attempt_number: 1, status: :running}] = running_step.attempts
       assert attempt_id == first_attempt.id
@@ -2107,7 +2109,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert cancelled_run.status == :cancelled
       assert cancelled_run.current_step == nil
 
-      assert [%SquidMesh.StepRun{} = paused_step] = cancelled_run.step_runs
+      assert [%SquidMesh.Steps.Execution{} = paused_step] = cancelled_run.step_runs
       assert paused_step.step == :wait_for_approval
       assert paused_step.status == :failed
       assert paused_step.output == nil
@@ -2176,7 +2178,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert current_run.status == :cancelled
       assert current_run.current_step == nil
 
-      assert [%SquidMesh.StepRun{} = paused_step] = current_run.step_runs
+      assert [%SquidMesh.Steps.Execution{} = paused_step] = current_run.step_runs
       assert paused_step.step == :wait_for_approval
       assert paused_step.status == :failed
 

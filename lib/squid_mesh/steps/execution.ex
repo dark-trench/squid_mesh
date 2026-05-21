@@ -1,4 +1,4 @@
-defmodule SquidMesh.StepRun do
+defmodule SquidMesh.Steps.Execution do
   @moduledoc """
   Public representation of one workflow step execution.
 

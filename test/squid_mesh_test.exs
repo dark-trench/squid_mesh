@@ -4,7 +4,7 @@ defmodule SquidMeshTest do
   alias SquidMesh.Executor.Payload
   alias SquidMesh.Run
   alias SquidMesh.Runs
-  alias SquidMesh.RunStepState
+  alias SquidMesh.Runs.StepState
   alias SquidMesh.Runtime.Runner
   alias SquidMesh.Runtime.Unblocker
   alias SquidMesh.Test.Job
@@ -856,7 +856,8 @@ defmodule SquidMeshTest do
                {:send_email, :completed, []}
              ]
 
-      assert [%SquidMesh.StepRun{}, %SquidMesh.StepRun{}] = inspected_run.step_runs
+      assert [%SquidMesh.Steps.Execution{}, %SquidMesh.Steps.Execution{}] =
+               inspected_run.step_runs
 
       assert Enum.map(inspected_run.step_runs, &{&1.step, &1.status}) == [
                {:load_invoice, :completed},
@@ -864,7 +865,7 @@ defmodule SquidMeshTest do
              ]
 
       assert Enum.all?(inspected_run.step_runs, fn step_run ->
-               match?([%SquidMesh.StepAttempt{}], step_run.attempts)
+               match?([%SquidMesh.Steps.Attempt{}], step_run.attempts)
              end)
 
       assert Enum.map(inspected_run.step_runs, fn step_run ->
@@ -941,10 +942,10 @@ defmodule SquidMeshTest do
       assert {:ok, inspected_run} =
                SquidMesh.inspect_run(created_run.id, include_history: true, repo: Repo)
 
-      assert %RunStepState{recovery: %{replay: :manual_review_required}} =
+      assert %StepState{recovery: %{replay: :manual_review_required}} =
                Enum.find(inspected_run.steps, &(&1.step == :capture_payment))
 
-      assert %SquidMesh.StepRun{recovery: %{irreversible?: true, compensatable?: false}} =
+      assert %SquidMesh.Steps.Execution{recovery: %{irreversible?: true, compensatable?: false}} =
                Enum.find(inspected_run.step_runs, &(&1.step == :capture_payment))
     end
 

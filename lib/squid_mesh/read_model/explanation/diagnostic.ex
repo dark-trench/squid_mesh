@@ -3,7 +3,7 @@ defmodule SquidMesh.ReadModel.Explanation.Diagnostic do
   Deterministic explanation built from a projection-backed inspection snapshot.
 
   This struct is intentionally separate from the current table-backed
-  `SquidMesh.RunExplanation` shape. It describes what the Jido-native journals
+  `SquidMesh.Runs.Explanation` shape. It describes what the Jido-native journals
   prove right now and which runtime boundary would make forward progress, while
   leaving mutation to recovery or dispatch modules.
   """

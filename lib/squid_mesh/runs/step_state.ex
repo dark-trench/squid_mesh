@@ -1,8 +1,8 @@
-defmodule SquidMesh.RunStepState do
+defmodule SquidMesh.Runs.StepState do
   @moduledoc """
   Public representation of one logical workflow step within a run.
 
-  This read model complements `SquidMesh.StepRun` by showing the declared step
+  This read model complements `SquidMesh.Steps.Execution` by showing the declared step
   graph together with the latest known execution state for each step.
   """
 
