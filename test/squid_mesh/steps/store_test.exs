@@ -1,14 +1,14 @@
-defmodule SquidMesh.StepRunStoreTest do
+defmodule SquidMesh.Steps.StoreTest do
   use SquidMesh.DataCase, async: false
 
   alias SquidMesh.AttemptStore
-  alias SquidMesh.StepRunStore
+  alias SquidMesh.Steps.Store
 
   test "claims a step once and skips concurrent duplicate claims" do
     {:ok, run} =
       %SquidMesh.Persistence.Run{}
       |> SquidMesh.Persistence.Run.changeset(%{
-        workflow: "Elixir.SquidMesh.StepRunStoreTest.Workflow",
+        workflow: "Elixir.SquidMesh.Steps.StoreTest.Workflow",
         trigger: "manual",
         status: "running",
         input: %{}
@@ -19,7 +19,7 @@ defmodule SquidMesh.StepRunStoreTest do
       1..4
       |> Task.async_stream(
         fn _ignored_index ->
-          StepRunStore.begin_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
+          Store.begin_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
         end,
         max_concurrency: 4,
         ordered: false,
@@ -42,7 +42,7 @@ defmodule SquidMesh.StepRunStoreTest do
     {:ok, run} =
       %SquidMesh.Persistence.Run{}
       |> SquidMesh.Persistence.Run.changeset(%{
-        workflow: "Elixir.SquidMesh.StepRunStoreTest.Workflow",
+        workflow: "Elixir.SquidMesh.Steps.StoreTest.Workflow",
         trigger: "manual",
         status: "running",
         input: %{}
@@ -50,27 +50,27 @@ defmodule SquidMesh.StepRunStoreTest do
       |> Repo.insert()
 
     assert {:ok, scheduled_step_run, :schedule} =
-             StepRunStore.schedule_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
+             Store.schedule_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
 
     assert scheduled_step_run.status == "pending"
 
     Process.sleep(1)
 
     assert {:ok, duplicate_schedule, :skip} =
-             StepRunStore.schedule_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
+             Store.schedule_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
 
     assert duplicate_schedule.id == scheduled_step_run.id
     assert duplicate_schedule.status == "pending"
 
     assert {:ok, claimed_step_run, :execute} =
-             StepRunStore.begin_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
+             Store.begin_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
 
     assert claimed_step_run.id == scheduled_step_run.id
     assert claimed_step_run.status == "running"
     assert DateTime.compare(claimed_step_run.updated_at, scheduled_step_run.updated_at) == :gt
 
     assert {:ok, duplicate_claim, :skip} =
-             StepRunStore.begin_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
+             Store.begin_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
 
     assert duplicate_claim.id == scheduled_step_run.id
     assert duplicate_claim.status == "running"
@@ -80,7 +80,7 @@ defmodule SquidMesh.StepRunStoreTest do
     {:ok, run} =
       %SquidMesh.Persistence.Run{}
       |> SquidMesh.Persistence.Run.changeset(%{
-        workflow: "Elixir.SquidMesh.StepRunStoreTest.Workflow",
+        workflow: "Elixir.SquidMesh.Steps.StoreTest.Workflow",
         trigger: "manual",
         status: "running",
         input: %{}
@@ -88,18 +88,18 @@ defmodule SquidMesh.StepRunStoreTest do
       |> Repo.insert()
 
     assert {:ok, step_run, :execute} =
-             StepRunStore.begin_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
+             Store.begin_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
 
     assert {:ok, completed_step} =
-             StepRunStore.complete_step(Repo, step_run.id, %{invoice: %{id: "inv_456"}})
+             Store.complete_step(Repo, step_run.id, %{invoice: %{id: "inv_456"}})
 
     assert completed_step.status == "completed"
 
     assert {:error, {:stale_step_run, "completed"}} =
-             StepRunStore.fail_step(Repo, step_run.id, %{message: "late failure"})
+             Store.fail_step(Repo, step_run.id, %{message: "late failure"})
 
     assert {:error, {:stale_step_run, "completed"}} =
-             StepRunStore.complete_step(Repo, step_run.id, %{invoice: %{id: "inv_999"}})
+             Store.complete_step(Repo, step_run.id, %{invoice: %{id: "inv_999"}})
 
     assert Repo.get!(SquidMesh.Persistence.StepRun, step_run.id).output == %{
              "invoice" => %{"id" => "inv_456"}
@@ -110,7 +110,7 @@ defmodule SquidMesh.StepRunStoreTest do
     {:ok, run} =
       %SquidMesh.Persistence.Run{}
       |> SquidMesh.Persistence.Run.changeset(%{
-        workflow: "Elixir.SquidMesh.StepRunStoreTest.Workflow",
+        workflow: "Elixir.SquidMesh.Steps.StoreTest.Workflow",
         trigger: "manual",
         status: "failed",
         input: %{}
@@ -118,34 +118,34 @@ defmodule SquidMesh.StepRunStoreTest do
       |> Repo.insert()
 
     {:ok, first_step, :execute} =
-      StepRunStore.begin_step(Repo, run.id, :reserve_inventory, %{order_id: "ord_123"})
+      Store.begin_step(Repo, run.id, :reserve_inventory, %{order_id: "ord_123"})
 
     {:ok, first_attempt} = AttemptStore.begin_attempt(Repo, first_step.id)
     {:ok, _first_attempt} = AttemptStore.complete_attempt(Repo, first_attempt.id)
 
     {:ok, completed_first_step} =
-      StepRunStore.complete_step(Repo, first_step.id, %{reserved: true})
+      Store.complete_step(Repo, first_step.id, %{reserved: true})
 
     Process.sleep(1)
 
     {:ok, second_step, :execute} =
-      StepRunStore.begin_step(Repo, run.id, :authorize_payment, %{order_id: "ord_123"})
+      Store.begin_step(Repo, run.id, :authorize_payment, %{order_id: "ord_123"})
 
     {:ok, second_attempt} = AttemptStore.begin_attempt(Repo, second_step.id)
     {:ok, _second_attempt} = AttemptStore.complete_attempt(Repo, second_attempt.id)
 
     {:ok, completed_second_step} =
-      StepRunStore.complete_step(Repo, second_step.id, %{authorized: true})
+      Store.complete_step(Repo, second_step.id, %{authorized: true})
 
     Process.sleep(1)
 
     assert {:ok, _updated_first_step} =
-             StepRunStore.update_recovery(Repo, completed_first_step.id, %{
+             Store.update_recovery(Repo, completed_first_step.id, %{
                compensation: %{status: :completed}
              })
 
     assert Enum.map(
-             StepRunStore.completed_step_runs_for_compensation(Repo, run.id),
+             Store.completed_step_runs_for_compensation(Repo, run.id),
              & &1.id
            ) == [completed_second_step.id, completed_first_step.id]
   end

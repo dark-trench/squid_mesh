@@ -1,8 +1,8 @@
-defmodule SquidMesh.RunStore.Serialization do
+defmodule SquidMesh.Runs.Store.Serialization do
   @moduledoc """
   Read-side serialization and hydration helpers for workflow runs.
 
-  `SquidMesh.RunStore` remains the public boundary. This module keeps the
+  `SquidMesh.Runs.Store` remains the public boundary. This module keeps the
   translation between persistence records and public structs in one place so
   command code can stay focused on lifecycle transitions.
   """

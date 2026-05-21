@@ -7,7 +7,7 @@ defmodule SquidMesh.Runtime.StepInput do
   """
 
   alias SquidMesh.Run
-  alias SquidMesh.StepRunStore
+  alias SquidMesh.Steps
 
   @type expected_step :: atom() | String.t() | nil
   @type input_mapping :: [atom()] | nil
@@ -52,7 +52,7 @@ defmodule SquidMesh.Runtime.StepInput do
   def build_dependency_step_input(repo, %Run{id: run_id} = run, input_mapping \\ nil) do
     run
     |> build_step_input()
-    |> merge_completed_outputs(StepRunStore.completed_outputs(repo, run_id))
+    |> merge_completed_outputs(Steps.Store.completed_outputs(repo, run_id))
     |> apply_input_mapping(input_mapping)
   end
 

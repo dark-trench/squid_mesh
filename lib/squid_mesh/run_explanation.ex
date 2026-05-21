@@ -11,8 +11,8 @@ defmodule SquidMesh.RunExplanation do
 
   alias SquidMesh.Config
   alias SquidMesh.Run
+  alias SquidMesh.Runs
   alias SquidMesh.RunStepState
-  alias SquidMesh.RunStore
   alias SquidMesh.Runtime.RetryPolicy
   alias SquidMesh.StepAttempt
   alias SquidMesh.StepRun
@@ -64,9 +64,9 @@ defmodule SquidMesh.RunExplanation do
   ]
 
   @doc false
-  @spec explain(Config.t(), Ecto.UUID.t()) :: {:ok, t()} | {:error, RunStore.get_error()}
+  @spec explain(Config.t(), Ecto.UUID.t()) :: {:ok, t()} | {:error, Runs.Store.get_error()}
   def explain(%Config{} = config, run_id) do
-    with {:ok, run} <- RunStore.get_run(config.repo, run_id, include_history: true) do
+    with {:ok, run} <- Runs.Store.get_run(config.repo, run_id, include_history: true) do
       {:ok, build(config, run, workflow_definition(run))}
     end
   end

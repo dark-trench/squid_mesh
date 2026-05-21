@@ -1,10 +1,10 @@
 defmodule SquidMesh.Runtime.StepExecutor.Progression do
   @moduledoc false
 
-  alias SquidMesh.RunStore
+  alias SquidMesh.Runs
 
-  @type attrs_fun :: RunStore.attrs_fun()
-  @type dispatch_error_handler :: (SquidMesh.Run.t(), term() -> RunStore.transition_attrs())
+  @type attrs_fun :: Runs.Store.attrs_fun()
+  @type dispatch_error_handler :: (SquidMesh.Run.t(), term() -> Runs.Store.transition_attrs())
 
   defmodule Complete do
     @moduledoc false

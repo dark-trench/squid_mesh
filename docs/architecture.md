@@ -13,11 +13,11 @@ inside a host application's supervision tree and infrastructure.
 
 - public runtime API for starting, inspecting, listing, cancelling, and replaying runs
 
-`SquidMesh.RunStore`
+`SquidMesh.Runs.Store`
 
 - durable run persistence and run lifecycle transitions
 
-`SquidMesh.StepRunStore`
+`SquidMesh.Steps.Store`
 
 - durable state for individual workflow steps
 

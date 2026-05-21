@@ -9,11 +9,11 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
 
   alias SquidMesh.Config
   alias SquidMesh.Run
-  alias SquidMesh.RunStore
+  alias SquidMesh.Runs
   alias SquidMesh.Runtime.StepExecutor.PreparedStep
   alias SquidMesh.Runtime.StepInput
   alias SquidMesh.Runtime.StepRecovery
-  alias SquidMesh.StepRunStore
+  alias SquidMesh.Steps
 
   @type prepare_result ::
           {:execute, PreparedStep.t()}
@@ -46,7 +46,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
     end
   end
 
-  defp lock_prepare_run(config, run_id), do: RunStore.get_run_for_update(config.repo, run_id)
+  defp lock_prepare_run(config, run_id), do: Runs.Store.get_run_for_update(config.repo, run_id)
 
   defp prepare_locked_run({:ok, locked_run}, config, definition, expected_step) do
     {result, events} = do_prepare(config, definition, locked_run, expected_step)
@@ -87,7 +87,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
          {:ok, recovery_policy} <-
            SquidMesh.Workflow.Definition.step_recovery_policy(definition, execution_step),
          {:ok, step_run, execution_mode} <-
-           StepRunStore.begin_step(
+           Steps.Store.begin_step(
              config.repo,
              running_run.id,
              execution_step,
@@ -136,7 +136,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
          definition,
          execution_step
        ) do
-    case RunStore.transition_run_silent(repo, run_id, :running, %{
+    case Runs.Store.transition_run_silent(repo, run_id, :running, %{
            current_step: running_step(definition, execution_step)
          }) do
       {:ok, {running_run, from_status, to_status}} ->
@@ -156,7 +156,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
          definition,
          execution_step
        ) do
-    case RunStore.transition_run_silent(repo, run_id, :running, %{
+    case Runs.Store.transition_run_silent(repo, run_id, :running, %{
            current_step: running_step(definition, execution_step)
          }) do
       {:ok, {running_run, from_status, to_status}} ->
@@ -203,7 +203,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
   end
 
   defp resolve_dependency_execution_step(repo, run_id, expected_step) do
-    case StepRunStore.get_step_run(repo, run_id, expected_step) do
+    case Steps.Store.get_step_run(repo, run_id, expected_step) do
       %SquidMesh.Persistence.StepRun{status: status} when status in ["pending", "failed"] ->
         {:ok, expected_step}
 
@@ -226,7 +226,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
   end
 
   defp get_already_running_run(repo, run_id) do
-    with {:ok, run} <- RunStore.get_run(repo, run_id) do
+    with {:ok, run} <- Runs.Store.get_run(repo, run_id) do
       {:ok, run, []}
     end
   end

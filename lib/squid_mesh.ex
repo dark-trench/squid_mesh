@@ -12,7 +12,7 @@ defmodule SquidMesh do
   alias SquidMesh.ReadModel.Inspection
   alias SquidMesh.Run
   alias SquidMesh.RunExplanation
-  alias SquidMesh.RunStore
+  alias SquidMesh.Runs
   alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.Reviewer
   alias SquidMesh.Runtime.Unblocker
@@ -50,7 +50,7 @@ defmodule SquidMesh do
   @spec start_run(module(), map()) ::
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
-          | {:error, RunStore.create_error()}
+          | {:error, Runs.Store.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, payload) when is_map(payload) do
     start_run(workflow, payload, [])
@@ -60,7 +60,7 @@ defmodule SquidMesh do
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
           | {:error, {:invalid_option, atom()}}
-          | {:error, RunStore.create_error()}
+          | {:error, Runs.Store.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, payload, overrides) when is_map(payload) and is_list(overrides) do
     with :ok <- reject_public_start_options(overrides),
@@ -81,7 +81,7 @@ defmodule SquidMesh do
   @spec start_run(module(), atom(), map()) ::
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
-          | {:error, RunStore.create_error()}
+          | {:error, Runs.Store.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, trigger_name, payload)
       when is_atom(trigger_name) and is_map(payload) do
@@ -99,7 +99,7 @@ defmodule SquidMesh do
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
           | {:error, {:invalid_option, atom()}}
-          | {:error, RunStore.create_error()}
+          | {:error, Runs.Store.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, trigger_name, payload, overrides)
       when is_atom(trigger_name) and is_map(payload) and is_list(overrides) do
@@ -117,7 +117,7 @@ defmodule SquidMesh do
           | {:ok, {:duplicate_schedule_start, Run.t()}}
           | {:error, {:missing_config, [atom()]}}
           | {:error, {:invalid_option, atom()}}
-          | {:error, RunStore.create_error()}
+          | {:error, Runs.Store.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run_with_initial_context(workflow, trigger_name, payload, initial_context, overrides)
       when is_atom(trigger_name) and is_map(payload) and is_map(initial_context) and
@@ -140,7 +140,7 @@ defmodule SquidMesh do
 
   defp start_default_run(config, workflow, payload) do
     config.repo
-    |> RunStore.create_and_dispatch_run(workflow, payload, fn run ->
+    |> Runs.Store.create_and_dispatch_run(workflow, payload, fn run ->
       Dispatcher.dispatch_run(config, run)
     end)
     |> normalize_created_run()
@@ -148,7 +148,7 @@ defmodule SquidMesh do
 
   defp start_triggered_run(config, workflow, trigger_name, payload) do
     config.repo
-    |> RunStore.create_and_dispatch_run(workflow, trigger_name, payload, fn run ->
+    |> Runs.Store.create_and_dispatch_run(workflow, trigger_name, payload, fn run ->
       Dispatcher.dispatch_run(config, run)
     end)
     |> normalize_created_run()
@@ -163,7 +163,7 @@ defmodule SquidMesh do
 
   defp start_initial_context_run(config, workflow, trigger_name, payload, initial_context) do
     config.repo
-    |> RunStore.create_and_dispatch_run(
+    |> Runs.Store.create_and_dispatch_run(
       workflow,
       trigger_name,
       payload,
@@ -179,7 +179,7 @@ defmodule SquidMesh do
   end
 
   defp normalize_initial_context_run({:error, {:duplicate_schedule_start, identity}}, config) do
-    case RunStore.get_run_by_schedule_idempotency(config.repo, identity) do
+    case Runs.Store.get_run_by_schedule_idempotency(config.repo, identity) do
       {:ok, run} -> {:ok, {:duplicate_schedule_start, run}}
       {:error, reason} -> normalize_start_error(reason)
     end
@@ -229,7 +229,7 @@ defmodule SquidMesh do
     {inspect_opts, config_overrides} = Keyword.split(overrides, [:include_history])
 
     with {:ok, config} <- Config.load(config_overrides) do
-      RunStore.get_run(config.repo, run_id, inspect_opts)
+      Runs.Store.get_run(config.repo, run_id, inspect_opts)
     end
   end
 
@@ -318,11 +318,11 @@ defmodule SquidMesh do
   @doc """
   Lists workflow runs with optional filters.
   """
-  @spec list_runs(RunStore.list_filters(), keyword()) ::
+  @spec list_runs(Runs.Store.list_filters(), keyword()) ::
           {:ok, [Run.t()]} | {:error, {:missing_config, [atom()]}}
   def list_runs(filters \\ [], overrides \\ []) do
     with {:ok, config} <- Config.load(overrides) do
-      RunStore.list_runs(config.repo, filters)
+      Runs.Store.list_runs(config.repo, filters)
     end
   end
 
@@ -335,10 +335,10 @@ defmodule SquidMesh do
              :not_found
              | :invalid_run_id
              | {:missing_config, [atom()]}
-             | RunStore.transition_error()}
+             | Runs.Store.transition_error()}
   def cancel_run(run_id, overrides \\ []) do
     with {:ok, config} <- Config.load(overrides) do
-      RunStore.cancel_run(config.repo, run_id)
+      Runs.Store.cancel_run(config.repo, run_id)
     end
   end
 
@@ -351,7 +351,7 @@ defmodule SquidMesh do
              :not_found
              | :invalid_run_id
              | {:missing_config, [atom()]}
-             | RunStore.transition_error()
+             | Runs.Store.transition_error()
              | term()}
   def unblock_run(run_id), do: unblock_run(run_id, %{}, [])
 
@@ -370,7 +370,7 @@ defmodule SquidMesh do
              :not_found
              | :invalid_run_id
              | {:missing_config, [atom()]}
-             | RunStore.transition_error()
+             | Runs.Store.transition_error()
              | term()}
   def unblock_run(run_id, overrides) when is_list(overrides) do
     unblock_run(run_id, %{}, overrides)
@@ -382,7 +382,7 @@ defmodule SquidMesh do
              :not_found
              | :invalid_run_id
              | {:missing_config, [atom()]}
-             | RunStore.transition_error()
+             | Runs.Store.transition_error()
              | term()}
   def unblock_run(run_id, attrs) when is_map(attrs) do
     unblock_run(run_id, attrs, [])
@@ -397,13 +397,13 @@ defmodule SquidMesh do
              :not_found
              | :invalid_run_id
              | {:missing_config, [atom()]}
-             | RunStore.transition_error()
+             | Runs.Store.transition_error()
              | term()}
   def unblock_run(run_id, attrs, overrides) when is_map(attrs) and is_list(overrides) do
     with {:ok, config} <- Config.load(overrides),
-         {:ok, run} <- RunStore.get_run(config.repo, run_id),
+         {:ok, run} <- Runs.Store.get_run(config.repo, run_id),
          :ok <- Unblocker.unblock(config, run, attrs) do
-      RunStore.get_run(config.repo, run_id)
+      Runs.Store.get_run(config.repo, run_id)
     end
   end
 
@@ -416,13 +416,13 @@ defmodule SquidMesh do
              :not_found
              | :invalid_run_id
              | {:missing_config, [atom()]}
-             | RunStore.transition_error()
+             | Runs.Store.transition_error()
              | term()}
   def approve_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
     with {:ok, config} <- Config.load(overrides),
-         {:ok, run} <- RunStore.get_run(config.repo, run_id),
+         {:ok, run} <- Runs.Store.get_run(config.repo, run_id),
          :ok <- Reviewer.review(config, run, :approved, attrs) do
-      RunStore.get_run(config.repo, run_id)
+      Runs.Store.get_run(config.repo, run_id)
     end
   end
 
@@ -435,13 +435,13 @@ defmodule SquidMesh do
              :not_found
              | :invalid_run_id
              | {:missing_config, [atom()]}
-             | RunStore.transition_error()
+             | Runs.Store.transition_error()
              | term()}
   def reject_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
     with {:ok, config} <- Config.load(overrides),
-         {:ok, run} <- RunStore.get_run(config.repo, run_id),
+         {:ok, run} <- Runs.Store.get_run(config.repo, run_id),
          :ok <- Reviewer.review(config, run, :rejected, attrs) do
-      RunStore.get_run(config.repo, run_id)
+      Runs.Store.get_run(config.repo, run_id)
     end
   end
 
@@ -455,14 +455,17 @@ defmodule SquidMesh do
   @spec replay_run(Ecto.UUID.t(), keyword()) ::
           {:ok, Run.t()}
           | {:error,
-             :not_found | :invalid_run_id | {:missing_config, [atom()]} | RunStore.replay_error()}
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | Runs.Store.replay_error()}
           | {:error, {:dispatch_failed, term()}}
   def replay_run(run_id, overrides \\ []) do
     {replay_opts, config_overrides} = Keyword.split(overrides, [:allow_irreversible])
 
     with {:ok, config} <- Config.load(config_overrides),
          {:ok, run} <-
-           RunStore.replay_and_dispatch_run(
+           Runs.Store.replay_and_dispatch_run(
              config.repo,
              run_id,
              fn run ->

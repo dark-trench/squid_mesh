@@ -1,9 +1,9 @@
-defmodule SquidMesh.RunStoreTest do
+defmodule SquidMesh.Runs.StoreTest do
   use SquidMesh.DataCase, async: false
 
   import Ecto.Query
 
-  alias SquidMesh.RunStore
+  alias SquidMesh.Runs.Store
 
   defmodule LockStepRepo do
     import Ecto.Query
@@ -145,7 +145,7 @@ defmodule SquidMesh.RunStoreTest do
       }
 
       assert {:ok, run} =
-               RunStore.create_and_dispatch_run(
+               Store.create_and_dispatch_run(
                  Repo,
                  InvoiceReminderWorkflow,
                  %{account_id: "acct_123"},
@@ -160,10 +160,10 @@ defmodule SquidMesh.RunStoreTest do
   describe "transition_run/4" do
     test "persists a valid transition" do
       assert {:ok, run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
       assert {:ok, transitioned_run} =
-               RunStore.transition_run(Repo, run.id, :running, %{current_step: :load_invoice})
+               Store.transition_run(Repo, run.id, :running, %{current_step: :load_invoice})
 
       assert transitioned_run.id == run.id
       assert transitioned_run.trigger == :invoice_delivery
@@ -173,12 +173,12 @@ defmodule SquidMesh.RunStoreTest do
 
     test "persists transition metadata alongside the status change" do
       assert {:ok, run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
       error = %{message: "gateway timeout"}
 
       assert {:ok, transitioned_run} =
-               RunStore.transition_run(Repo, run.id, :failed, %{
+               Store.transition_run(Repo, run.id, :failed, %{
                  last_error: error,
                  context: %{attempt: 3}
                })
@@ -190,12 +190,12 @@ defmodule SquidMesh.RunStoreTest do
 
     test "rejects invalid transitions and keeps the persisted state unchanged" do
       assert {:ok, run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
       assert {:error, {:invalid_transition, :pending, :completed}} =
-               RunStore.transition_run(Repo, run.id, :completed)
+               Store.transition_run(Repo, run.id, :completed)
 
-      assert {:ok, persisted_run} = RunStore.get_run(Repo, run.id)
+      assert {:ok, persisted_run} = Store.get_run(Repo, run.id)
 
       assert persisted_run.status == :pending
       assert persisted_run.current_step == :load_invoice
@@ -203,12 +203,12 @@ defmodule SquidMesh.RunStoreTest do
 
     test "returns not found when the run does not exist" do
       assert {:error, :not_found} =
-               RunStore.transition_run(Repo, Ecto.UUID.generate(), :running)
+               Store.transition_run(Repo, Ecto.UUID.generate(), :running)
     end
 
     test "creates a run through an explicit trigger name" do
       assert {:ok, run} =
-               RunStore.create_run(
+               Store.create_run(
                  Repo,
                  InvoiceReminderWorkflow,
                  :invoice_delivery,
@@ -220,80 +220,80 @@ defmodule SquidMesh.RunStoreTest do
 
     test "validates payload against the selected trigger" do
       assert {:ok, manual_run} =
-               RunStore.create_run(Repo, MultiTriggerWorkflow, :manual_digest, %{chat_id: 123})
+               Store.create_run(Repo, MultiTriggerWorkflow, :manual_digest, %{chat_id: 123})
 
       assert manual_run.trigger == :manual_digest
       assert manual_run.payload == %{chat_id: 123}
 
       assert {:ok, scheduled_run} =
-               RunStore.create_run(Repo, MultiTriggerWorkflow, :scheduled_digest, %{})
+               Store.create_run(Repo, MultiTriggerWorkflow, :scheduled_digest, %{})
 
       assert scheduled_run.trigger == :scheduled_digest
       assert is_binary(scheduled_run.payload.window_start_at)
 
-      assert {:ok, reloaded_scheduled_run} = RunStore.get_run(Repo, scheduled_run.id)
+      assert {:ok, reloaded_scheduled_run} = Store.get_run(Repo, scheduled_run.id)
       assert reloaded_scheduled_run.payload == scheduled_run.payload
 
       assert {:error, {:invalid_payload, %{missing_fields: [:chat_id]}}} =
-               RunStore.create_run(Repo, MultiTriggerWorkflow, :manual_digest, %{})
+               Store.create_run(Repo, MultiTriggerWorkflow, :manual_digest, %{})
     end
   end
 
   describe "cancel_run/2" do
     test "cancels pending runs immediately" do
       assert {:ok, run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
-      assert {:ok, cancelled_run} = RunStore.cancel_run(Repo, run.id)
+      assert {:ok, cancelled_run} = Store.cancel_run(Repo, run.id)
 
       assert cancelled_run.status == :cancelled
-      assert RunStore.schedule_next_step?(cancelled_run) == false
+      assert Store.schedule_next_step?(cancelled_run) == false
     end
 
     test "marks active runs as cancelling and prevents future scheduling" do
       assert {:ok, run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
-      assert {:ok, running_run} = RunStore.transition_run(Repo, run.id, :running)
-      assert {:ok, cancelling_run} = RunStore.cancel_run(Repo, running_run.id)
+      assert {:ok, running_run} = Store.transition_run(Repo, run.id, :running)
+      assert {:ok, cancelling_run} = Store.cancel_run(Repo, running_run.id)
 
       assert cancelling_run.status == :cancelling
-      assert RunStore.schedule_next_step?(cancelling_run) == false
+      assert Store.schedule_next_step?(cancelling_run) == false
     end
 
     test "cancels paused runs immediately" do
       assert {:ok, run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
-      assert {:ok, running_run} = RunStore.transition_run(Repo, run.id, :running)
+      assert {:ok, running_run} = Store.transition_run(Repo, run.id, :running)
 
       assert {:ok, paused_run} =
-               RunStore.transition_run(Repo, running_run.id, :paused, %{
+               Store.transition_run(Repo, running_run.id, :paused, %{
                  current_step: :wait_for_approval
                })
 
-      assert {:ok, cancelled_run} = RunStore.cancel_run(Repo, paused_run.id)
+      assert {:ok, cancelled_run} = Store.cancel_run(Repo, paused_run.id)
 
       assert cancelled_run.status == :cancelled
-      assert RunStore.schedule_next_step?(cancelled_run) == false
+      assert Store.schedule_next_step?(cancelled_run) == false
     end
 
     test "rejects cancellation for terminal runs" do
       assert {:ok, run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
-      assert {:ok, failed_run} = RunStore.transition_run(Repo, run.id, :failed)
+      assert {:ok, failed_run} = Store.transition_run(Repo, run.id, :failed)
 
       assert {:error, {:invalid_transition, :failed, :cancelling}} =
-               RunStore.cancel_run(Repo, failed_run.id)
+               Store.cancel_run(Repo, failed_run.id)
     end
 
     test "cancels a run that becomes paused before cancellation acquires the lock" do
       assert {:ok, run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
       assert {:ok, running_run} =
-               RunStore.transition_run(Repo, run.id, :running, %{current_step: :load_invoice})
+               Store.transition_run(Repo, run.id, :running, %{current_step: :load_invoice})
 
       LockStepRepo.put_locked_transition(
         run.id,
@@ -304,19 +304,19 @@ defmodule SquidMesh.RunStoreTest do
 
       on_exit(fn -> LockStepRepo.clear_locked_transition() end)
 
-      assert {:ok, cancelled_run} = RunStore.cancel_run(LockStepRepo, running_run.id)
+      assert {:ok, cancelled_run} = Store.cancel_run(LockStepRepo, running_run.id)
       assert cancelled_run.status == :cancelled
     end
 
     test "cancels a paused run that becomes running before cancellation acquires the lock" do
       assert {:ok, run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
       assert {:ok, running_run} =
-               RunStore.transition_run(Repo, run.id, :running, %{current_step: :load_invoice})
+               Store.transition_run(Repo, run.id, :running, %{current_step: :load_invoice})
 
       assert {:ok, paused_run} =
-               RunStore.transition_run(Repo, running_run.id, :paused, %{
+               Store.transition_run(Repo, running_run.id, :paused, %{
                  current_step: :wait_for_approval
                })
 
@@ -329,23 +329,23 @@ defmodule SquidMesh.RunStoreTest do
 
       on_exit(fn -> LockStepRepo.clear_locked_transition() end)
 
-      assert {:ok, cancelling_run} = RunStore.cancel_run(LockStepRepo, paused_run.id)
+      assert {:ok, cancelling_run} = Store.cancel_run(LockStepRepo, paused_run.id)
       assert cancelling_run.status == :cancelling
     end
 
     test "clears current_step when cancelling a paused run" do
       assert {:ok, run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
       assert {:ok, running_run} =
-               RunStore.transition_run(Repo, run.id, :running, %{current_step: :load_invoice})
+               Store.transition_run(Repo, run.id, :running, %{current_step: :load_invoice})
 
       assert {:ok, paused_run} =
-               RunStore.transition_run(Repo, running_run.id, :paused, %{
+               Store.transition_run(Repo, running_run.id, :paused, %{
                  current_step: :wait_for_approval
                })
 
-      assert {:ok, cancelled_run} = RunStore.cancel_run(Repo, paused_run.id)
+      assert {:ok, cancelled_run} = Store.cancel_run(Repo, paused_run.id)
       assert cancelled_run.status == :cancelled
       assert is_nil(cancelled_run.current_step)
     end
@@ -354,14 +354,14 @@ defmodule SquidMesh.RunStoreTest do
   describe "get_run/2" do
     test "returns stable workflow and step identifiers after reloading from persistence" do
       assert {:ok, run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
       persisted_run = Repo.get!(SquidMesh.Persistence.Run, run.id)
 
-      assert persisted_run.workflow == "Elixir.SquidMesh.RunStoreTest.InvoiceReminderWorkflow"
+      assert persisted_run.workflow == "Elixir.SquidMesh.Runs.StoreTest.InvoiceReminderWorkflow"
       assert persisted_run.current_step == "load_invoice"
 
-      assert {:ok, loaded_run} = RunStore.get_run(Repo, run.id)
+      assert {:ok, loaded_run} = Store.get_run(Repo, run.id)
 
       assert loaded_run.workflow == InvoiceReminderWorkflow
       assert loaded_run.trigger == :invoice_delivery
@@ -369,7 +369,7 @@ defmodule SquidMesh.RunStoreTest do
     end
 
     test "returns a structured error for malformed run ids" do
-      assert {:error, :invalid_run_id} = RunStore.get_run(Repo, "not-a-uuid")
+      assert {:error, :invalid_run_id} = Store.get_run(Repo, "not-a-uuid")
     end
   end
 
@@ -377,9 +377,9 @@ defmodule SquidMesh.RunStoreTest do
     test "creates a distinct pending run linked to the source run" do
       payload = %{account_id: "acct_123"}
 
-      assert {:ok, source_run} = RunStore.create_run(Repo, InvoiceReminderWorkflow, payload)
+      assert {:ok, source_run} = Store.create_run(Repo, InvoiceReminderWorkflow, payload)
 
-      assert {:ok, replay_run} = RunStore.replay_run(Repo, source_run.id)
+      assert {:ok, replay_run} = Store.replay_run(Repo, source_run.id)
 
       assert replay_run.id != source_run.id
       assert replay_run.workflow == source_run.workflow
@@ -394,17 +394,17 @@ defmodule SquidMesh.RunStoreTest do
 
     test "leaves the source run unchanged" do
       assert {:ok, source_run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
       assert {:ok, failed_run} =
-               RunStore.transition_run(Repo, source_run.id, :failed, %{
+               Store.transition_run(Repo, source_run.id, :failed, %{
                  current_step: :load_invoice,
                  context: %{attempt: 1},
                  last_error: %{message: "timeout"}
                })
 
-      assert {:ok, replay_run} = RunStore.replay_run(Repo, failed_run.id)
-      assert {:ok, persisted_source_run} = RunStore.get_run(Repo, failed_run.id)
+      assert {:ok, replay_run} = Store.replay_run(Repo, failed_run.id)
+      assert {:ok, persisted_source_run} = Store.get_run(Repo, failed_run.id)
 
       assert replay_run.replayed_from_run_id == failed_run.id
       assert persisted_source_run == failed_run
@@ -424,16 +424,16 @@ defmodule SquidMesh.RunStoreTest do
       }
 
       assert {:ok, source_run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
       assert {:ok, failed_run} =
-               RunStore.transition_run(Repo, source_run.id, :failed, %{
+               Store.transition_run(Repo, source_run.id, :failed, %{
                  current_step: :load_invoice,
                  context: %{attempt: 1, schedule: schedule},
                  last_error: %{message: "timeout"}
                })
 
-      assert {:ok, replay_run} = RunStore.replay_run(Repo, failed_run.id)
+      assert {:ok, replay_run} = Store.replay_run(Repo, failed_run.id)
 
       assert replay_run.context == %{schedule: schedule}
       refute Map.has_key?(replay_run.context, :attempt)
@@ -451,16 +451,16 @@ defmodule SquidMesh.RunStoreTest do
       }
 
       assert {:ok, source_run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
       assert {:ok, failed_run} =
-               RunStore.transition_run(Repo, source_run.id, :failed, %{
+               Store.transition_run(Repo, source_run.id, :failed, %{
                  current_step: :load_invoice,
                  context: %{schedule: schedule},
                  last_error: %{message: "timeout"}
                })
 
-      assert {:ok, replay_run} = RunStore.replay_run(Repo, failed_run.id)
+      assert {:ok, replay_run} = Store.replay_run(Repo, failed_run.id)
 
       assert replay_run.context.schedule.signal_id == "signal_123"
       refute Map.has_key?(replay_run.context.schedule, :idempotency)
@@ -468,28 +468,28 @@ defmodule SquidMesh.RunStoreTest do
     end
 
     test "returns not found when the source run does not exist" do
-      assert {:error, :not_found} = RunStore.replay_run(Repo, Ecto.UUID.generate())
+      assert {:error, :not_found} = Store.replay_run(Repo, Ecto.UUID.generate())
     end
 
     test "returns a structured error for malformed run ids" do
-      assert {:error, :invalid_run_id} = RunStore.replay_run(Repo, "not-a-uuid")
+      assert {:error, :invalid_run_id} = Store.replay_run(Repo, "not-a-uuid")
     end
   end
 
   describe "progress_run_with/4" do
     test "does not update or dispatch terminal runs" do
       assert {:ok, run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
       assert {:ok, failed_run} =
-               RunStore.transition_run(Repo, run.id, :failed, %{
+               Store.transition_run(Repo, run.id, :failed, %{
                  current_step: :load_invoice,
                  context: %{attempt: 1},
                  last_error: %{message: "timeout"}
                })
 
       assert {:ok, :noop} =
-               RunStore.progress_run_with(
+               Store.progress_run_with(
                  Repo,
                  failed_run.id,
                  fn _current_run ->
@@ -507,23 +507,23 @@ defmodule SquidMesh.RunStoreTest do
                )
 
       refute_received :dispatched
-      assert {:ok, persisted_run} = RunStore.get_run(Repo, failed_run.id)
+      assert {:ok, persisted_run} = Store.get_run(Repo, failed_run.id)
       assert persisted_run == failed_run
     end
 
     test "finalizes cancelling runs without dispatching more work" do
       assert {:ok, run} =
-               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+               Store.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
 
       assert {:ok, running_run} =
-               RunStore.transition_run(Repo, run.id, :running, %{
+               Store.transition_run(Repo, run.id, :running, %{
                  current_step: :load_invoice
                })
 
-      assert {:ok, cancelling_run} = RunStore.cancel_run(Repo, running_run.id)
+      assert {:ok, cancelling_run} = Store.cancel_run(Repo, running_run.id)
 
       assert {:ok, cancelled_run} =
-               RunStore.progress_run_with(
+               Store.progress_run_with(
                  Repo,
                  cancelling_run.id,
                  fn current_run ->
