@@ -25,26 +25,26 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome.Events do
   end
 
   @doc false
-  @spec step_completed(Run.t(), atom(), pos_integer(), integer()) :: event()
-  def step_completed(run, step_name, attempt_number, duration) do
+  @spec completed(Run.t(), atom(), pos_integer(), integer()) :: event()
+  def completed(run, step_name, attempt_number, duration) do
     {:step_completed, run, step_name, attempt_number, duration}
   end
 
   @doc false
-  @spec step_failed(Run.t(), atom(), pos_integer(), integer(), map()) :: event()
-  def step_failed(run, step_name, attempt_number, duration, error) do
+  @spec failed(Run.t(), atom(), pos_integer(), integer(), map()) :: event()
+  def failed(run, step_name, attempt_number, duration, error) do
     {:step_failed, run, step_name, attempt_number, duration, error}
   end
 
   @doc false
-  @spec step_retry_scheduled(Run.t(), atom(), pos_integer(), non_neg_integer()) :: event()
-  def step_retry_scheduled(run, step_name, attempt_number, delay_ms) do
+  @spec retry_scheduled(Run.t(), atom(), pos_integer(), non_neg_integer()) :: event()
+  def retry_scheduled(run, step_name, attempt_number, delay_ms) do
     {:step_retry_scheduled, run, step_name, attempt_number, delay_ms}
   end
 
   @doc false
-  @spec run_transition(Run.t(), Run.status(), Run.status()) :: event()
-  def run_transition(run, from_status, to_status) do
+  @spec transition(Run.t(), Run.status(), Run.status()) :: event()
+  def transition(run, from_status, to_status) do
     {:run_transition, run, from_status, to_status}
   end
 

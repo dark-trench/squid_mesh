@@ -122,7 +122,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
              attempt_number,
              error
            ) do
-      {:ok, [Events.step_failed(run, step_name, attempt_number, duration, error) | events]}
+      {:ok, [Events.failed(run, step_name, attempt_number, duration, error) | events]}
     end
   end
 
@@ -177,7 +177,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
             end}
          ) do
       {:ok, %Run{status: :retrying}, events} ->
-        {:ok, [Events.step_retry_scheduled(run, step_name, attempt_number, delay_ms) | events]}
+        {:ok, [Events.retry_scheduled(run, step_name, attempt_number, delay_ms) | events]}
 
       {:ok, _failed_or_noop, events} ->
         {:ok, events}
@@ -270,7 +270,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
                mapped_output,
                execution_opts
              ) do
-        {:ok, [Events.step_completed(run, step_name, attempt_number, duration) | events]}
+        {:ok, [Events.completed(run, step_name, attempt_number, duration) | events]}
       end
     end
   end
@@ -295,7 +295,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            }
          ) do
       {:ok, %{terminal_noop?: true, finalized_step?: true, error: error}} ->
-        {:ok, [Events.step_failed(run, step_name, attempt_number, duration, error)]}
+        {:ok, [Events.failed(run, step_name, attempt_number, duration, error)]}
 
       {:ok, %{terminal_noop?: true}} ->
         {:ok, []}
@@ -308,18 +308,18 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
        }} ->
         {:ok,
          [
-           Events.step_failed(
+           Events.failed(
              run,
              step_name,
              attempt_number,
              duration,
              RunStore.pause_cancellation_error()
            ),
-           Events.run_transition(cancelled_run, from_status, to_status)
+           Events.transition(cancelled_run, from_status, to_status)
          ]}
 
       {:ok, %{run: paused_run, from_status: from_status, to_status: to_status}} ->
-        {:ok, [Events.run_transition(paused_run, from_status, to_status)]}
+        {:ok, [Events.transition(paused_run, from_status, to_status)]}
 
       {:error, reason} ->
         {:error, reason}
@@ -717,7 +717,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            }
          }) do
       {:ok, {failed_run, from_status, to_status}} ->
-        {:ok, [Events.run_transition(failed_run, from_status, to_status)]}
+        {:ok, [Events.transition(failed_run, from_status, to_status)]}
 
       {:error, transition_reason} ->
         {:error, transition_reason}
@@ -735,7 +735,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            }
          }) do
       {:ok, {failed_run, from_status, to_status}} ->
-        {:ok, [Events.run_transition(failed_run, from_status, to_status)]}
+        {:ok, [Events.transition(failed_run, from_status, to_status)]}
 
       {:error, transition_reason} ->
         {:error, transition_reason}
