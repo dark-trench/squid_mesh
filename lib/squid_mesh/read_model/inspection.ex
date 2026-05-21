@@ -1,4 +1,4 @@
-defmodule SquidMesh.Runtime.ProjectedInspection do
+defmodule SquidMesh.ReadModel.Inspection do
   @moduledoc """
   Projection-backed inspection for the Jido-native runtime path.
 
@@ -15,11 +15,11 @@ defmodule SquidMesh.Runtime.ProjectedInspection do
   """
 
   alias Jido.Agent
+  alias SquidMesh.ReadModel.Inspection.Snapshot
   alias SquidMesh.Runtime.DispatchAgent
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.DispatchProtocol.ActionAttempt
   alias SquidMesh.Runtime.Journal
-  alias SquidMesh.Runtime.ProjectedInspection.Snapshot
   alias SquidMesh.Runtime.WorkflowAgent
 
   @type storage_config :: Journal.storage_config()

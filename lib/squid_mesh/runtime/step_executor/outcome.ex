@@ -11,12 +11,11 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
   alias SquidMesh.AttemptStore
   alias SquidMesh.Config
-  alias SquidMesh.Observability
   alias SquidMesh.Run
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Compensation
-  alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.RetryPolicy
+  alias SquidMesh.Runtime.StepExecutor.Outcome.Events
   alias SquidMesh.Runtime.StepExecutor.PreparedStep
   alias SquidMesh.Runtime.StepExecutor.Progression
   alias SquidMesh.Runtime.StepExecutor.Progression.Complete
@@ -65,7 +64,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            |> rollback_execution_error(context.config)
          end) do
       {:ok, events} ->
-        emit_post_commit_events(events)
+        Events.emit(events)
         :ok
 
       {:error, reason} ->
@@ -123,7 +122,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
              attempt_number,
              error
            ) do
-      {:ok, [step_failed_event(run, step_name, attempt_number, duration, error) | events]}
+      {:ok, [Events.step_failed(run, step_name, attempt_number, duration, error) | events]}
     end
   end
 
@@ -171,14 +170,14 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            end,
            {:transition_or_dispatch_or_fail, :retrying,
             fn retried_run ->
-              dispatch_run_events(config, retried_run, dispatch_opts)
+              Events.dispatch_run(config, retried_run, dispatch_opts)
             end,
             fn _current_run, reason ->
               retry_dispatch_failure_attrs(step_name, error, reason)
             end}
          ) do
       {:ok, %Run{status: :retrying}, events} ->
-        {:ok, [step_retry_scheduled_event(run, step_name, attempt_number, delay_ms) | events]}
+        {:ok, [Events.step_retry_scheduled(run, step_name, attempt_number, delay_ms) | events]}
 
       {:ok, _failed_or_noop, events} ->
         {:ok, events}
@@ -271,7 +270,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
                mapped_output,
                execution_opts
              ) do
-        {:ok, [step_completed_event(run, step_name, attempt_number, duration) | events]}
+        {:ok, [Events.step_completed(run, step_name, attempt_number, duration) | events]}
       end
     end
   end
@@ -296,7 +295,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            }
          ) do
       {:ok, %{terminal_noop?: true, finalized_step?: true, error: error}} ->
-        {:ok, [step_failed_event(run, step_name, attempt_number, duration, error)]}
+        {:ok, [Events.step_failed(run, step_name, attempt_number, duration, error)]}
 
       {:ok, %{terminal_noop?: true}} ->
         {:ok, []}
@@ -309,18 +308,18 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
        }} ->
         {:ok,
          [
-           step_failed_event(
+           Events.step_failed(
              run,
              step_name,
              attempt_number,
              duration,
              RunStore.pause_cancellation_error()
            ),
-           run_transition_event(cancelled_run, from_status, to_status)
+           Events.run_transition(cancelled_run, from_status, to_status)
          ]}
 
       {:ok, %{run: paused_run, from_status: from_status, to_status: to_status}} ->
-        {:ok, [run_transition_event(paused_run, from_status, to_status)]}
+        {:ok, [Events.run_transition(paused_run, from_status, to_status)]}
 
       {:error, reason} ->
         {:error, reason}
@@ -345,7 +344,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
     with {:ok, events} <-
            advance_after_completed_step(config, definition, run, step_name, mapped_output, []) do
-      emit_post_commit_events(events)
+      Events.emit(events)
       :ok
     end
   end
@@ -539,7 +538,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         attrs_fun,
         {:dispatch_or_fail,
          fn updated_run ->
-           dispatch_steps_events(
+           Events.dispatch_steps(
              config,
              updated_run,
              steps,
@@ -565,7 +564,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         run_id,
         attrs_fun,
         {:dispatch_or_fail,
-         fn updated_run -> dispatch_run_events(config, updated_run, dispatch_opts) end,
+         fn updated_run -> Events.dispatch_run(config, updated_run, dispatch_opts) end,
          failure_attrs_fun}
       )
     )
@@ -653,7 +652,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     operation =
       if Compensation.compensation_available?(config.repo, definition, run.id) do
         {:transition_or_dispatch, :failed,
-         fn failed_run -> dispatch_compensation_events(config, failed_run, definition) end}
+         fn failed_run -> Events.dispatch_compensation(config, failed_run) end}
       else
         {:transition, :failed}
       end
@@ -679,65 +678,6 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
   defp progress_events_result({:ok, _result, events}), do: {:ok, events}
   defp progress_events_result({:error, reason}), do: {:error, reason}
-
-  defp emit_post_commit_events(events) do
-    Enum.each(events, &emit_post_commit_event/1)
-  end
-
-  defp emit_post_commit_event({:step_completed, run, step_name, attempt_number, duration}) do
-    Observability.emit_step_completed(run, step_name, attempt_number, duration)
-  end
-
-  defp emit_post_commit_event({:step_failed, run, step_name, attempt_number, duration, error}) do
-    Observability.emit_step_failed(run, step_name, attempt_number, duration, error)
-  end
-
-  defp emit_post_commit_event({:step_retry_scheduled, run, step_name, attempt_number, delay_ms}) do
-    Logger.warning("workflow step failed; scheduling retry")
-    Observability.emit_step_retry_scheduled(run, step_name, attempt_number, delay_ms)
-  end
-
-  defp emit_post_commit_event({:run_transition, run, from_status, to_status}) do
-    Observability.emit_run_transition(run, from_status, to_status)
-  end
-
-  defp emit_post_commit_event({:run_dispatched, run, metadata}) do
-    Observability.emit_run_dispatched(run, metadata)
-  end
-
-  defp step_completed_event(run, step_name, attempt_number, duration) do
-    {:step_completed, run, step_name, attempt_number, duration}
-  end
-
-  defp step_failed_event(run, step_name, attempt_number, duration, error) do
-    {:step_failed, run, step_name, attempt_number, duration, error}
-  end
-
-  defp step_retry_scheduled_event(run, step_name, attempt_number, delay_ms) do
-    {:step_retry_scheduled, run, step_name, attempt_number, delay_ms}
-  end
-
-  defp run_transition_event(run, from_status, to_status) do
-    {:run_transition, run, from_status, to_status}
-  end
-
-  defp dispatch_run_events(config, run, opts) do
-    with {:ok, _jobs, events} <- Dispatcher.dispatch_run_with_events(config, run, opts) do
-      {:ok, {:dispatch_events, events}}
-    end
-  end
-
-  defp dispatch_steps_events(config, run, steps, opts) do
-    with {:ok, _jobs, events} <- Dispatcher.dispatch_steps_with_events(config, run, steps, opts) do
-      {:ok, {:dispatch_events, events}}
-    end
-  end
-
-  defp dispatch_compensation_events(config, run, _definition) do
-    with {:ok, _job, events} <- Dispatcher.dispatch_compensation_with_events(config, run) do
-      {:ok, {:dispatch_events, events}}
-    end
-  end
 
   defp normalize_error(%{__struct__: module} = error) do
     details =
@@ -777,7 +717,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            }
          }) do
       {:ok, {failed_run, from_status, to_status}} ->
-        {:ok, [run_transition_event(failed_run, from_status, to_status)]}
+        {:ok, [Events.run_transition(failed_run, from_status, to_status)]}
 
       {:error, transition_reason} ->
         {:error, transition_reason}
@@ -795,7 +735,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            }
          }) do
       {:ok, {failed_run, from_status, to_status}} ->
-        {:ok, [run_transition_event(failed_run, from_status, to_status)]}
+        {:ok, [Events.run_transition(failed_run, from_status, to_status)]}
 
       {:error, transition_reason} ->
         {:error, transition_reason}

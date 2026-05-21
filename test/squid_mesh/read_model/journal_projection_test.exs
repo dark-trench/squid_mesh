@@ -1,12 +1,12 @@
-defmodule SquidMesh.ProjectedReadModelTest do
+defmodule SquidMesh.ReadModel.JournalProjectionTest do
   use ExUnit.Case, async: false
 
+  alias SquidMesh.ReadModel.Explanation.Diagnostic
+  alias SquidMesh.ReadModel.Inspection.Snapshot
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.Journal
-  alias SquidMesh.Runtime.ProjectedExplanation.Explanation
-  alias SquidMesh.Runtime.ProjectedInspection.Snapshot
 
-  @storage {Jido.Storage.ETS, table: :squid_mesh_projected_read_model_test}
+  @storage {Jido.Storage.ETS, table: :squid_mesh_read_model_journal_projection_test}
   @run_id "run_123"
   @workflow "BillingWorkflow"
   @queue "default"
@@ -42,7 +42,7 @@ defmodule SquidMesh.ProjectedReadModelTest do
   test "explain_run/2 can read from the journal projection read model" do
     append_run_entries([run_started(), runnables_planned()])
 
-    assert {:ok, %Explanation{} = explanation} =
+    assert {:ok, %Diagnostic{} = explanation} =
              SquidMesh.explain_run(@run_id,
                read_model: :journal_projection,
                journal_storage: @storage,
@@ -146,9 +146,9 @@ defmodule SquidMesh.ProjectedReadModelTest do
     entry
   end
 
-  defp table_name(:checkpoints), do: :squid_mesh_projected_read_model_test_checkpoints
-  defp table_name(:threads), do: :squid_mesh_projected_read_model_test_threads
-  defp table_name(:thread_meta), do: :squid_mesh_projected_read_model_test_thread_meta
+  defp table_name(:checkpoints), do: :squid_mesh_read_model_journal_projection_test_checkpoints
+  defp table_name(:threads), do: :squid_mesh_read_model_journal_projection_test_threads
+  defp table_name(:thread_meta), do: :squid_mesh_read_model_journal_projection_test_thread_meta
 
   defp cleanup_storage do
     for suffix <- [:checkpoints, :threads, :thread_meta] do

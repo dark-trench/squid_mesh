@@ -8,12 +8,12 @@ defmodule SquidMesh do
   """
 
   alias SquidMesh.Config
+  alias SquidMesh.ReadModel.Explanation
+  alias SquidMesh.ReadModel.Inspection
   alias SquidMesh.Run
   alias SquidMesh.RunExplanation
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Dispatcher
-  alias SquidMesh.Runtime.ProjectedExplanation
-  alias SquidMesh.Runtime.ProjectedInspection
   alias SquidMesh.Runtime.Reviewer
   alias SquidMesh.Runtime.Unblocker
 
@@ -208,13 +208,13 @@ defmodule SquidMesh do
   Jido-native projection-backed snapshot from durable journal entries instead.
   """
   @spec inspect_run(String.t(), keyword()) ::
-          {:ok, Run.t() | SquidMesh.Runtime.ProjectedInspection.Snapshot.t()}
+          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | read_option_error()
              | Config.config_error()
-             | ProjectedInspection.snapshot_error()}
+             | Inspection.snapshot_error()}
   def inspect_run(run_id, overrides \\ []) do
     with {:ok, read_model} <- read_model(overrides) do
       case read_model do
@@ -247,13 +247,13 @@ defmodule SquidMesh do
   projections instead.
   """
   @spec explain_run(String.t(), keyword()) ::
-          {:ok, RunExplanation.t() | SquidMesh.Runtime.ProjectedExplanation.Explanation.t()}
+          {:ok, RunExplanation.t() | SquidMesh.ReadModel.Explanation.Diagnostic.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | read_option_error()
              | Config.config_error()
-             | ProjectedExplanation.explanation_error()}
+             | Explanation.explanation_error()}
   def explain_run(run_id, overrides \\ []) do
     with {:ok, read_model} <- read_model(overrides) do
       case read_model do
@@ -273,7 +273,7 @@ defmodule SquidMesh do
 
   defp inspect_projected_run(run_id, overrides) when is_binary(run_id) do
     with {:ok, storage} <- journal_storage(overrides) do
-      ProjectedInspection.snapshot(storage, run_id, projected_snapshot_options(overrides))
+      Inspection.snapshot(storage, run_id, projected_snapshot_options(overrides))
     end
   end
 
@@ -283,7 +283,7 @@ defmodule SquidMesh do
 
   defp explain_projected_run(run_id, overrides) do
     with {:ok, storage} <- journal_storage(overrides) do
-      ProjectedExplanation.explain(storage, run_id, projected_snapshot_options(overrides))
+      Explanation.explain(storage, run_id, projected_snapshot_options(overrides))
     end
   end
 

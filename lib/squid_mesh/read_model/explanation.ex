@@ -1,8 +1,8 @@
-defmodule SquidMesh.Runtime.ProjectedExplanation do
+defmodule SquidMesh.ReadModel.Explanation do
   @moduledoc """
   Projection-backed explanation for the Jido-native runtime path.
 
-  `SquidMesh.Runtime.ProjectedInspection` answers what durable journal
+  `SquidMesh.ReadModel.Inspection` answers what durable journal
   projections currently show. This module answers why that state matters to an
   operator by deriving a deterministic reason, high-signal details, and the
   runtime boundary that would make progress.
@@ -11,28 +11,28 @@ defmodule SquidMesh.Runtime.ProjectedExplanation do
   completed results, recover expired claims, or mutate checkpoints.
   """
 
-  alias SquidMesh.Runtime.ProjectedExplanation.Explanation
-  alias SquidMesh.Runtime.ProjectedInspection
-  alias SquidMesh.Runtime.ProjectedInspection.Snapshot
+  alias SquidMesh.ReadModel.Explanation.Diagnostic
+  alias SquidMesh.ReadModel.Inspection
+  alias SquidMesh.ReadModel.Inspection.Snapshot
 
-  @type storage_config :: ProjectedInspection.storage_config()
-  @type explanation_option :: ProjectedInspection.snapshot_option()
+  @type storage_config :: Inspection.storage_config()
+  @type explanation_option :: Inspection.snapshot_option()
   @type explanation_error ::
-          ProjectedInspection.snapshot_error() | {:invalid_option, {:run_id, term()}}
+          Inspection.snapshot_error() | {:invalid_option, {:run_id, term()}}
 
   @doc """
   Builds a projection-backed explanation for one workflow run.
 
-  Options are the same as `SquidMesh.Runtime.ProjectedInspection.snapshot/3`.
+  Options are the same as `SquidMesh.ReadModel.Inspection.snapshot/3`.
   Missing runs and invalid options return the same structured errors as the
   underlying snapshot call.
   """
   @spec explain(storage_config(), String.t(), [explanation_option()]) ::
-          {:ok, Explanation.t()} | {:error, explanation_error()}
+          {:ok, Diagnostic.t()} | {:error, explanation_error()}
   def explain(storage, run_id, opts \\ [])
 
   def explain(storage, run_id, opts) when is_binary(run_id) do
-    with {:ok, snapshot} <- ProjectedInspection.snapshot(storage, run_id, opts) do
+    with {:ok, snapshot} <- Inspection.snapshot(storage, run_id, opts) do
       {:ok, from_snapshot(snapshot)}
     end
   end
@@ -47,11 +47,11 @@ defmodule SquidMesh.Runtime.ProjectedExplanation do
   This is useful when a caller already has a snapshot and wants a stable
   diagnostic view without re-reading storage.
   """
-  @spec from_snapshot(Snapshot.t()) :: Explanation.t()
+  @spec from_snapshot(Snapshot.t()) :: Diagnostic.t()
   def from_snapshot(%Snapshot{} = snapshot) do
     {summary, details, next_actions, step} = explanation_parts(snapshot)
 
-    %Explanation{
+    %Diagnostic{
       run_id: snapshot.run_id,
       workflow: snapshot.workflow,
       queue: snapshot.queue,
