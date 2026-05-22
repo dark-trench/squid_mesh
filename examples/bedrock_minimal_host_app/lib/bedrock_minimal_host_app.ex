@@ -1,0 +1,9 @@
+defmodule BedrockMinimalHostApp do
+  @moduledoc """
+  Minimal host application harness for Squid Mesh development.
+
+  This application exists to show how a host app wires Squid Mesh through its
+  own modules and configuration. The harness doubles as a repeatable smoke-test
+  surface for day-to-day development.
+  """
+end

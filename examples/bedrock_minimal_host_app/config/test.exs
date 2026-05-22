@@ -1,0 +1,22 @@
+import Config
+
+config :bedrock_minimal_host_app,
+  runtime_children: []
+
+config :bedrock_minimal_host_app, BedrockMinimalHostApp.Repo,
+  pool: Ecto.Adapters.SQL.Sandbox,
+  show_sensitive_data_on_connection_error: true,
+  stacktrace: true,
+  url:
+    System.get_env("DATABASE_URL") ||
+      "postgres://postgres:postgres@localhost:5432/bedrock_minimal_host_app_test"
+
+config :bedrock_minimal_host_app, BedrockMinimalHostApp.SquidMeshExecutor,
+  queue_id: "tenant_a",
+  topic: "squid_mesh:payload"
+
+config :squid_mesh,
+  repo: BedrockMinimalHostApp.Repo,
+  executor: BedrockMinimalHostApp.SquidMeshExecutor
+
+config :logger, level: :warning
