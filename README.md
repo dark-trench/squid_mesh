@@ -94,27 +94,27 @@ facts from backend-specific delivery mechanics. In that shape, Squid Mesh record
 runtime facts in Jido journals while adapters provide queue and lease behavior.
 
 ```text
-+----------------------------------------------------+
++-----------------------------------------------------+
 |                    Squid Mesh                       |
-+----------------------------------------------------+
++-----------------------------------------------------+
 | Public API: start_run / inspect_run / explain_run   |
-+----------------------------------------------------+
++-----------------------------------------------------+
                          |
                          v
-+----------------------------------------------------+
++-----------------------------------------------------+
 |                Squid Mesh Runtime                   |
-+----------------------------------------------------+
++-----------------------------------------------------+
 | Plans work, applies results, retries, pauses,       |
 | cancels, completes, inspects, and explains          |
-+----------------------------------------------------+
++-----------------------------------------------------+
                          |
                          v
-+----------------------------------------------------+
++-----------------------------------------------------+
 |                    Jido Journals                    |
-+----------------------------------------------------+
++-----------------------------------------------------+
 | Durable workflow facts: runs, attempts, claims,     |
 | heartbeats, completions, failures, terminal state   |
-+----------------------------------------------------+
++-----------------------------------------------------+
               |                          ^
               v                          |
 +----------------------------+  +----------------------------+
@@ -127,17 +127,17 @@ runtime facts in Jido journals while adapters provide queue and lease behavior.
                             |
                             v
 +----------------------------------------------------+
-|                  Backend Adapter                    |
+|                  Backend Adapter                   |
 +----------------------------------------------------+
-| Queue: enqueue, delay, cron delivery                |
-| Lease: claim, heartbeat, expiry, complete/fail      |
+| Queue: enqueue, delay, cron delivery               |
+| Lease: claim, heartbeat, expiry, complete/fail     |
 +----------------------------------------------------+
                             |
                             v
 +----------------------------------------------------+
-|                Backend Storage                      |
+|                Backend Storage                     |
 +----------------------------------------------------+
-| Jobs, leases, worker liveness, delivery metadata    |
+| Jobs, leases, worker liveness, delivery metadata   |
 +----------------------------------------------------+
 ```
 
