@@ -13,11 +13,16 @@ defmodule SquidMesh do
   alias SquidMesh.Runs
   alias SquidMesh.Runs.Explanation
   alias SquidMesh.Runtime.Dispatcher
+  alias SquidMesh.Runtime.JournalOptions
+  alias SquidMesh.Runtime.JournalStarter
   alias SquidMesh.Runtime.Reviewer
   alias SquidMesh.Runtime.Unblocker
 
   @read_models [:runtime_tables, :read_model]
+  @runtimes [:runtime_tables, :journal]
   @projection_read_options [:journal_storage, :queue, :now]
+  @journal_start_options [:runtime, :journal_storage, :queue, :now, :run_id]
+  @journal_only_start_options [:journal_storage, :queue, :now, :run_id]
 
   @typedoc """
   Structured validation errors returned by the public read-model APIs.
@@ -28,6 +33,19 @@ defmodule SquidMesh do
            | {:read_model, term()}
            | {:journal_storage, nil}
            | {:run_id, term()}}
+
+  @typedoc """
+  Structured validation errors returned by the public start APIs.
+  """
+  @type start_option_error ::
+          {:invalid_option,
+           {:opts, term()}
+           | {:runtime, term()}
+           | {:journal_storage, nil}
+           | {:queue, term()}
+           | {:now, term()}
+           | {:run_id, term()}
+           | {:runtime_tables, [atom()]}}
 
   @doc """
   Loads Squid Mesh configuration from the application environment with optional
@@ -45,6 +63,13 @@ defmodule SquidMesh do
   @doc """
   Starts a new workflow run with the given payload through the workflow's
   default trigger.
+
+  By default this still uses the current table-backed runtime path and returns
+  `SquidMesh.Run`.
+  Pass `runtime: :journal` with explicit `journal_storage:` to use the temporary
+  Jido journal-backed cutover path. That path returns a projection-backed
+  `SquidMesh.ReadModel.Inspection.Snapshot` and does not write the legacy
+  runtime tables for the covered start flow.
   """
   @spec start_run(module(), map()) ::
           {:ok, Run.t()}
@@ -56,17 +81,16 @@ defmodule SquidMesh do
   end
 
   @spec start_run(module(), map(), keyword()) ::
-          {:ok, Run.t()}
+          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error, {:missing_config, [atom()]}}
           | {:error, {:invalid_option, atom()}}
+          | {:error, start_option_error()}
           | {:error, Runs.Store.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, payload, overrides) when is_map(payload) and is_list(overrides) do
     with :ok <- reject_public_start_options(overrides),
-         {:ok, config} <- Config.load(overrides) do
-      start_default_run(config, workflow, payload)
-    else
-      {:error, reason} -> {:error, reason}
+         {:ok, runtime} <- runtime(overrides) do
+      start_default_run_with_runtime(runtime, workflow, payload, overrides)
     end
   end
 
@@ -93,20 +117,22 @@ defmodule SquidMesh do
   Overrides are intended for host-app test and integration boundaries. Runtime
   context injection is kept out of this public API so scheduled starts and other
   internal callers can keep their idempotency metadata isolated.
+
+  Pass `runtime: :journal` with explicit `journal_storage:` to use the temporary
+  Jido journal-backed cutover path for the named trigger.
   """
   @spec start_run(module(), atom(), map(), keyword()) ::
-          {:ok, Run.t()}
+          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error, {:missing_config, [atom()]}}
           | {:error, {:invalid_option, atom()}}
+          | {:error, start_option_error()}
           | {:error, Runs.Store.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, trigger_name, payload, overrides)
       when is_atom(trigger_name) and is_map(payload) and is_list(overrides) do
     with :ok <- reject_public_start_options(overrides),
-         {:ok, config} <- Config.load(overrides) do
-      start_triggered_run(config, workflow, trigger_name, payload)
-    else
-      {:error, reason} -> {:error, reason}
+         {:ok, runtime} <- runtime(overrides) do
+      start_triggered_run_with_runtime(runtime, workflow, trigger_name, payload, overrides)
     end
   end
 
@@ -377,12 +403,40 @@ defmodule SquidMesh do
     |> normalize_created_run()
   end
 
+  defp start_default_run_with_runtime(:runtime_tables, workflow, payload, overrides) do
+    with :ok <- reject_journal_start_options_for_runtime_tables(overrides),
+         {:ok, config} <- Config.load(runtime_table_start_options(overrides)) do
+      start_default_run(config, workflow, payload)
+    end
+  end
+
+  defp start_default_run_with_runtime(:journal, workflow, payload, overrides) do
+    JournalStarter.start_run(workflow, nil, payload, journal_start_options(overrides))
+  end
+
   defp start_triggered_run(config, workflow, trigger_name, payload) do
     config.repo
     |> Runs.Store.create_and_dispatch_run(workflow, trigger_name, payload, fn run ->
       Dispatcher.dispatch_run(config, run)
     end)
     |> normalize_created_run()
+  end
+
+  defp start_triggered_run_with_runtime(
+         :runtime_tables,
+         workflow,
+         trigger_name,
+         payload,
+         overrides
+       ) do
+    with :ok <- reject_journal_start_options_for_runtime_tables(overrides),
+         {:ok, config} <- Config.load(runtime_table_start_options(overrides)) do
+      start_triggered_run(config, workflow, trigger_name, payload)
+    end
+  end
+
+  defp start_triggered_run_with_runtime(:journal, workflow, trigger_name, payload, overrides) do
+    JournalStarter.start_run(workflow, trigger_name, payload, journal_start_options(overrides))
   end
 
   defp normalize_created_run({:ok, %Run{} = run}) do
@@ -481,11 +535,21 @@ defmodule SquidMesh do
 
   defp read_model(overrides), do: {:error, {:invalid_option, {:opts, overrides}}}
 
-  defp journal_storage(overrides) do
-    case Keyword.get(overrides, :journal_storage) do
-      nil -> {:error, {:invalid_option, {:journal_storage, nil}}}
-      storage -> {:ok, storage}
+  defp runtime(overrides) when is_list(overrides) do
+    if Keyword.keyword?(overrides) do
+      case Keyword.get(overrides, :runtime, :runtime_tables) do
+        runtime when runtime in @runtimes -> {:ok, runtime}
+        runtime -> {:error, {:invalid_option, {:runtime, runtime}}}
+      end
+    else
+      {:error, {:invalid_option, {:opts, overrides}}}
     end
+  end
+
+  defp journal_storage(overrides) do
+    overrides
+    |> Keyword.get(:journal_storage)
+    |> JournalOptions.storage()
   end
 
   defp projected_snapshot_options(overrides) do
@@ -494,5 +558,22 @@ defmodule SquidMesh do
 
   defp runtime_table_read_options(overrides) do
     Keyword.drop(overrides, [:read_model | @projection_read_options])
+  end
+
+  defp runtime_table_start_options(overrides) do
+    Keyword.drop(overrides, [:runtime])
+  end
+
+  defp journal_start_options(overrides) do
+    Keyword.take(overrides, @journal_start_options)
+  end
+
+  defp reject_journal_start_options_for_runtime_tables(overrides) do
+    journal_options = Keyword.keys(Keyword.take(overrides, @journal_only_start_options))
+
+    case journal_options do
+      [] -> :ok
+      options -> {:error, {:invalid_option, {:runtime_tables, options}}}
+    end
   end
 end

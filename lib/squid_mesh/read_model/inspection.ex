@@ -20,6 +20,7 @@ defmodule SquidMesh.ReadModel.Inspection do
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.DispatchProtocol.ActionAttempt
   alias SquidMesh.Runtime.Journal
+  alias SquidMesh.Runtime.JournalOptions
   alias SquidMesh.Runtime.WorkflowAgent
 
   @type storage_config :: Journal.storage_config()
@@ -27,7 +28,11 @@ defmodule SquidMesh.ReadModel.Inspection do
   @type snapshot_error ::
           :not_found
           | {:invalid_option,
-             {:now, term()} | {:queue, term()} | {:opts, term()} | {:option, atom()}}
+             {:now, term()}
+             | {:queue, term()}
+             | {:run_id, term()}
+             | {:opts, term()}
+             | {:option, atom()}}
           | term()
 
   @doc """
@@ -49,7 +54,8 @@ defmodule SquidMesh.ReadModel.Inspection do
   def snapshot(storage, run_id, opts \\ [])
 
   def snapshot(storage, run_id, opts) when is_binary(run_id) and is_list(opts) do
-    with {:ok, opts} <- snapshot_options(opts),
+    with {:ok, run_id} <- JournalOptions.thread_part(run_id, :run_id),
+         {:ok, opts} <- snapshot_options(opts),
          {:ok, queue} <- snapshot_queue(opts),
          {:ok, now} <- snapshot_time(opts),
          {:ok, workflow_agent} <- WorkflowAgent.rebuild(storage, run_id),
@@ -243,7 +249,7 @@ defmodule SquidMesh.ReadModel.Inspection do
       runnable_key: attempt.runnable_key,
       status: attempt.status,
       attempt_number: attempt.attempt_number,
-      step: attempt.step,
+      step: normalize_step(attempt.step),
       input: attempt.input,
       visible_at: attempt.visible_at,
       idempotency_key: attempt.idempotency_key,
@@ -294,19 +300,17 @@ defmodule SquidMesh.ReadModel.Inspection do
   end
 
   defp snapshot_queue(opts) do
-    case Keyword.get(opts, :queue, "default") do
-      queue when is_atom(queue) -> validate_queue(Atom.to_string(queue), queue)
-      queue when is_binary(queue) -> validate_queue(queue, queue)
-      invalid -> {:error, {:invalid_option, {:queue, invalid}}}
-    end
+    opts
+    |> Keyword.get(:queue, "default")
+    |> JournalOptions.queue()
   end
-
-  defp validate_queue("", original), do: {:error, {:invalid_option, {:queue, original}}}
-  defp validate_queue(queue, _original), do: {:ok, queue}
 
   defp compact(map) do
     Map.reject(map, fn {_key, value} -> is_nil(value) end)
   end
+
+  defp normalize_step(step) when is_atom(step), do: Atom.to_string(step)
+  defp normalize_step(step), do: step
 
   defp after?(%DateTime{} = left, %DateTime{} = right) do
     DateTime.compare(left, right) == :gt

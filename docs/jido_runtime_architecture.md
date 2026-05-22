@@ -401,6 +401,14 @@ stable runtime-table read model remains the default. Callers that opt into
 projection reads pass both options together, for example
 `SquidMesh.inspect_run(run_id, read_model: :read_model, journal_storage: storage)`.
 
+The first live write path is also available behind a temporary cutover gate:
+`SquidMesh.start_run(workflow, payload, runtime: :journal, journal_storage: storage)`.
+That path appends run and run-index facts to `Jido.Storage`, rebuilds the
+workflow and dispatch agents, schedules the initial dispatch attempts from the
+journal, and returns the projection-backed inspection snapshot. The current
+table-backed start path remains the default until the remaining runtime cutover
+lands.
+
 | Feature | Issue | Runtime dependency |
 | --- | --- | --- |
 | Projection-backed inspection and explanation hardening | No active issue | Additional coverage for ambiguous attempt states and operator-facing edge cases |
