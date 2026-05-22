@@ -26,7 +26,7 @@ defmodule BedrockMinimalHostApp.MixProject do
   defp deps do
     [
       {:bedrock, "~> 0.4.0"},
-      {:bedrock_job_queue, "~> 0.1"},
+      {:bedrock_job_queue, github: "bedrock-kv/job_queue"},
       {:ecto_sql, "~> 3.14"},
       {:postgrex, "~> 0.22.2"},
       {:squid_mesh, path: "../.."},
