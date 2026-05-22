@@ -38,7 +38,7 @@ Bedrock storage or a real cluster topology.
 Run the Bedrock job queue stress coverage:
 
 ```sh
-MIX_ENV=test mix test test/bedrock_job_queue_stress_test.exs
+MIX_ENV=test mix test test/bedrock_job_queue_stress_test.exs test/bedrock_minimal_host_app/squid_mesh_lease_executor_test.exs
 ```
 
 The stress test covers:
@@ -49,6 +49,8 @@ The stress test covers:
 - leasing and lease extension
 - retry requeue and dead-letter behavior
 - Squid Mesh executor payloads being mapped into Bedrock jobs
+- the `SquidMesh.Executor.Leases` contract through a Bedrock-backed example
+  adapter
 
 The example intentionally does not include another job backend. That keeps the
 adapter boundary clear while the spike evaluates whether Bedrock can replace the
