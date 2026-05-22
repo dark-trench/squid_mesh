@@ -4,6 +4,7 @@ defmodule BedrockMinimalHostApp.BedrockJobQueueStressTest do
   alias BedrockMinimalHostApp.BedrockRepo
   alias BedrockMinimalHostApp.JobQueue
   alias BedrockMinimalHostApp.Jobs.StressProbe
+  alias BedrockMinimalHostApp.Workflows.DailyDigest
 
   setup do
     StressProbe.reset!()
@@ -138,6 +139,42 @@ defmodule BedrockMinimalHostApp.BedrockJobQueueStressTest do
 
       assert is_binary(item_id)
       assert [%{topic: "squid_mesh:payload"}] = peek_visible(queue_a)
+    end
+
+    test "maps Squid Mesh cron payloads into delayed Bedrock jobs", %{queue_a: queue_a} do
+      intended_window = %{
+        "start_at" => "2026-05-22T00:00:00Z",
+        "end_at" => "2026-05-23T00:00:00Z"
+      }
+
+      assert {:ok, metadata} =
+               BedrockMinimalHostApp.SquidMeshExecutor.enqueue_cron(
+                 %{},
+                 DailyDigest,
+                 :daily_digest,
+                 signal_id: "daily-digest-2026-05-22",
+                 intended_window: intended_window,
+                 schedule_in: 60_000
+               )
+
+      assert %{
+               queue: ^queue_a,
+               topic: "squid_mesh:payload",
+               scheduled_at: scheduled_at
+             } = metadata
+
+      assert [] = peek_visible(queue_a, now: scheduled_at - 1)
+
+      [item] = peek_visible(queue_a, now: scheduled_at)
+      payload = Jason.decode!(item.payload)
+
+      assert %{
+               "kind" => "cron",
+               "workflow" => "Elixir.BedrockMinimalHostApp.Workflows.DailyDigest",
+               "trigger" => "daily_digest",
+               "signal_id" => "daily-digest-2026-05-22",
+               "intended_window" => ^intended_window
+             } = payload
     end
   end
 
