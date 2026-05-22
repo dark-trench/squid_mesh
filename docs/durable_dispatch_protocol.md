@@ -29,10 +29,11 @@ entries with Jido's optimistic `:expected_rev` option, returns `{:error,
 Jido thread revision they cover. Checkpoints are rebuild accelerators; the
 append-only thread remains the source of truth.
 
-This first storage-backed slice proves the Squid Mesh protocol can persist and
-restore dispatch projections through `Jido.Storage`. The live runtime still uses
-the current host-executor and Postgres table path until the Jido-native workflow
-and dispatch agents land.
+The storage-backed slices prove the Squid Mesh protocol can persist and restore
+dispatch projections through `Jido.Storage`. The default live runtime still uses
+the current host-executor and Postgres table path, while the temporary
+`runtime: :journal` cutover path now writes run and dispatch facts through this
+boundary.
 
 For production adapters, the required storage properties are:
 

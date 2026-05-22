@@ -15,6 +15,35 @@ defmodule SquidMeshTest do
   alias SquidMesh.Test.StepWorker
   alias SquidMesh.TestSupport.LazyWorkflow
 
+  defmodule CommitThenFailStorage do
+    @behaviour Jido.Storage
+
+    @impl Jido.Storage
+    def get_checkpoint(_key, _opts), do: :not_found
+
+    @impl Jido.Storage
+    def put_checkpoint(_key, _data, _opts), do: :ok
+
+    @impl Jido.Storage
+    def delete_checkpoint(_key, _opts), do: :ok
+
+    @impl Jido.Storage
+    def load_thread(_thread_id, _opts), do: {:error, :load_failed}
+
+    @impl Jido.Storage
+    def append_thread(thread_id, entries, _opts) do
+      thread =
+        [id: thread_id]
+        |> Jido.Thread.new()
+        |> Jido.Thread.append(entries)
+
+      {:ok, thread}
+    end
+
+    @impl Jido.Storage
+    def delete_thread(_thread_id, _opts), do: :ok
+  end
+
   defmodule InvoiceReminderWorkflow do
     use SquidMesh.Workflow
 
@@ -1647,6 +1676,306 @@ defmodule SquidMeshTest do
                snapshot.visible_attempts
     end
 
+    test "start_run/3 can use the journal runtime without writing legacy runtime tables" do
+      legacy_counts_before = legacy_runtime_counts()
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert snapshot.workflow == Atom.to_string(PaymentRecoveryWorkflow)
+      assert snapshot.queue == @read_model_queue
+      assert snapshot.reason == :attempt_visible
+
+      assert [%{runnable_key: runnable_key, step: "check_gateway", status: :available}] =
+               snapshot.visible_attempts
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, snapshot.run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [:run_started, :runnables_planned]
+
+      assert [%{runnable_key: ^runnable_key, step: "check_gateway"}] =
+               run_entries
+               |> List.last()
+               |> Map.fetch!(:data)
+               |> Map.fetch!(:runnables)
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.map(dispatch_entries, & &1.type) == [:attempt_scheduled]
+      assert [%{runnable_key: ^runnable_key, step: "check_gateway"}] = snapshot.visible_attempts
+
+      assert {:ok, run_index_projection} =
+               Journal.rebuild_run_index_projection(
+                 @read_model_storage,
+                 Atom.to_string(PaymentRecoveryWorkflow)
+               )
+
+      assert SquidMesh.Runtime.RunIndexProjection.run_ids(run_index_projection) == [
+               snapshot.run_id
+             ]
+
+      assert legacy_runtime_counts() == legacy_counts_before
+    end
+
+    test "journal runtime start can be rebuilt through inspection after process restart" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = rebuilt_snapshot} =
+               SquidMesh.inspect_run(started_snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert rebuilt_snapshot.run_id == started_snapshot.run_id
+      assert rebuilt_snapshot.workflow == started_snapshot.workflow
+      assert rebuilt_snapshot.thread_revisions == started_snapshot.thread_revisions
+      assert rebuilt_snapshot.visible_attempts == started_snapshot.visible_attempts
+      assert rebuilt_snapshot.pending_dispatches == []
+    end
+
+    test "journal runtime start requires explicit journal storage" do
+      assert {:error, {:invalid_option, {:journal_storage, nil}}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal
+               )
+    end
+
+    test "table runtime start rejects journal-only options" do
+      assert {:error, {:invalid_option, {:runtime_tables, [:journal_storage]}}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 journal_storage: @read_model_storage
+               )
+    end
+
+    test "journal runtime start rejects malformed public options" do
+      assert {:error, {:invalid_option, {:journal_storage, String}}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: String
+               )
+
+      assert {:error, {:invalid_option, {:journal_storage, Jido.Storage.File}}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: {Jido.Storage.File, []}
+               )
+
+      assert {:error, {:invalid_option, {:journal_storage, String}}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: {String, path: "/tmp/squid_mesh_storage", token: "redacted"}
+               )
+
+      assert {:error, {:invalid_option, {:queue, "../dispatch"}}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: "../dispatch"
+               )
+
+      assert {:error, {:invalid_option, {:run_id, "not-a-uuid"}}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 run_id: "not-a-uuid"
+               )
+    end
+
+    test "journal runtime start reports committed run id after post-append failures" do
+      run_id = Ecto.UUID.generate()
+
+      assert {:error, {:journal_start_committed, ^run_id, :load_failed}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: CommitThenFailStorage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+    end
+
+    test "journal runtime start idempotently repairs duplicate caller-provided run ids" do
+      run_id = Ecto.UUID.generate()
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert snapshot.run_id == run_id
+
+      assert {:ok, %Snapshot{} = duplicate_snapshot} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert duplicate_snapshot.run_id == run_id
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert Enum.map(run_entries, & &1.type) == [:run_started, :runnables_planned]
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.count(dispatch_entries, &(&1.type == :attempt_scheduled)) == 1
+    end
+
+    test "journal runtime start rejects duplicate run ids with conflicting planned work" do
+      run_id = Ecto.UUID.generate()
+
+      assert {:ok, %Snapshot{}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert {:error, :conflict} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_456"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+    end
+
+    test "journal runtime start repairs a partially appended run thread" do
+      run_id = Ecto.UUID.generate()
+
+      append_read_model_run_entries([
+        read_model_entry!(:run_started, %{
+          run_id: run_id,
+          workflow: Atom.to_string(PaymentRecoveryWorkflow),
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [journal_start_runnable(run_id)],
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_started_at, 30, :second),
+                 run_id: run_id
+               )
+
+      assert snapshot.run_id == run_id
+      assert snapshot.pending_dispatches == []
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.map(dispatch_entries, & &1.type) == [:attempt_scheduled]
+
+      assert {:ok, run_index_projection} =
+               Journal.rebuild_run_index_projection(
+                 @read_model_storage,
+                 Atom.to_string(PaymentRecoveryWorkflow)
+               )
+
+      assert SquidMesh.Runtime.RunIndexProjection.run_ids(run_index_projection) == [run_id]
+    end
+
+    test "journal runtime start retries same-queue dispatch append conflicts" do
+      warm_read_model_storage()
+
+      results =
+        1..8
+        |> Task.async_stream(
+          fn index ->
+            SquidMesh.start_run(
+              PaymentRecoveryWorkflow,
+              %{account_id: "acct_#{index}"},
+              runtime: :journal,
+              journal_storage: @read_model_storage,
+              queue: @read_model_queue,
+              now: DateTime.add(@read_model_started_at, index, :second),
+              run_id: Ecto.UUID.generate()
+            )
+          end,
+          max_concurrency: 8,
+          timeout: 5_000
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+
+      assert Enum.all?(results, &match?({:ok, %Snapshot{}}, &1))
+
+      started_run_ids =
+        Enum.map(results, fn {:ok, %Snapshot{} = snapshot} -> snapshot.run_id end)
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      scheduled_run_ids =
+        dispatch_entries
+        |> Enum.filter(&(&1.type == :attempt_scheduled))
+        |> Enum.map(& &1.data.run_id)
+        |> Enum.sort()
+
+      assert scheduled_run_ids == Enum.sort(started_run_ids)
+    end
+
     test "explain_run/2 can read from the read model" do
       append_read_model_run_entries([
         read_model_run_started(),
@@ -1674,6 +2003,20 @@ defmodule SquidMeshTest do
 
       assert {:error, {:invalid_option, {:journal_storage, nil}}} =
                SquidMesh.explain_run(@read_model_run_id, read_model: :read_model)
+    end
+
+    test "read model rejects malformed journal storage without leaking options" do
+      assert {:error, {:invalid_option, {:journal_storage, Jido.Storage.File}}} =
+               SquidMesh.inspect_run(@read_model_run_id,
+                 read_model: :read_model,
+                 journal_storage: {Jido.Storage.File, []}
+               )
+
+      assert {:error, {:invalid_option, {:journal_storage, String}}} =
+               SquidMesh.explain_run(@read_model_run_id,
+                 read_model: :read_model,
+                 journal_storage: {String, path: "/tmp/squid_mesh_storage", token: "redacted"}
+               )
     end
 
     test "returns a structured error for unsupported read models" do
@@ -1705,6 +2048,21 @@ defmodule SquidMeshTest do
                  journal_storage: @read_model_storage
                )
     end
+
+    test "read model rejects storage-unsafe run ids and queues" do
+      assert {:error, {:invalid_option, {:run_id, "../run"}}} =
+               SquidMesh.inspect_run("../run",
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage
+               )
+
+      assert {:error, {:invalid_option, {:queue, "../dispatch"}}} =
+               SquidMesh.explain_run(@read_model_run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: "../dispatch"
+               )
+    end
   end
 
   defp append_read_model_run_entries(entries) do
@@ -1713,6 +2071,33 @@ defmodule SquidMeshTest do
 
   defp append_read_model_dispatch_entries(entries) do
     assert {:ok, _thread} = Journal.append_entries(@read_model_storage, entries)
+  end
+
+  defp warm_read_model_storage do
+    assert {:ok, seed_entry} =
+             DispatchProtocol.new_entry(:run_indexed, %{
+               run_id: "storage_seed",
+               workflow: "StorageSeedWorkflow",
+               occurred_at: @read_model_started_at
+             })
+
+    assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [seed_entry])
+
+    assert :ok =
+             Journal.put_checkpoint(
+               @read_model_storage,
+               {:run_index, "StorageSeedWorkflow"},
+               SquidMesh.Runtime.RunIndexProjection.new("StorageSeedWorkflow"),
+               1
+             )
+  end
+
+  defp legacy_runtime_counts do
+    %{
+      runs: Repo.aggregate(SquidMesh.Persistence.Run, :count, :id),
+      step_runs: Repo.aggregate(SquidMesh.Persistence.StepRun, :count, :id),
+      step_attempts: Repo.aggregate(SquidMesh.Persistence.StepAttempt, :count, :id)
+    }
   end
 
   defp read_model_run_started do
@@ -1756,6 +2141,19 @@ defmodule SquidMeshTest do
   defp read_model_entry!(type, attrs) do
     assert {:ok, entry} = DispatchProtocol.new_entry(type, attrs)
     entry
+  end
+
+  defp journal_start_runnable(run_id, account_id \\ "acct_123") do
+    %{
+      run_id: run_id,
+      runnable_key: "#{run_id}:check_gateway:1",
+      idempotency_key: "#{run_id}:check_gateway:1",
+      attempt_number: 1,
+      queue: @read_model_queue,
+      step: "check_gateway",
+      input: %{account_id: account_id},
+      visible_at: @read_model_started_at
+    }
   end
 
   defp read_model_table_name(:checkpoints),
