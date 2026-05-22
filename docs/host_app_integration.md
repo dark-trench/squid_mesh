@@ -216,6 +216,67 @@ The current runtime does not require a lease executor. The behavior exists so
 Bedrock, IntentLedger, or another durable backend can expose lease semantics
 through a stable Squid Mesh boundary while the Jido-native dispatch path evolves.
 
+## Bedrock Lease Backend Setup
+
+Squid Mesh stays executor-agnostic: workflow modules and runtime state do not
+depend on Bedrock APIs. For hosts that want backend-owned leasing today, Bedrock
+is the recommended reference backend because it already owns durable delivery,
+delayed visibility, leases, heartbeats, retry timing, and recovery. That same
+ownership model is also a better foundation for distributed workflows, where
+multiple workers may claim, heartbeat, fail, or recover work across process and
+node boundaries.
+
+Use `examples/bedrock_minimal_host_app` as the concrete setup guide. The example
+keeps the storage boundary explicit:
+
+- `BedrockMinimalHostApp.Repo` stores Squid Mesh workflow and attempt state.
+- `BedrockMinimalHostApp.JobQueue` stores queue items, delayed visibility,
+  leases, retries, and queue metadata.
+- `BedrockMinimalHostApp.SquidMeshExecutor` adapts Squid Mesh enqueue calls to
+  Bedrock Job Queue.
+- `BedrockMinimalHostApp.SquidMeshLeaseExecutor` adapts Bedrock claims,
+  heartbeats, completion, and failure to `SquidMesh.Executor.Leases`.
+
+A host app using the same shape should:
+
+1. Configure `:squid_mesh` with the host repo and Squid Mesh executor module.
+2. Configure the executor's Bedrock queue id and topic.
+3. Start the host repo, Bedrock cluster, and Bedrock job queue under
+   supervision.
+4. Keep `:stale_step_timeout` disabled so Bedrock owns stale-worker recovery.
+5. Keep workflow definitions backend-neutral; only the host executor modules
+   should know Bedrock exists.
+
+The example config shape is:
+
+```elixir
+config :my_app, MyApp.SquidMeshExecutor,
+  queue_id: "tenant_a",
+  topic: "squid_mesh:payload"
+
+config :squid_mesh,
+  repo: MyApp.Repo,
+  executor: MyApp.SquidMeshExecutor
+```
+
+To verify the reference path locally:
+
+```sh
+cd examples/bedrock_minimal_host_app
+mix setup
+MIX_ENV=test mix test test/bedrock_job_queue_stress_test.exs test/bedrock_minimal_host_app/squid_mesh_lease_executor_test.exs
+```
+
+That test path covers Bedrock queue behavior plus the lease executor contract.
+It does not make Bedrock a required Squid Mesh dependency; another durable
+executor can use the same Squid Mesh boundaries if it provides equivalent lease,
+heartbeat, retry, and recovery semantics.
+
+For background on why durable workflow systems often benefit from queueing close
+to the data and tenancy model they serve, see Apple's
+[QuiCK: A Queuing System in CloudKit](https://www.foundationdb.org/files/QuiCK.pdf)
+paper.
+
 ## First Run Checklist
 
 For a new integration, the shortest path to a successful first run is:

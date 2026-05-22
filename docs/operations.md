@@ -192,6 +192,9 @@ Recommended lease settings:
 - use stable run, step, attempt, and domain-operation identifiers as backend
   work item keys or lineage metadata
 
+For a concrete executor-agnostic shape with Bedrock as the recommended lease
+backend, see the Bedrock setup section in `docs/host_app_integration.md`.
+
 Completion, failure, pause, and approval progression must be applied only by
 the current attempt owner. If an expired attempt is reclaimed and a newer
 attempt takes over, a stale worker is rejected before it can mutate step
