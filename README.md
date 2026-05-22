@@ -85,6 +85,68 @@ For the full runtime direction and comparison with adjacent projects, see the
 - the Jido-native runtime path is moving toward IntentLedger as the preferred
   durable executor while keeping custom executors possible
 
+## Future Executor Boundary
+
+The current public executor boundary lets host apps plug their own job runner for
+step delivery, delayed work, redelivery, and cron activation. The intended
+Jido-native path keeps that embedding model, but separates durable workflow
+facts from backend-specific delivery mechanics. In that shape, Squid Mesh records
+runtime facts in Jido journals while adapters provide queue and lease behavior.
+
+```text
++----------------------------------------------------+
+|                    Squid Mesh                       |
++----------------------------------------------------+
+| Public API: start_run / inspect_run / explain_run   |
++----------------------------------------------------+
+                         |
+                         v
++----------------------------------------------------+
+|                Squid Mesh Runtime                   |
++----------------------------------------------------+
+| Plans work, applies results, retries, pauses,       |
+| cancels, completes, inspects, and explains          |
++----------------------------------------------------+
+                         |
+                         v
++----------------------------------------------------+
+|                    Jido Journals                    |
++----------------------------------------------------+
+| Durable workflow facts: runs, attempts, claims,     |
+| heartbeats, completions, failures, terminal state   |
++----------------------------------------------------+
+              |                          ^
+              v                          |
++----------------------------+  +----------------------------+
+| SquidMesh.Executor         |  | SquidMesh.Executor.Leases  |
++----------------------------+  +----------------------------+
+| enqueue jobs / cron / delay|  | claim / heartbeat / finish |
++----------------------------+  +----------------------------+
+              |                          |
+              +-------------+------------+
+                            |
+                            v
++----------------------------------------------------+
+|                  Backend Adapter                    |
++----------------------------------------------------+
+| Queue: enqueue, delay, cron delivery                |
+| Lease: claim, heartbeat, expiry, complete/fail      |
++----------------------------------------------------+
+                            |
+                            v
++----------------------------------------------------+
+|                Backend Storage                      |
++----------------------------------------------------+
+| Jobs, leases, worker liveness, delivery metadata    |
++----------------------------------------------------+
+```
+
+For example, a Bedrock adapter could use Bedrock/FDB for job delivery, lease
+extension, stale-worker recovery, and delivery metadata. A Postgres or Oban
+adapter could keep using relational storage for delivery. The key boundary is
+that Squid Mesh owns workflow decisions and journaled facts, while adapters own
+the concrete queue and lease mechanics required by their backend.
+
 ## Quick Start
 
 Requirements:
