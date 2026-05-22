@@ -60,14 +60,14 @@ inside a host application's supervision tree and infrastructure.
   keeping duplicate index facts idempotent and surfacing malformed or
   conflicting index facts as anomalies
 
-`SquidMesh.JournalProjection.Inspection`
+`SquidMesh.ReadModel.Inspection`
 
 - rebuilds workflow and dispatch agent projections into a read-only inspection
   snapshot for the Jido-native runtime path, including pending dispatches,
   unapplied results, scheduled attempts, visible attempts, expired claims,
   manual intervention state, terminal state, and projection anomalies
 
-`SquidMesh.JournalProjection.Explanation`
+`SquidMesh.ReadModel.Explanation`
 
 - turns a projection-backed inspection snapshot into a deterministic operator
   explanation with reason-specific details, suggested runtime next actions, and
@@ -76,8 +76,8 @@ inside a host application's supervision tree and infrastructure.
 `SquidMesh.inspect_run/2` and `SquidMesh.explain_run/2`
 
 - keep the current runtime-table read model as the default public behavior
-- accept `read_model: :journal_projection` with `journal_storage:` when callers
-  want to inspect or explain a run from durable Jido journal projections without
+- accept `read_model: :read_model` with `journal_storage:` when callers
+  want to inspect or explain a run from durable Jido journals without
   switching the execution runtime
 
 `SquidMesh.Executor`

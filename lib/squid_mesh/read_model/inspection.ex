@@ -1,9 +1,9 @@
-defmodule SquidMesh.JournalProjection.Inspection do
+defmodule SquidMesh.ReadModel.Inspection do
   @moduledoc """
   Projection-backed inspection for the Jido-native runtime path.
 
   The current public `SquidMesh.inspect_run/2` API reads the stable Postgres
-  runtime tables. This module is the journal projection boundary for the
+  runtime tables. This module is the read-model boundary for the
   Jido-native runtime: it rebuilds workflow and dispatch agents from
   `Jido.Storage`, combines their projections, and returns a factual snapshot of
   one run.
@@ -15,7 +15,7 @@ defmodule SquidMesh.JournalProjection.Inspection do
   """
 
   alias Jido.Agent
-  alias SquidMesh.JournalProjection.Inspection.Snapshot
+  alias SquidMesh.ReadModel.Inspection.Snapshot
   alias SquidMesh.Runtime.DispatchAgent
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.DispatchProtocol.ActionAttempt
