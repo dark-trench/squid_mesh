@@ -396,10 +396,10 @@ malformed or conflicting index facts visible as anomalies. The first projected
 explanation layer derives deterministic reason-specific details and next
 actions from the inspection snapshot. The public `SquidMesh.inspect_run/2` and
 `SquidMesh.explain_run/2` APIs now expose this read model behind the explicit
-`read_model: :journal_projection` option with `journal_storage:`, while the
+`read_model: :read_model` option with `journal_storage:`, while the
 stable runtime-table read model remains the default. Callers that opt into
 projection reads pass both options together, for example
-`SquidMesh.inspect_run(run_id, read_model: :journal_projection, journal_storage: storage)`.
+`SquidMesh.inspect_run(run_id, read_model: :read_model, journal_storage: storage)`.
 
 | Feature | Issue | Runtime dependency |
 | --- | --- | --- |

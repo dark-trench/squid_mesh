@@ -1,8 +1,8 @@
-defmodule SquidMesh.JournalProjection.Explanation do
+defmodule SquidMesh.ReadModel.Explanation do
   @moduledoc """
   Projection-backed explanation for the Jido-native runtime path.
 
-  `SquidMesh.JournalProjection.Inspection` answers what durable journal
+  `SquidMesh.ReadModel.Inspection` answers what durable journal
   projections currently show. This module answers why that state matters to an
   operator by deriving a deterministic reason, high-signal details, and the
   runtime boundary that would make progress.
@@ -11,9 +11,9 @@ defmodule SquidMesh.JournalProjection.Explanation do
   completed results, recover expired claims, or mutate checkpoints.
   """
 
-  alias SquidMesh.JournalProjection.Explanation.Diagnostic
-  alias SquidMesh.JournalProjection.Inspection
-  alias SquidMesh.JournalProjection.Inspection.Snapshot
+  alias SquidMesh.ReadModel.Explanation.Diagnostic
+  alias SquidMesh.ReadModel.Inspection
+  alias SquidMesh.ReadModel.Inspection.Snapshot
 
   @type storage_config :: Inspection.storage_config()
   @type explanation_option :: Inspection.snapshot_option()
@@ -23,7 +23,7 @@ defmodule SquidMesh.JournalProjection.Explanation do
   @doc """
   Builds a projection-backed explanation for one workflow run.
 
-  Options are the same as `SquidMesh.JournalProjection.Inspection.snapshot/3`.
+  Options are the same as `SquidMesh.ReadModel.Inspection.snapshot/3`.
   Missing runs and invalid options return the same structured errors as the
   underlying snapshot call.
   """

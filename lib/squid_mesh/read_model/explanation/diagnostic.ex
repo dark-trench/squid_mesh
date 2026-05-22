@@ -1,4 +1,4 @@
-defmodule SquidMesh.JournalProjection.Explanation.Diagnostic do
+defmodule SquidMesh.ReadModel.Explanation.Diagnostic do
   @moduledoc """
   Deterministic explanation built from a projection-backed inspection snapshot.
 
@@ -8,7 +8,7 @@ defmodule SquidMesh.JournalProjection.Explanation.Diagnostic do
   leaving mutation to recovery or dispatch modules.
   """
 
-  alias SquidMesh.JournalProjection.Inspection.Snapshot
+  alias SquidMesh.ReadModel.Inspection.Snapshot
 
   @type next_action ::
           :schedule_pending_dispatch
