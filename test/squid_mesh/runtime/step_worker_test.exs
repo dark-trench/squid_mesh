@@ -1878,6 +1878,285 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
              ] = completed_step.attempts
     end
 
+    test "rejects stale successful completion when a newer attempt is running" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+      assert {:ok, config} = Config.load(repo: Repo)
+      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(SuccessfulWorkflow)
+      assert {:ok, run} = SquidMesh.Runs.Store.create_run(Repo, SuccessfulWorkflow, input)
+
+      assert {:ok, running_run} =
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :running, %{
+                 current_step: :load_invoice
+               })
+
+      assert {:ok, step_run, :execute} =
+               Steps.Store.begin_step(Repo, running_run.id, :load_invoice, input)
+
+      assert {:ok, stale_attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+      stale_attempt_id = stale_attempt.id
+      assert {:ok, current_attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+
+      assert {:error, {:stale_attempt, "running"}} =
+               Outcome.apply_execution_result(
+                 {:ok,
+                  %{
+                    account: %{id: "acct_123"},
+                    invoice: %{id: "inv_456", status: "open"}
+                  }, []},
+                 %{
+                   config: config,
+                   definition: definition,
+                   run: running_run,
+                   step_name: :load_invoice,
+                   step_run_id: step_run.id,
+                   attempt_id: stale_attempt.id,
+                   attempt_number: stale_attempt.attempt_number,
+                   started_at: System.monotonic_time()
+                 }
+               )
+
+      assert {:ok, inspected_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert inspected_run.status == :running
+      assert inspected_run.current_step == :load_invoice
+      refute Map.has_key?(inspected_run.context, :invoice)
+
+      assert [%SquidMesh.Steps.Execution{} = running_step] = inspected_run.step_runs
+      assert running_step.status == :running
+
+      assert [
+               %{id: ^stale_attempt_id, attempt_number: 1, status: :running},
+               %{id: current_attempt_id, attempt_number: 2, status: :running}
+             ] = running_step.attempts
+
+      assert current_attempt_id == current_attempt.id
+    end
+
+    test "rejects stale failure when a newer attempt is running" do
+      input = %{account_id: "acct_123"}
+      assert {:ok, config} = Config.load(repo: Repo)
+      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(BackoffWorkflow)
+      assert {:ok, run} = SquidMesh.Runs.Store.create_run(Repo, BackoffWorkflow, input)
+
+      assert {:ok, running_run} =
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :running, %{
+                 current_step: :check_gateway
+               })
+
+      assert {:ok, step_run, :execute} =
+               Steps.Store.begin_step(Repo, running_run.id, :check_gateway, input)
+
+      assert {:ok, stale_attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+      stale_attempt_id = stale_attempt.id
+      assert {:ok, current_attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+
+      assert {:error, {:stale_attempt, "running"}} =
+               Outcome.apply_execution_result(
+                 {:error, %{message: "gateway timeout", code: "gateway_timeout"}},
+                 %{
+                   config: config,
+                   definition: definition,
+                   run: running_run,
+                   step_name: :check_gateway,
+                   step_run_id: step_run.id,
+                   attempt_id: stale_attempt.id,
+                   attempt_number: stale_attempt.attempt_number,
+                   started_at: System.monotonic_time()
+                 }
+               )
+
+      assert {:ok, inspected_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert inspected_run.status == :running
+      assert inspected_run.current_step == :check_gateway
+      assert inspected_run.last_error == nil
+
+      assert [%SquidMesh.Steps.Execution{} = running_step] = inspected_run.step_runs
+      assert running_step.status == :running
+      assert running_step.last_error == nil
+
+      assert [
+               %{id: ^stale_attempt_id, attempt_number: 1, status: :running},
+               %{id: current_attempt_id, attempt_number: 2, status: :running}
+             ] = running_step.attempts
+
+      assert current_attempt_id == current_attempt.id
+    end
+
+    test "rejects stale pause completion after a newer attempt takes over" do
+      assert {:ok, config} = Config.load(repo: Repo)
+      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(PauseWorkflow)
+
+      assert {:ok, run} =
+               SquidMesh.Runs.Store.create_run(Repo, PauseWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, running_run} =
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :running, %{
+                 current_step: :wait_for_approval
+               })
+
+      assert {:ok, step_run, :execute} =
+               Steps.Store.begin_step(Repo, running_run.id, :wait_for_approval, %{
+                 account_id: "acct_123"
+               })
+
+      assert {:ok, stale_attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+      stale_attempt_id = stale_attempt.id
+
+      stale_time =
+        DateTime.utc_now()
+        |> DateTime.add(-120, :second)
+        |> DateTime.truncate(:microsecond)
+
+      Repo.update_all(
+        from(stale_step in StepRun, where: stale_step.id == ^step_run.id),
+        set: [updated_at: stale_time]
+      )
+
+      assert {:ok, :reclaimed} =
+               SquidMesh.Runtime.StepRecovery.reclaim_stale_running_step(Repo, step_run, 0)
+
+      assert {:ok, reclaimed_step, :execute} =
+               Steps.Store.begin_step(Repo, running_run.id, :wait_for_approval, %{
+                 account_id: "acct_123"
+               })
+
+      assert {:ok, current_attempt} = AttemptStore.begin_attempt(Repo, reclaimed_step.id)
+
+      assert {:error, {:stale_attempt, "failed"}} =
+               Outcome.apply_execution_result(
+                 {:ok, %{}, [pause: true]},
+                 %{
+                   config: config,
+                   definition: definition,
+                   run: running_run,
+                   step_name: :wait_for_approval,
+                   step_run_id: step_run.id,
+                   attempt_id: stale_attempt.id,
+                   attempt_number: stale_attempt.attempt_number,
+                   started_at: System.monotonic_time()
+                 }
+               )
+
+      assert {:ok, inspected_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert inspected_run.status == :running
+      assert inspected_run.current_step == :wait_for_approval
+
+      assert [%SquidMesh.Steps.Execution{} = paused_step] = inspected_run.step_runs
+      assert paused_step.status == :running
+
+      assert Repo.get!(StepRun, step_run.id).resume == nil
+
+      assert [
+               %{id: ^stale_attempt_id, attempt_number: 1, status: :failed},
+               %{id: current_attempt_id, attempt_number: 2, status: :running}
+             ] = paused_step.attempts
+
+      assert current_attempt_id == current_attempt.id
+    end
+
+    test "valid paused runs keep the manual step attempt open for unblock" do
+      assert {:ok, run} =
+               SquidMesh.start_run(
+                 PauseWorkflow,
+                 %{account_id: "acct_123"},
+                 repo: Repo
+               )
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+               })
+
+      assert {:ok, paused_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert paused_run.status == :paused
+      assert paused_run.current_step == :wait_for_approval
+
+      assert [%SquidMesh.Steps.Execution{} = manual_step] = paused_run.step_runs
+      assert manual_step.step == :wait_for_approval
+      assert manual_step.status == :running
+      assert [%{attempt_number: 1, status: :running}] = manual_step.attempts
+    end
+
+    test "rejects stale approval pause after a newer attempt takes over" do
+      assert {:ok, config} = Config.load(repo: Repo)
+      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(ApprovalWorkflow)
+
+      assert {:ok, run} =
+               SquidMesh.Runs.Store.create_run(Repo, ApprovalWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, running_run} =
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :running, %{
+                 current_step: :wait_for_review
+               })
+
+      assert {:ok, step_run, :execute} =
+               Steps.Store.begin_step(Repo, running_run.id, :wait_for_review, %{
+                 account_id: "acct_123"
+               })
+
+      assert {:ok, stale_attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+      stale_attempt_id = stale_attempt.id
+
+      stale_time =
+        DateTime.utc_now()
+        |> DateTime.add(-120, :second)
+        |> DateTime.truncate(:microsecond)
+
+      Repo.update_all(
+        from(stale_step in StepRun, where: stale_step.id == ^step_run.id),
+        set: [updated_at: stale_time]
+      )
+
+      assert {:ok, :reclaimed} =
+               SquidMesh.Runtime.StepRecovery.reclaim_stale_running_step(Repo, step_run, 0)
+
+      assert {:ok, reclaimed_step, :execute} =
+               Steps.Store.begin_step(Repo, running_run.id, :wait_for_review, %{
+                 account_id: "acct_123"
+               })
+
+      assert {:ok, current_attempt} = AttemptStore.begin_attempt(Repo, reclaimed_step.id)
+
+      assert {:error, {:stale_attempt, "failed"}} =
+               Outcome.apply_execution_result(
+                 {:ok, %{}, [pause: true]},
+                 %{
+                   config: config,
+                   definition: definition,
+                   run: running_run,
+                   step_name: :wait_for_review,
+                   step_run_id: step_run.id,
+                   attempt_id: stale_attempt.id,
+                   attempt_number: stale_attempt.attempt_number,
+                   started_at: System.monotonic_time()
+                 }
+               )
+
+      assert {:ok, inspected_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert inspected_run.status == :running
+      assert inspected_run.current_step == :wait_for_review
+
+      assert [%SquidMesh.Steps.Execution{} = approval_step] = inspected_run.step_runs
+      assert approval_step.status == :running
+      assert Repo.get!(StepRun, step_run.id).resume == nil
+
+      assert [
+               %{id: ^stale_attempt_id, attempt_number: 1, status: :failed},
+               %{id: current_attempt_id, attempt_number: 2, status: :running}
+             ] = approval_step.attempts
+
+      assert current_attempt_id == current_attempt.id
+    end
+
     test "skips stale running attempts by default" do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 

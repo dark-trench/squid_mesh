@@ -171,6 +171,34 @@ can allow duplicate execution of a slow but still-running step. Steps that call
 external systems should still use idempotency keys or another duplicate-safety
 strategy.
 
+## Backend-Owned Leases And Fencing
+
+Lease-capable executor backends should own queue delivery, claim expiry,
+heartbeats, retry timing, and worker recovery. Squid Mesh keeps the
+workflow-facing facts durable: runnable identity, attempt history,
+workflow-state mutation fences, completion, failure, cancellation, and
+inspection.
+
+Recommended lease settings:
+
+- choose a lease timeout longer than the expected gap between heartbeats plus
+  normal scheduler and database latency
+- heartbeat often enough that one missed heartbeat does not expire healthy work
+- keep Squid Mesh `:stale_step_timeout` disabled when Bedrock or another
+  lease-capable backend owns recovery
+- only enable `:stale_step_timeout` for executors that do not have leases or
+  heartbeats; set it higher than the longest step runtime you expect to be
+  healthy
+- use stable run, step, attempt, and domain-operation identifiers as backend
+  work item keys or lineage metadata
+
+Completion, failure, pause, and approval progression must be applied only by
+the current attempt owner. If an expired attempt is reclaimed and a newer
+attempt takes over, a stale worker is rejected before it can mutate step
+history or run state. This protects Squid Mesh's durable state from stale
+workers, but it does not make external side effects exactly once. External API
+calls still need idempotency keys or domain-level duplicate detection.
+
 ## Long Waits
 
 Built-in `:wait` steps are non-blocking because they ask the host executor to

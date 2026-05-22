@@ -133,7 +133,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     error = normalize_error(reason)
     duration = System.monotonic_time() - started_at
 
-    with {:ok, _attempt} <- AttemptStore.fail_attempt(config.repo, attempt_id, error),
+    with {:ok, _attempt} <-
+           AttemptStore.fail_latest_running_attempt(config.repo, step_run_id, attempt_id, error),
          {:ok, _step_run} <- Steps.Store.fail_step(config.repo, step_run_id, error),
          {:ok, events} <-
            apply_failure_progression(
@@ -223,6 +224,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
        }) do
     with {:ok, pause_target} <-
            SquidMesh.Workflow.Definition.transition_target(definition, step_name, :ok),
+         :ok <-
+           AttemptStore.ensure_latest_running_attempt(config.repo, step_run_id, attempt_id),
          {:ok, _step_run} <-
            Steps.Store.persist_pause_resume(
              config.repo,
@@ -256,6 +259,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            SquidMesh.Workflow.Definition.approval_transition_targets(definition, step_name),
          {:ok, output_key} <-
            SquidMesh.Workflow.Definition.step_output_mapping(definition, step_name),
+         :ok <-
+           AttemptStore.ensure_latest_running_attempt(config.repo, step_run_id, attempt_id),
          {:ok, _step_run} <-
            Steps.Store.persist_approval_resume(config.repo, step_run_id, targets, output_key) do
       apply_pause_progression(
@@ -282,7 +287,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
          mapped_output: mapped_output,
          result: {:ok, _output, execution_opts}
        }) do
-    with {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
+    with {:ok, _attempt} <-
+           AttemptStore.complete_latest_running_attempt(config.repo, step_run_id, attempt_id),
          {:ok, _step_run} <- Steps.Store.complete_step(config.repo, step_run_id, mapped_output) do
       with {:ok, events} <-
              advance_after_completed_step(
