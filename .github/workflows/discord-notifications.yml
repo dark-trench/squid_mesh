@@ -20,6 +20,7 @@ jobs:
       DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
       ACTOR: ${{ github.actor }}
       EVENT_NAME: ${{ github.event_name }}
+      IGNORED_PR_ACTOR: ccarvalho-eng
       REPO: ${{ github.repository }}
 
     steps:
@@ -39,6 +40,11 @@ jobs:
               ;;
             pull_request)
               action="$(jq -r '.action' "$GITHUB_EVENT_PATH")"
+              pr_author="$(jq -r '.pull_request.user.login' "$GITHUB_EVENT_PATH")"
+              sender="$(jq -r '.sender.login' "$GITHUB_EVENT_PATH")"
+              if [ "$pr_author" = "$IGNORED_PR_ACTOR" ] || [ "$sender" = "$IGNORED_PR_ACTOR" ]; then
+                exit 0
+              fi
               title="$(jq -r '.pull_request.title' "$GITHUB_EVENT_PATH")"
               url="$(jq -r '.pull_request.html_url' "$GITHUB_EVENT_PATH")"
               label="New PR"
