@@ -201,8 +201,20 @@ not insert a second run. Idempotent cron starts must include `signal_id` or a
 complete `intended_window`; otherwise Squid Mesh returns
 `{:error, {:missing_schedule_idempotency_key, trigger_name}}`.
 
-That is the whole execution contract. Workflow modules, context modules, and
-controllers should not need to know which job backend the executor uses.
+That is the whole execution contract for the current runtime path. Workflow
+modules, context modules, and controllers should not need to know which job
+backend the executor uses.
+
+## Optional Lease Executor Contract
+
+Backends that expose worker leases can also implement
+`SquidMesh.Executor.Leases`. This is separate from the queue executor: it claims
+visible work, heartbeats active claims, completes delivered work, and returns
+failed work to the backend's retry or dead-letter policy.
+
+The current runtime does not require a lease executor. The behavior exists so
+Bedrock, IntentLedger, or another durable backend can expose lease semantics
+through a stable Squid Mesh boundary while the Jido-native dispatch path evolves.
 
 ## First Run Checklist
 
