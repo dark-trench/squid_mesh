@@ -48,8 +48,6 @@ Ecto.Migrator.with_repo(BedrockMinimalHostApp.Repo, fn repo ->
   )
 end)
 
-{:ok, _apps} = Application.ensure_all_started(:bypass)
-
 case Node.start(:bedrock_minimal_host_app_test, :shortnames) do
   {:ok, _pid} ->
     :ok

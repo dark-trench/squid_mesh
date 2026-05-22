@@ -27,10 +27,12 @@ defmodule BedrockMinimalHostApp.MixProject do
     [
       {:bedrock, "~> 0.4.0"},
       {:bedrock_job_queue, "~> 0.1"},
-      {:bypass, "~> 2.1", only: :test},
-      {:ecto_sql, "~> 3.13"},
-      {:postgrex, ">= 0.0.0"},
-      {:squid_mesh, path: "../.."}
+      {:ecto_sql, "~> 3.14"},
+      {:postgrex, "~> 0.22.2"},
+      {:squid_mesh, path: "../.."},
+      # Jido currently allows an older Zoi range that keeps Decimal on 2.x.
+      # The example pins Zoi forward so its isolated lockfile can use Decimal 3.
+      {:zoi, "~> 0.18.4", override: true}
     ]
   end
 
