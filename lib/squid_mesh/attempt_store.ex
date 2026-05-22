@@ -34,12 +34,57 @@ defmodule SquidMesh.AttemptStore do
   end
 
   @doc """
+  Marks an attempt completed only if it still owns the latest running slot.
+  """
+  @spec complete_latest_running_attempt(module(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, StepAttempt.t()} | {:error, :not_found | stale_error()}
+  def complete_latest_running_attempt(repo, step_run_id, attempt_id) do
+    with :ok <- ensure_latest_running_attempt(repo, step_run_id, attempt_id) do
+      complete_attempt(repo, attempt_id)
+    end
+  end
+
+  @doc """
   Marks one attempt as failed and stores the normalized error payload.
   """
   @spec fail_attempt(module(), Ecto.UUID.t(), map()) ::
           {:ok, StepAttempt.t()} | {:error, :not_found | stale_error()}
   def fail_attempt(repo, attempt_id, error) when is_map(error) do
     update_running_attempt(repo, attempt_id, %{status: "failed", error: error})
+  end
+
+  @doc """
+  Marks an attempt failed only if it still owns the latest running slot.
+  """
+  @spec fail_latest_running_attempt(module(), Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, StepAttempt.t()} | {:error, :not_found | stale_error()}
+  def fail_latest_running_attempt(repo, step_run_id, attempt_id, error) when is_map(error) do
+    with :ok <- ensure_latest_running_attempt(repo, step_run_id, attempt_id) do
+      fail_attempt(repo, attempt_id, error)
+    end
+  end
+
+  @doc """
+  Confirms that an attempt still owns the latest running attempt slot.
+
+  Manual pause and approval steps keep their attempt open while waiting for an
+  operator. Those paths still need a fence before persisting pause metadata, so
+  a stale worker cannot mutate the step after a newer attempt reclaimed it.
+  Call this inside the same transaction as the mutation it protects.
+  """
+  @spec ensure_latest_running_attempt(module(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          :ok | {:error, :not_found | stale_error()}
+  def ensure_latest_running_attempt(repo, step_run_id, attempt_id) do
+    case locked_latest_attempt(repo, step_run_id) do
+      %StepAttempt{id: ^attempt_id, status: "running"} ->
+        :ok
+
+      %StepAttempt{} ->
+        stale_attempt_error(repo, attempt_id)
+
+      nil ->
+        {:error, :not_found}
+    end
   end
 
   @doc """
@@ -98,6 +143,19 @@ defmodule SquidMesh.AttemptStore do
       desc: attempt.id
     )
     |> limit(1)
+    |> repo.one()
+  end
+
+  defp locked_latest_attempt(repo, step_run_id) do
+    StepAttempt
+    |> where([attempt], attempt.step_run_id == ^step_run_id)
+    |> order_by([attempt],
+      desc: attempt.attempt_number,
+      desc: attempt.inserted_at,
+      desc: attempt.id
+    )
+    |> limit(1)
+    |> lock("FOR UPDATE")
     |> repo.one()
   end
 

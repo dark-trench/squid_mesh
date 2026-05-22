@@ -107,4 +107,33 @@ defmodule SquidMesh.AttemptStoreTest do
 
     assert Repo.get!(SquidMesh.Persistence.StepAttempt, attempt.id).status == "completed"
   end
+
+  test "requires the attempt to be the latest running attempt" do
+    {:ok, run} =
+      %SquidMesh.Persistence.Run{}
+      |> SquidMesh.Persistence.Run.changeset(%{
+        workflow: "Elixir.SquidMesh.AttemptStoreTest.Workflow",
+        trigger: "manual",
+        status: "pending",
+        input: %{}
+      })
+      |> Repo.insert()
+
+    {:ok, step_run} =
+      %StepRun{}
+      |> StepRun.changeset(%{
+        run_id: run.id,
+        step: "wait_for_approval",
+        status: "running"
+      })
+      |> Repo.insert()
+
+    assert {:ok, first_attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+    assert :ok = AttemptStore.ensure_latest_running_attempt(Repo, step_run.id, first_attempt.id)
+
+    assert {:ok, _second_attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+
+    assert {:error, {:stale_attempt, "running"}} =
+             AttemptStore.ensure_latest_running_attempt(Repo, step_run.id, first_attempt.id)
+  end
 end
