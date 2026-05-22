@@ -122,6 +122,67 @@ jobs:
       - name: Run smoke path
         run: MIX_ENV=test mix example.smoke
 
+  bedrock-example-host-app:
+    name: Bedrock Example Host App
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    defaults:
+      run:
+        working-directory: examples/bedrock_minimal_host_app
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Restore Mix cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            examples/bedrock_minimal_host_app/deps
+            examples/bedrock_minimal_host_app/_build
+          key: ${{ runner.os }}-bedrock-example-mix-${{ env.OTP_VERSION }}-${{ env.ELIXIR_VERSION }}-${{ hashFiles('examples/bedrock_minimal_host_app/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bedrock-example-mix-${{ env.OTP_VERSION }}-${{ env.ELIXIR_VERSION }}-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Wait for Postgres
+        run: until pg_isready -h localhost -p 5432 -U postgres; do sleep 1; done
+
+      - name: Start Erlang port mapper
+        run: epmd -daemon
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Compile with warnings as errors
+        run: mix compile --warnings-as-errors
+
+      - name: Run Bedrock stress coverage
+        run: MIX_ENV=test mix test test/bedrock_job_queue_stress_test.exs
+
   credo:
     name: Code Quality (Credo)
     runs-on: ubuntu-latest
