@@ -616,15 +616,24 @@ defmodule SquidMesh.Workflow.Definition do
           %{
             name: step.name,
             module: inspect(step.module),
-            input: Keyword.get(step.opts, :input),
+            input: canonical_atom_list(Keyword.get(step.opts, :input)),
             output: Keyword.get(step.opts, :output),
-            after: Keyword.get(step.opts, :after),
+            after: canonical_dependency_list(Keyword.get(step.opts, :after)),
             retry: Keyword.get(step.opts, :retry)
           }
         end),
       transitions: Enum.map(definition.transitions, &Map.take(&1, [:from, :on, :to, :recovery])),
       retries: definition.retries
     }
+  end
+
+  defp canonical_dependency_list(nil), do: []
+  defp canonical_dependency_list(dependencies), do: canonical_atom_list(dependencies)
+
+  defp canonical_atom_list(nil), do: nil
+
+  defp canonical_atom_list(values) when is_list(values) do
+    Enum.sort_by(values, &Atom.to_string/1)
   end
 
   defp maybe_put_invalid_payload_type(acc, field, value) do

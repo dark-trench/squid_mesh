@@ -2155,6 +2155,18 @@ defmodule SquidMeshTest do
                  journal_storage: @read_model_storage,
                  run_id: "not-a-uuid"
                )
+
+      assert {:error, reason} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 now: %{claim_token: "super-secret-token"}
+               )
+
+      assert reason == {:invalid_option, {:now, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
     end
 
     test "journal runtime start reports committed run id after post-append failures" do
@@ -2236,13 +2248,67 @@ defmodule SquidMeshTest do
                )
     end
 
-    test "journal runtime start repairs a partially appended run thread" do
+    test "journal runtime start rejects duplicate run ids with conflicting definition fingerprints" do
       run_id = Ecto.UUID.generate()
 
       append_read_model_run_entries([
         read_model_entry!(:run_started, %{
           run_id: run_id,
           workflow: Atom.to_string(PaymentRecoveryWorkflow),
+          definition_fingerprint: "stale-definition",
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [journal_start_runnable(run_id)],
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      assert {:error, :conflict} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert {:error, :not_found} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+    end
+
+    test "journal runtime start rejects built-in steps before persisting runnables" do
+      run_id = Ecto.UUID.generate()
+
+      assert {:error, {:unsupported_journal_step, :wait_for_approval, :pause}} =
+               SquidMesh.start_run(
+                 PauseWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert {:error, :not_found} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert {:error, :not_found} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+    end
+
+    test "journal runtime start repairs a partially appended run thread" do
+      run_id = Ecto.UUID.generate()
+      assert {:ok, definition} = Definition.load(PaymentRecoveryWorkflow)
+
+      append_read_model_run_entries([
+        read_model_entry!(:run_started, %{
+          run_id: run_id,
+          workflow: Atom.to_string(PaymentRecoveryWorkflow),
+          definition_fingerprint: Definition.fingerprint(definition),
           occurred_at: @read_model_started_at
         }),
         read_model_entry!(:runnables_planned, %{
@@ -3204,11 +3270,13 @@ defmodule SquidMeshTest do
     test "execute_next/1 fails an incompatible claimed attempt durably" do
       run_id = Ecto.UUID.generate()
       runnable_key = "#{run_id}:missing_gateway:1"
+      assert {:ok, definition} = Definition.load(PaymentRecoveryWorkflow)
 
       append_read_model_run_entries([
         read_model_entry!(:run_started, %{
           run_id: run_id,
           workflow: Atom.to_string(PaymentRecoveryWorkflow),
+          definition_fingerprint: Definition.fingerprint(definition),
           occurred_at: @read_model_started_at
         }),
         read_model_entry!(:runnables_planned, %{
@@ -3278,6 +3346,54 @@ defmodule SquidMeshTest do
                :attempt_claimed,
                :attempt_failed
              ]
+    end
+
+    test "execute_next/1 rejects missing workflow definition fingerprints before executing" do
+      run_id = Ecto.UUID.generate()
+      runnable_key = "#{run_id}:check_gateway:1"
+
+      append_read_model_run_entries([
+        read_model_entry!(:run_started, %{
+          run_id: run_id,
+          workflow: Atom.to_string(PaymentRecoveryWorkflow),
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [journal_start_runnable(run_id)],
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:attempt_scheduled, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          idempotency_key: runnable_key,
+          attempt_number: 1,
+          queue: @read_model_queue,
+          step: "check_gateway",
+          input: %{account_id: "acct_123"},
+          visible_at: @read_model_started_at,
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert snapshot.status == :failed
+
+      assert [%{status: :failed, error: %{code: "incompatible_workflow_definition"}}] =
+               snapshot.attempts
     end
 
     test "execute_next/1 rejects stale workflow definition fingerprints before executing" do

@@ -32,6 +32,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
           {:invalid_payload, Definition.payload_error_details()}
           | Definition.load_error()
           | Definition.trigger_error()
+          | {:unsupported_journal_step, atom(), Definition.built_in_step_kind()}
           | {:invalid_option,
              {:journal_storage, nil} | {:now, term()} | {:queue, term()} | {:run_id, term()}}
           | term()
@@ -50,13 +51,13 @@ defmodule SquidMesh.Runtime.Journal.Starter do
          {:ok, queue} <- queue(opts),
          {:ok, now} <- now(opts),
          {:ok, definition} <- Definition.load(workflow),
+         :ok <- reject_unsupported_steps(definition),
          {:ok, trigger} <- trigger(definition, trigger_name),
          {:ok, resolved_payload} <- Definition.resolve_payload(trigger, payload),
          {:ok, planner} <- RunicPlanner.new(workflow),
          {:ok, _planned, runnables} <- RunicPlanner.plan(planner, resolved_payload),
          {:ok, run_id} <- run_id(opts),
          {:ok, journal_runnables} <- journal_runnables(run_id, queue, runnables, now),
-         :ok <- ensure_run_queued(storage, run_id, queue, now),
          :ok <- ensure_run_started(storage, workflow, definition, run_id, journal_runnables, now) do
       complete_started_run(storage, workflow, run_id, queue, now)
     end
@@ -67,12 +68,23 @@ defmodule SquidMesh.Runtime.Journal.Starter do
 
   defp trigger(definition, trigger_name), do: Definition.trigger(definition, trigger_name)
 
+  defp reject_unsupported_steps(definition) do
+    case Enum.find(definition.steps, &built_in_step?/1) do
+      %{name: step_name, module: kind} -> {:error, {:unsupported_journal_step, step_name, kind}}
+      nil -> :ok
+    end
+  end
+
+  defp built_in_step?(%{module: module}), do: module in [:wait, :log, :pause, :approval]
+
   defp ensure_run_started(storage, workflow, definition, run_id, runnables, %DateTime{} = now) do
+    expected_fingerprint = Definition.fingerprint(definition)
+
     with {:ok, run_started} <-
            DispatchProtocol.new_entry(:run_started, %{
              run_id: run_id,
              workflow: Definition.serialize_workflow(workflow),
-             definition_fingerprint: Definition.fingerprint(definition),
+             definition_fingerprint: expected_fingerprint,
              occurred_at: now
            }),
          {:ok, runnables_planned} <-
@@ -86,7 +98,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
       :ok
     else
       {:error, :conflict} ->
-        rebuild_existing_start(storage, workflow, run_id, runnables)
+        rebuild_existing_start(storage, workflow, run_id, runnables, expected_fingerprint)
 
       {:error, _reason} = error ->
         error
@@ -233,7 +245,8 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   end
 
   defp do_complete_started_run(storage, workflow, run_id, queue, %DateTime{} = now) do
-    with :ok <- ensure_run_indexed(storage, workflow, run_id, now),
+    with :ok <- ensure_run_queued(storage, run_id, queue, now),
+         :ok <- ensure_run_indexed(storage, workflow, run_id, now),
          {:ok, %{workflow_agent: workflow_agent, dispatch_agent: dispatch_agent}} <-
            recover_or_continue(storage, run_id, queue, now),
          :ok <- put_checkpoints(storage, workflow_agent, dispatch_agent, now) do
@@ -241,23 +254,35 @@ defmodule SquidMesh.Runtime.Journal.Starter do
     end
   end
 
-  defp rebuild_existing_start(storage, workflow, run_id, expected_runnables) do
-    case WorkflowAgent.rebuild(storage, run_id) do
-      {:ok, workflow_agent} ->
-        validate_existing_start(workflow_agent, workflow, expected_runnables)
-
-      {:error, _reason} = error ->
-        error
+  defp rebuild_existing_start(storage, workflow, run_id, expected_runnables, expected_fingerprint) do
+    with {:ok, workflow_agent} <- WorkflowAgent.rebuild(storage, run_id),
+         {:ok, existing_fingerprint} <- persisted_definition_fingerprint(storage, run_id) do
+      validate_existing_start(
+        workflow_agent,
+        workflow,
+        expected_runnables,
+        expected_fingerprint,
+        existing_fingerprint
+      )
     end
   end
 
-  defp validate_existing_start(workflow_agent, workflow, expected_runnables) do
+  defp validate_existing_start(
+         workflow_agent,
+         workflow,
+         expected_runnables,
+         expected_fingerprint,
+         existing_fingerprint
+       ) do
     existing_workflow = workflow_agent.state.workflow
     expected_workflow = Definition.serialize_workflow(workflow)
     existing_runnables = WorkflowAgent.planned_runnables(workflow_agent)
 
     cond do
       existing_workflow != expected_workflow ->
+        {:error, :conflict}
+
+      not equivalent_definition_fingerprint?(existing_fingerprint, expected_fingerprint) ->
         {:error, :conflict}
 
       equivalent_runnables?(existing_runnables, expected_runnables) ->
@@ -267,6 +292,21 @@ defmodule SquidMesh.Runtime.Journal.Starter do
         {:error, :conflict}
     end
   end
+
+  defp persisted_definition_fingerprint(storage, run_id) do
+    with {:ok, %{entries: entries}} <- Journal.load_thread(storage, {:run, run_id}) do
+      fingerprint =
+        Enum.find_value(entries, fn
+          %{type: :run_started, data: data} -> Map.get(data, :definition_fingerprint)
+          _entry -> nil
+        end)
+
+      {:ok, fingerprint}
+    end
+  end
+
+  defp equivalent_definition_fingerprint?(existing_fingerprint, expected_fingerprint),
+    do: existing_fingerprint == expected_fingerprint
 
   defp equivalent_runnables?(left, right) when length(left) == length(right) do
     left =
@@ -346,7 +386,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   defp now(opts) do
     case Keyword.get(opts, :now, DateTime.utc_now()) do
       %DateTime{} = now -> {:ok, now}
-      invalid -> {:error, {:invalid_option, {:now, invalid}}}
+      _invalid -> {:error, {:invalid_option, {:now, :invalid}}}
     end
   end
 

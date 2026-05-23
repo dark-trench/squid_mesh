@@ -558,19 +558,38 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       {:dispatch, next_steps} ->
         context = dependency_context(workflow_agent, result)
 
-        runnables =
-          Enum.map(next_steps, fn next_step ->
-            {:ok, input} = successor_input(context, definition, next_step)
-            journal_runnable(attempt.run_id, queue, next_step, input, 1, now)
-          end)
+        case dependency_success_runnables(attempt, context, definition, next_steps, queue, now) do
+          {:ok, runnables} ->
+            {:ok, [runnables_planned_entry!(attempt.run_id, runnables, now)]}
 
-        {:ok, [runnables_planned_entry!(attempt.run_id, runnables, now)]}
+          {:error, _reason} = error ->
+            error
+        end
 
       {:wait, _phase_steps} ->
         {:ok, []}
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp dependency_success_runnables(attempt, context, definition, next_steps, queue, now) do
+    result =
+      Enum.reduce_while(next_steps, {:ok, []}, fn next_step, {:ok, acc} ->
+        case successor_input(context, definition, next_step) do
+          {:ok, input} ->
+            runnable = journal_runnable(attempt.run_id, queue, next_step, input, 1, now)
+            {:cont, {:ok, [runnable | acc]}}
+
+          {:error, _reason} = error ->
+            {:halt, error}
+        end
+      end)
+
+    case result do
+      {:ok, runnables} -> {:ok, Enum.reverse(runnables)}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -1218,7 +1237,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   defp validate_definition_fingerprint(storage, run_id, definition) do
     case persisted_definition_fingerprint(storage, run_id) do
       {:ok, nil} ->
-        :ok
+        {:error, %{code: "incompatible_workflow_definition", retryable?: false}}
 
       {:ok, fingerprint} ->
         if fingerprint == Definition.fingerprint(definition) do
