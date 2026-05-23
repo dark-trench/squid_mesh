@@ -1507,6 +1507,134 @@ defmodule SquidMeshTest do
     end
   end
 
+  describe "inspect_run_graph/2" do
+    test "returns graph-oriented state for a completed transition workflow" do
+      assert {:ok, created_run} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_123"},
+                 repo: Repo
+               )
+
+      assert %{success: 2, failure: 0} =
+               SquidMesh.Test.Executor.drain()
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
+               SquidMesh.inspect_run_graph(created_run.id, repo: Repo)
+
+      assert graph.run_id == created_run.id
+      assert graph.workflow == InvoiceReminderWorkflow
+      assert graph.source == :runtime_tables
+      assert graph.status == :completed
+      assert graph.current_node_id == nil
+      assert graph.current_node_ids == []
+
+      nodes = Map.new(graph.nodes, &{&1.id, &1})
+      edges = Map.new(graph.edges, &{&1.id, &1})
+
+      assert nodes["load_invoice"].status == :completed
+      assert nodes["send_email"].status == :completed
+
+      assert edges["load_invoice:ok:send_email"].type == :transition
+      assert edges["load_invoice:ok:send_email"].status == :selected
+      assert edges["send_email:ok:complete"].to == "complete"
+      assert edges["send_email:ok:complete"].status == :selected
+
+      refute nodes["load_invoice"].output
+      assert nodes["load_invoice"].attempts == []
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph_with_history} =
+               SquidMesh.inspect_run_graph(created_run.id, include_history: true, repo: Repo)
+
+      nodes_with_history = Map.new(graph_with_history.nodes, &{&1.id, &1})
+
+      assert nodes_with_history["load_invoice"].output.invoice.status == "open"
+
+      assert [%{attempt_number: 1, status: :completed}] =
+               nodes_with_history["load_invoice"].attempts
+    end
+
+    test "returns dependency edges from runtime-table state" do
+      assert {:ok, created_run} =
+               SquidMesh.start_run(
+                 JournalDependencyWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_123"},
+                 repo: Repo
+               )
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
+               SquidMesh.inspect_run_graph(created_run.id, repo: Repo)
+
+      nodes = Map.new(graph.nodes, &{&1.id, &1})
+      edges = Map.new(graph.edges, &{&1.id, &1})
+
+      assert nodes["load_account"].status in [:pending, :running]
+      assert nodes["load_invoice"].status in [:pending, :running]
+      assert nodes["send_email"].status == :waiting
+      assert MapSet.new(graph.current_node_ids) == MapSet.new(["load_account", "load_invoice"])
+      assert nodes["load_account"].current?
+      assert nodes["load_invoice"].current?
+      refute nodes["send_email"].current?
+      assert edges["load_account:dependency:send_email"].status == :pending
+      assert edges["load_invoice:dependency:send_email"].status == :pending
+
+      SquidMesh.Test.Executor.drain()
+    end
+
+    test "surfaces paused manual state only when history is requested" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
+               })
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
+               SquidMesh.inspect_run_graph(run.id, repo: Repo)
+
+      nodes = Map.new(graph.nodes, &{&1.id, &1})
+
+      assert graph.current_node_id == "wait_for_review"
+      assert nodes["wait_for_review"].status == :paused
+      refute nodes["wait_for_review"].manual_state
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph_with_history} =
+               SquidMesh.inspect_run_graph(run.id, include_history: true, repo: Repo)
+
+      nodes_with_history = Map.new(graph_with_history.nodes, &{&1.id, &1})
+
+      assert nodes_with_history["wait_for_review"].manual_state == %{
+               status: :paused,
+               step: "wait_for_review"
+             }
+    end
+
+    test "keeps runtime-table retrying nodes non-terminal" do
+      assert {:ok, run} =
+               SquidMesh.start_run(JournalRetryWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "retry_gateway"}
+               })
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
+               SquidMesh.inspect_run_graph(run.id, repo: Repo)
+
+      nodes = Map.new(graph.nodes, &{&1.id, &1})
+      edges = Map.new(graph.edges, &{&1.id, &1})
+
+      assert graph.status == :retrying
+      assert graph.current_node_id == "retry_gateway"
+      assert nodes["retry_gateway"].status == :retrying
+      assert nodes["retry_gateway"].current?
+      assert edges["retry_gateway:ok:complete"].status == :pending
+
+      SquidMesh.Test.Executor.drain()
+    end
+  end
+
   describe "list_runs/2" do
     test "returns runs newest first" do
       assert {:ok, first_run} =
@@ -2071,6 +2199,24 @@ defmodule SquidMeshTest do
       assert [%{runnable_key: runnable_key, step: "check_gateway", status: :available}] =
                snapshot.visible_attempts
 
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
+               SquidMesh.inspect_run_graph(snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      nodes = Map.new(graph.nodes, &{&1.id, &1})
+      edges = Map.new(graph.edges, &{&1.id, &1})
+
+      assert graph.source == :read_model
+      assert graph.current_node_id == "check_gateway"
+      assert graph.current_node_ids == ["check_gateway"]
+      assert nodes["check_gateway"].status == :pending
+      assert nodes["check_gateway"].attempts == []
+      assert edges["check_gateway:ok:complete"].status == :pending
+
       assert {:ok, run_entries} =
                Journal.load_entries(@read_model_storage, {:run, snapshot.run_id})
 
@@ -2099,6 +2245,73 @@ defmodule SquidMeshTest do
              ]
 
       assert legacy_runtime_counts() == legacy_counts_before
+    end
+
+    test "inspect_run_graph/2 identifies claimed journal attempts as the current node" do
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: runnable_key}] = snapshot.visible_attempts
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:attempt_claimed, %{
+          run_id: snapshot.run_id,
+          runnable_key: runnable_key,
+          claim_id: "claim_1",
+          claim_token_hash: claim_token_hash("token_1"),
+          owner_id: "worker_1",
+          queue: @read_model_queue,
+          lease_until: DateTime.add(@read_model_visible_at, 30, :second),
+          occurred_at: @read_model_visible_at
+        })
+      ])
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
+               SquidMesh.inspect_run_graph(snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      nodes = Map.new(graph.nodes, &{&1.id, &1})
+
+      assert graph.current_node_id == "check_gateway"
+      assert graph.current_node_ids == ["check_gateway"]
+      assert nodes["check_gateway"].status == :running
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:attempt_completed, %{
+          run_id: snapshot.run_id,
+          runnable_key: runnable_key,
+          claim_id: "old_claim",
+          claim_token_hash: claim_token_hash("stale_token"),
+          queue: @read_model_queue,
+          result: %{gateway: %{status: "ok"}},
+          occurred_at: DateTime.add(@read_model_visible_at, 1, :second)
+        })
+      ])
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph_with_anomaly} =
+               SquidMesh.inspect_run_graph(snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert [%{source: :dispatch, reason: :stale_claim, entry_type: :attempt_completed}] =
+               graph_with_anomaly.anomalies
+
+      refute inspect(graph_with_anomaly.anomalies) =~ "old_claim"
+      refute inspect(graph_with_anomaly.anomalies) =~ claim_token_hash("stale_token")
     end
 
     test "journal runtime start can be rebuilt through inspection after process restart" do
@@ -2580,6 +2793,24 @@ defmodule SquidMeshTest do
 
       assert after_account.status == :running
       assert Enum.map(after_account.visible_attempts, & &1.step) == ["load_invoice"]
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
+               SquidMesh.inspect_run_graph(started_snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      nodes = Map.new(graph.nodes, &{&1.id, &1})
+      edges = Map.new(graph.edges, &{&1.id, &1})
+
+      assert graph.source == :read_model
+      assert nodes["load_account"].status == :completed
+      assert nodes["load_invoice"].status == :pending
+      assert nodes["send_email"].status == :waiting
+      assert edges["load_account:dependency:send_email"].status == :selected
+      assert edges["load_invoice:dependency:send_email"].status == :pending
 
       assert {:ok, %Snapshot{} = after_invoice} =
                execute_journal_next(
@@ -3898,6 +4129,37 @@ defmodule SquidMeshTest do
              ] = snapshot.attempts
 
       assert [%{status: :retry_scheduled, attempt_number: 2}] = snapshot.visible_attempts
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
+               SquidMesh.inspect_run_graph(started_snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      nodes = Map.new(graph.nodes, &{&1.id, &1})
+      edges = Map.new(graph.edges, &{&1.id, &1})
+
+      assert nodes["retry_gateway"].status == :retrying
+      assert nodes["retry_gateway"].attempts == []
+      assert edges["retry_gateway:ok:complete"].status == :pending
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph_with_history} =
+               SquidMesh.inspect_run_graph(started_snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at,
+                 include_history: true
+               )
+
+      nodes_with_history = Map.new(graph_with_history.nodes, &{&1.id, &1})
+
+      assert [
+               %{status: :failed, attempt_number: 1},
+               %{status: :retry_scheduled, attempt_number: 2}
+             ] = nodes_with_history["retry_gateway"].attempts
 
       assert {:ok, dispatch_entries} =
                Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})

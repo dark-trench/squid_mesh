@@ -377,6 +377,90 @@ Manual-review durability notes:
 - the resolved `:ok` and `:error` targets plus output-mapping metadata are persisted with the paused step so restart or deploy boundaries do not recompute review semantics from the current workflow definition
 - host apps should apply the latest Squid Mesh migrations before using pause-resume in existing environments
 
+## Graph Inspection
+
+Use `inspect_run/2` when application code needs the factual run snapshot. Use
+`inspect_run_graph/2` when a CLI, dashboard, or workflow editor needs a
+node-and-edge view without reverse-engineering step history:
+
+```elixir
+{:ok, graph} = SquidMesh.inspect_run_graph(run_id)
+```
+
+The graph is derived from the same durable state as `inspect_run/2`. For the
+default runtime-table read model, Squid Mesh loads step and attempt history and
+overlays the declared workflow definition when the workflow module is still
+available. For the Jido-native read model, pass the same projection options used
+for inspection:
+
+```elixir
+{:ok, graph} =
+  SquidMesh.inspect_run_graph(run_id,
+    read_model: :read_model,
+    journal_storage: storage,
+    queue: "default"
+  )
+```
+
+The returned shape is stable across executors:
+
+```elixir
+%SquidMesh.Runs.GraphInspection{
+  run_id: run_id,
+  source: :runtime_tables,
+  status: :running,
+  current_node_id: "send_email",
+  current_node_ids: ["send_email"],
+  nodes: [
+    %SquidMesh.Runs.GraphInspection.Node{
+      id: "load_invoice",
+      status: :completed
+    }
+  ],
+  edges: [
+    %SquidMesh.Runs.GraphInspection.Edge{
+      id: "load_invoice:ok:send_email",
+      from: "load_invoice",
+      to: "send_email",
+      type: :transition,
+      outcome: :ok,
+      status: :selected
+    }
+  ]
+}
+```
+
+By default, graph inspection returns topology, run status, node status, edge
+status, active node ids, and sanitized projection anomalies. `current_node_id`
+is the first active node for simple callers; `current_node_ids` and each node's
+`current?` flag preserve parallel runnable nodes in dependency workflows. Step
+inputs, outputs, errors, recovery metadata, manual-state metadata, and attempt
+details are a privileged history surface because they can contain host-domain
+sensitive data. Request those fields explicitly:
+
+```elixir
+{:ok, graph_with_details} =
+  SquidMesh.inspect_run_graph(run_id, include_history: true)
+```
+
+Authorize and redact graph output before exposing it outside trusted operator
+surfaces. If the workflow module can no longer be loaded, Squid Mesh still
+returns any durable node state it can infer from the run, but `edges` is empty
+because edge topology belongs to the workflow definition.
+
+Transition edges are marked `:selected` when durable step state proves the
+outcome path was taken, `:skipped` when another terminal outcome won, and
+`:pending` while the source step has not reached a terminal step status.
+Dependency edges are marked `:selected` once the dependency completed,
+`:pending` while it is still waiting or running, and `:blocked` after a failed
+dependency.
+
+Node statuses use the same durable evidence: `:waiting` means no runnable work
+has been recorded for the node, `:pending` means work is visible or scheduled,
+`:running` means a worker has an active claim, `:retrying` means a failed
+attempt scheduled a retry, `:paused` means manual intervention is required, and
+`:completed` or `:failed` mean durable terminal step state exists.
+
 ## Local Repo Transactions
 
 Use `transaction: :repo` when one module step needs to run several same-process
