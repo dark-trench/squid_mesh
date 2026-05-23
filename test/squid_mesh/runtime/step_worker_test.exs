@@ -52,6 +52,40 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias SquidMesh.Test.Job
   alias SquidMesh.Test.StepWorker
 
+  defmodule FailedTransitionRepo do
+    alias SquidMesh.Persistence.Run
+    alias SquidMesh.Test.Repo
+
+    @spec transaction((-> term())) :: term()
+    def transaction(fun), do: Repo.transaction(fun)
+    @spec transaction((-> term()), keyword()) :: term()
+    def transaction(fun, opts), do: Repo.transaction(fun, opts)
+    @spec rollback(term()) :: no_return()
+    def rollback(reason), do: Repo.rollback(reason)
+    @spec one(Ecto.Queryable.t()) :: term()
+    def one(query), do: Repo.one(query)
+    @spec one(Ecto.Queryable.t(), keyword()) :: term()
+    def one(query, opts), do: Repo.one(query, opts)
+    @spec get(module(), term()) :: term()
+    def get(schema, id), do: Repo.get(schema, id)
+    @spec get!(module(), term()) :: term()
+    def get!(schema, id), do: Repo.get!(schema, id)
+    @spec insert_all(module(), [map()], keyword()) :: term()
+    def insert_all(schema, entries, opts), do: Repo.insert_all(schema, entries, opts)
+    @spec update_all(Ecto.Queryable.t(), keyword()) :: term()
+    def update_all(query, updates), do: Repo.update_all(query, updates)
+
+    @spec update(Ecto.Changeset.t()) :: term()
+    def update(%Ecto.Changeset{data: %Run{}} = changeset) do
+      case Ecto.Changeset.fetch_change(changeset, :status) do
+        {:ok, "failed"} -> {:error, Ecto.Changeset.add_error(changeset, :status, "forced")}
+        _other -> Repo.update(changeset)
+      end
+    end
+
+    def update(changeset), do: Repo.update(changeset)
+  end
+
   describe "workflow execution through the configured executor" do
     test "enqueues and executes the declared steps through Jido-backed actions" do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
@@ -425,6 +459,29 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert [
                %{step: :record_review, status: :failed, input: %{}, last_error: ^expected_error}
              ] = inspected_run.step_runs
+    end
+
+    test "rolls back prepared missing-path step rows when terminal transition fails" do
+      assert {:ok, run} =
+               SquidMesh.start_run(MissingPathMappingWorkflow, %{draft: %{}}, repo: Repo)
+
+      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(MissingPathMappingWorkflow)
+
+      config = %Config{
+        repo: FailedTransitionRepo,
+        executor: SquidMesh.Test.Executor,
+        stale_step_timeout: :disabled
+      }
+
+      assert {:error, _reason} = Preparation.prepare(config, definition, run, :record_review)
+
+      assert {:ok, inspected_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert inspected_run.status == :pending
+      assert inspected_run.current_step == :record_review
+      assert inspected_run.last_error == nil
+      assert inspected_run.step_runs == []
     end
 
     test "stores a JSON-safe error when named path mapping fails during successor dispatch" do

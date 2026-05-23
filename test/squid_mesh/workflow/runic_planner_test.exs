@@ -138,7 +138,7 @@ defmodule SquidMesh.Workflow.RunicPlannerTest do
 
         payload do
           field :account_id, :string
-          field :reviewer_id, :string
+          field :review, :map
         end
       end
 

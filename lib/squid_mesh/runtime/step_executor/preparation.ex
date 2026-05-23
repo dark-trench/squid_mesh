@@ -173,7 +173,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
       failure_event = run_transition_event(failed_run, from_status, to_status)
       {{:error, reason}, Enum.reverse([failure_event | Enum.reverse(events)])}
     else
-      {:error, _reason} = error -> {error, events}
+      {:error, reason} -> config.repo.rollback(reason)
     end
   end
 
