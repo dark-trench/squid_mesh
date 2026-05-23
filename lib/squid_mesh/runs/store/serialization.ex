@@ -146,6 +146,11 @@ defmodule SquidMesh.Runs.Store.Serialization do
       output: deserialize_map(step_run.output),
       last_error: deserialize_map(step_run.last_error),
       recovery: step_recovery_policy(definition, step_run),
+      transition:
+        SquidMesh.Workflow.Definition.deserialize_transition_decision(
+          definition,
+          step_run.transition
+        ),
       attempts: to_public_attempts(step_run),
       inserted_at: step_run.inserted_at,
       updated_at: step_run.updated_at
@@ -196,6 +201,7 @@ defmodule SquidMesh.Runs.Store.Serialization do
       output: step_run.output,
       last_error: step_run.last_error,
       recovery: step_run.recovery,
+      transition: step_run.transition,
       attempts: step_run.attempts,
       inserted_at: step_run.inserted_at,
       updated_at: step_run.updated_at

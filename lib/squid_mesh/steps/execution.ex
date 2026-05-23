@@ -18,6 +18,7 @@ defmodule SquidMesh.Steps.Execution do
     :output,
     :last_error,
     :recovery,
+    :transition,
     :attempts,
     :inserted_at,
     :updated_at

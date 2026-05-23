@@ -35,7 +35,11 @@ defmodule SquidMesh.Runs.Store do
   @type transition_attrs :: %{
           optional(:context) => map(),
           optional(:current_step) => String.t() | atom() | nil,
-          optional(:last_error) => map() | nil
+          optional(:last_error) => map() | nil,
+          optional(:step_transition) => %{
+            required(:step_run_id) => Ecto.UUID.t(),
+            required(:transition) => map()
+          }
         }
   @type transition_error ::
           get_error() | StateMachine.transition_error() | {:invalid_run, Ecto.Changeset.t()}
@@ -881,13 +885,7 @@ defmodule SquidMesh.Runs.Store do
           | {Run.t(), Run.status(), Run.status(), [progress_event()]}
           | no_return()
   defp execute_progress_operation(repo, run, _from_status, attrs, :update) do
-    case Persistence.update_run_record(
-           repo,
-           run,
-           Persistence.serialize_transition_attrs(
-             Map.take(attrs, [:context, :current_step, :last_error])
-           )
-         ) do
+    case update_run_progress(repo, run, attrs) do
       {:ok, updated_run} ->
         updated_run
 
@@ -899,11 +897,7 @@ defmodule SquidMesh.Runs.Store do
   defp execute_progress_operation(repo, run, from_status, attrs, {:transition, to_status}) do
     with {:ok, _next_status} <- StateMachine.transition(from_status, to_status),
          {:ok, updated_run} <-
-           Persistence.update_run_record(
-             repo,
-             run,
-             Persistence.transition_changeset_attrs(to_status, attrs)
-           ) do
+           transition_run_progress(repo, run, to_status, attrs) do
       {updated_run, from_status, to_status}
     else
       {:error, reason} -> repo.rollback(reason)
@@ -911,14 +905,7 @@ defmodule SquidMesh.Runs.Store do
   end
 
   defp execute_progress_operation(repo, run, _from_status, attrs, {:dispatch, dispatch_fun}) do
-    with {:ok, updated_run} <-
-           Persistence.update_run_record(
-             repo,
-             run,
-             Persistence.serialize_transition_attrs(
-               Map.take(attrs, [:context, :current_step, :last_error])
-             )
-           ),
+    with {:ok, updated_run} <- update_run_progress(repo, run, attrs),
          {:ok, dispatch_result} <- dispatch_fun.(updated_run) do
       append_progress_events(updated_run, dispatch_result)
     else
@@ -950,14 +937,7 @@ defmodule SquidMesh.Runs.Store do
          {:transition_or_dispatch, to_status, dispatch_fun}
        ) do
     if from_status == to_status do
-      with {:ok, updated_run} <-
-             Persistence.update_run_record(
-               repo,
-               run,
-               Persistence.serialize_transition_attrs(
-                 Map.take(attrs, [:context, :current_step, :last_error])
-               )
-             ),
+      with {:ok, updated_run} <- update_run_progress(repo, run, attrs),
            {:ok, dispatch_result} <- dispatch_fun.(updated_run) do
         append_progress_events(updated_run, dispatch_result)
       else
@@ -966,11 +946,7 @@ defmodule SquidMesh.Runs.Store do
     else
       with {:ok, _next_status} <- StateMachine.transition(from_status, to_status),
            {:ok, updated_run} <-
-             Persistence.update_run_record(
-               repo,
-               run,
-               Persistence.transition_changeset_attrs(to_status, attrs)
-             ),
+             transition_run_progress(repo, run, to_status, attrs),
            {:ok, dispatch_result} <- dispatch_fun.(updated_run) do
         append_transition_events(updated_run, from_status, to_status, dispatch_result)
       else
@@ -1036,11 +1012,7 @@ defmodule SquidMesh.Runs.Store do
        ) do
     with {:ok, _next_status} <- StateMachine.transition(from_status, to_status),
          {:ok, updated_run} <-
-           Persistence.update_run_record(
-             repo,
-             run,
-             Persistence.transition_changeset_attrs(to_status, attrs)
-           ) do
+           transition_run_progress(repo, run, to_status, attrs) do
       dispatch_transitioned_run(
         repo,
         updated_run,
@@ -1072,14 +1044,48 @@ defmodule SquidMesh.Runs.Store do
   end
 
   defp update_run_progress(repo, run, attrs) do
-    Persistence.update_run_record(
-      repo,
-      run,
-      Persistence.serialize_transition_attrs(
-        Map.take(attrs, [:context, :current_step, :last_error])
-      )
-    )
+    with {:ok, updated_run} <-
+           Persistence.update_run_record(
+             repo,
+             run,
+             Persistence.serialize_transition_attrs(
+               Map.take(attrs, [:context, :current_step, :last_error])
+             )
+           ),
+         :ok <- record_step_transition(repo, attrs) do
+      {:ok, updated_run}
+    end
   end
+
+  defp transition_run_progress(repo, run, to_status, attrs) do
+    with {:ok, updated_run} <-
+           Persistence.update_run_record(
+             repo,
+             run,
+             Persistence.transition_changeset_attrs(to_status, attrs)
+           ),
+         :ok <- record_step_transition(repo, attrs) do
+      {:ok, updated_run}
+    end
+  end
+
+  defp record_step_transition(repo, %{
+         step_transition: %{step_run_id: step_run_id, transition: transition}
+       })
+       when is_binary(step_run_id) and is_map(transition) do
+    StepRun
+    |> where(
+      [step_run],
+      step_run.id == ^step_run_id and step_run.status in ["completed", "failed"]
+    )
+    |> repo.update_all(set: [transition: transition, updated_at: DateTime.utc_now()])
+    |> case do
+      {1, _rows} -> :ok
+      {0, _rows} -> {:error, :not_found}
+    end
+  end
+
+  defp record_step_transition(_repo, _attrs), do: :ok
 
   defp dispatch_or_fail(repo, updated_run, from_status, dispatch_fun, failure_attrs_fun) do
     case dispatch_fun.(updated_run) do

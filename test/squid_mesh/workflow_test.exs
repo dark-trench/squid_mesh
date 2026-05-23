@@ -2294,6 +2294,248 @@ defmodule SquidMesh.WorkflowTest do
            ]
   end
 
+  test "supports conditional transitions with an unconditional fallback" do
+    module =
+      compile_module("""
+      defmodule WorkflowWithConditionalTransitions do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step :classify, WorkflowWithConditionalTransitions.Classify
+          step :auto_approve, WorkflowWithConditionalTransitions.AutoApprove
+          step :manual_review, WorkflowWithConditionalTransitions.ManualReview
+
+          transition :classify,
+            on: :ok,
+            to: :auto_approve,
+            condition: [path: [:routing, :decision], equals: "auto"]
+
+          transition :classify, on: :ok, to: :manual_review
+          transition :auto_approve, on: :ok, to: :complete
+          transition :manual_review, on: :ok, to: :complete
+        end
+      end
+      """)
+
+    assert module.workflow_definition().transitions == [
+             %{
+               from: :classify,
+               on: :ok,
+               to: :auto_approve,
+               condition: %{path: [:routing, :decision], equals: "auto"}
+             },
+             %{from: :classify, on: :ok, to: :manual_review},
+             %{from: :auto_approve, on: :ok, to: :complete},
+             %{from: :manual_review, on: :ok, to: :complete}
+           ]
+
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(module)
+
+    assert [
+             %{
+               from: :classify,
+               on: :ok,
+               to: :auto_approve,
+               condition: %{path: [:routing, :decision], equals: "auto"}
+             },
+             %{from: :classify, on: :ok, to: :manual_review}
+             | _remaining
+           ] = spec.transitions
+
+    assert {:ok, %{to: :auto_approve}} =
+             SquidMesh.Workflow.Definition.transition(
+               module.workflow_definition(),
+               :classify,
+               :ok,
+               %{routing: %{decision: "auto"}}
+             )
+
+    assert {:ok, %{to: :manual_review}} =
+             SquidMesh.Workflow.Definition.transition(
+               module.workflow_definition(),
+               :classify,
+               :ok,
+               %{routing: %{decision: "manual"}}
+             )
+  end
+
+  test "accepts JSON round-tripped condition paths in workflow specs" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    spec = %{
+      spec
+      | transitions: [
+          %{
+            from: :load_invoice,
+            on: :ok,
+            to: :send_email,
+            condition: %{"path" => ["load_invoice"], "equals" => "daily"}
+          },
+          %{from: :send_email, on: :ok, to: :record_delivery},
+          %{from: :record_delivery, on: :ok, to: :complete}
+        ]
+    }
+
+    assert :ok = SquidMesh.Workflow.validate_spec(spec)
+  end
+
+  test "rejects conditions with non-JSON values" do
+    assert_raise ArgumentError, "invalid transition condition", fn ->
+      compile_module("""
+      defmodule WorkflowWithAtomConditionalValue do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step :classify, WorkflowWithAtomConditionalValue.Classify
+          step :auto_approve, WorkflowWithAtomConditionalValue.AutoApprove
+
+          transition :classify,
+            on: :ok,
+            to: :auto_approve,
+            condition: [path: [:routing, :decision], equals: :auto]
+        end
+      end
+      """)
+    end
+  end
+
+  test "returns structured errors for malformed list conditions in workflow specs" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    spec = %{
+      spec
+      | transitions: [
+          %{
+            from: :load_invoice,
+            on: :ok,
+            to: :send_email,
+            condition: ["path"]
+          },
+          %{from: :send_email, on: :ok, to: :record_delivery},
+          %{from: :record_delivery, on: :ok, to: :complete}
+        ]
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} = SquidMesh.Workflow.validate_spec(spec)
+
+    assert Enum.any?(errors, fn error ->
+             match?(
+               %{
+                 path: [:transitions, 0, :condition],
+                 code: :invalid_transition_condition,
+                 message: "transition from :load_invoice defines an invalid condition"
+               },
+               error
+             )
+           end)
+  end
+
+  test "evaluates conditional transitions before the fallback even when fallback is declared first" do
+    module =
+      compile_module("""
+      defmodule WorkflowWithEarlyConditionalFallback do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step :classify, WorkflowWithEarlyConditionalFallback.Classify
+          step :auto_approve, WorkflowWithEarlyConditionalFallback.AutoApprove
+          step :manual_review, WorkflowWithEarlyConditionalFallback.ManualReview
+
+          transition :classify, on: :ok, to: :manual_review
+
+          transition :classify,
+            on: :ok,
+            to: :auto_approve,
+            condition: [path: [:routing, :decision], equals: "auto"]
+
+          transition :auto_approve, on: :ok, to: :complete
+          transition :manual_review, on: :ok, to: :complete
+        end
+      end
+      """)
+
+    assert {:ok, %{to: :auto_approve}} =
+             SquidMesh.Workflow.Definition.transition(
+               module.workflow_definition(),
+               :classify,
+               :ok,
+               %{routing: %{decision: "auto"}}
+             )
+  end
+
+  test "rejects duplicate conditional transitions for the same outcome" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithDuplicateConditionalTransitions do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step :classify, WorkflowWithDuplicateConditionalTransitions.Classify
+          step :auto_approve, WorkflowWithDuplicateConditionalTransitions.AutoApprove
+          step :fast_track, WorkflowWithDuplicateConditionalTransitions.FastTrack
+
+          transition :classify,
+            on: :ok,
+            to: :auto_approve,
+            condition: [path: [:routing, :decision], equals: "auto"]
+
+          transition :classify,
+            on: :ok,
+            to: :fast_track,
+            condition: [path: [:routing, :decision], equals: "auto"]
+        end
+      end
+      """,
+      "duplicate transition declared from :classify on outcome :ok"
+    )
+  end
+
+  test "rejects conditional transitions from manual built-in steps" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithConditionalApprovalTransition do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          approval_step :wait_for_review
+          step :record_approval, WorkflowWithConditionalApprovalTransition.RecordApproval
+          step :record_rejection, WorkflowWithConditionalApprovalTransition.RecordRejection
+
+          transition :wait_for_review,
+            on: :ok,
+            to: :record_approval,
+            condition: [path: [:approval, :decision], equals: "approved"]
+
+          transition :wait_for_review, on: :error, to: :record_rejection
+          transition :record_approval, on: :ok, to: :complete
+          transition :record_rejection, on: :ok, to: :complete
+        end
+      end
+      """,
+      "transition from built-in manual step :wait_for_review cannot define a condition"
+    )
+  end
+
   test "supports first-class approval step declarations" do
     module =
       compile_module("""

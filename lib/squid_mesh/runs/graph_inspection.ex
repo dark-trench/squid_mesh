@@ -126,6 +126,7 @@ defmodule SquidMesh.Runs.GraphInspection do
       output: detail(include_details?, step_state.output),
       error: detail(include_details?, step_state.last_error),
       recovery: detail(include_details?, step_state.recovery),
+      transition: step_state.transition,
       manual_state: detail(include_details?, runtime_manual_state(run, node_id)),
       attempts:
         detail(include_details?, Enum.map(step_state.attempts || [], &runtime_attempt/1), [])
@@ -179,6 +180,11 @@ defmodule SquidMesh.Runs.GraphInspection do
         input: detail(include_details?, latest_attempt_value(attempts, :input)),
         output: detail(include_details?, latest_attempt_value(attempts, :result)),
         error: detail(include_details?, latest_attempt_value(attempts, :error)),
+        transition:
+          Definition.deserialize_transition_decision(
+            definition,
+            latest_attempt_value(attempts, :transition)
+          ),
         manual_state: detail(include_details?, snapshot_manual_state(snapshot, node_id)),
         attempts: detail(include_details?, Enum.map(attempts, &snapshot_attempt/1), [])
       }
@@ -258,31 +264,81 @@ defmodule SquidMesh.Runs.GraphInspection do
   defp transition_edges(definition, nodes) do
     nodes_by_id = Map.new(nodes, &{&1.id, &1})
 
-    Enum.map(definition.transitions, fn transition ->
+    definition.transitions
+    |> Enum.with_index()
+    |> Enum.map(fn {transition, index} ->
       from = normalize_id(transition.from)
       to = normalize_id(transition.to)
       outcome = transition.on
+      from_node = Map.get(nodes_by_id, from)
+      conditional_group? = conditional_transition_group?(definition.transitions, transition)
 
       %Edge{
-        id: Enum.join([from, outcome, to], ":"),
+        id: transition_edge_id(from, outcome, to, transition, index),
         from: from,
         to: to,
         type: :transition,
         outcome: outcome,
+        condition: Map.get(transition, :condition),
         recovery: Map.get(transition, :recovery),
-        status: transition_edge_status(Map.get(nodes_by_id, from), outcome)
+        status: transition_edge_status(from_node, transition, conditional_group?)
       }
     end)
   end
 
-  defp transition_edge_status(nil, _outcome), do: :pending
-  defp transition_edge_status(%Node{status: :completed}, :ok), do: :selected
-  defp transition_edge_status(%Node{status: :failed}, :error), do: :selected
+  defp transition_edge_id(from, outcome, to, transition, index) do
+    [from, outcome, to, transition_condition_id(Map.get(transition, :condition), index)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(":")
+  end
 
-  defp transition_edge_status(%Node{status: status}, _outcome)
+  defp transition_condition_id(nil, _index), do: nil
+
+  defp transition_condition_id(_condition, index) do
+    "condition:#{index}"
+  end
+
+  defp conditional_transition_group?(transitions, transition) do
+    Enum.any?(
+      transitions,
+      &(&1.from == transition.from and &1.on == transition.on and Map.has_key?(&1, :condition))
+    )
+  end
+
+  defp transition_edge_status(nil, _transition, _conditional_group?), do: :pending
+
+  defp transition_edge_status(%Node{transition: %{} = selected}, transition, _conditional_group?) do
+    if selected_transition?(selected, transition), do: :selected, else: :skipped
+  end
+
+  defp transition_edge_status(%Node{status: :completed}, %{on: :ok}, true), do: :pending
+  defp transition_edge_status(%Node{status: :failed}, %{on: :error}, true), do: :pending
+
+  defp transition_edge_status(%Node{status: :completed}, %{on: :ok}, false), do: :selected
+  defp transition_edge_status(%Node{status: :failed}, %{on: :error}, false), do: :selected
+
+  defp transition_edge_status(%Node{status: status}, _transition, _conditional_group?)
        when status in [:completed, :failed], do: :skipped
 
-  defp transition_edge_status(%Node{}, _outcome), do: :pending
+  defp transition_edge_status(%Node{}, _transition, _conditional_group?), do: :pending
+
+  defp selected_transition?(selected, transition) do
+    normalize_id(Map.get(selected, :from)) == normalize_id(transition.from) and
+      normalize_outcome(Map.get(selected, :on)) == transition.on and
+      normalize_id(Map.get(selected, :to)) == normalize_id(transition.to) and
+      normalize_condition(Map.get(selected, :condition)) ==
+        normalize_condition(Map.get(transition, :condition))
+  end
+
+  defp normalize_outcome(outcome) when is_atom(outcome), do: outcome
+  defp normalize_outcome("ok"), do: :ok
+  defp normalize_outcome("error"), do: :error
+  defp normalize_outcome(outcome), do: outcome
+
+  defp normalize_condition(nil), do: nil
+
+  defp normalize_condition(condition),
+    do: SquidMesh.Workflow.TransitionCondition.serialize(condition)
 
   defp dependency_edges(definition, nodes) do
     nodes_by_id = Map.new(nodes, &{&1.id, &1})

@@ -114,6 +114,39 @@ The spec is an Elixir data representation with atom keys and module atoms:
 }
 ```
 
+Conditional transitions use the same spec shape. A workflow editor can render
+the branch as edge metadata without inspecting step modules:
+
+```elixir
+transition :classify,
+  on: :ok,
+  to: :auto_approve,
+  condition: [path: [:routing, :decision], equals: "auto"]
+
+transition :classify, on: :ok, to: :manual_review
+```
+
+The normalized spec exposes the condition as data:
+
+```elixir
+%SquidMesh.Workflow.Spec{
+  transitions: [
+    %{
+      from: :classify,
+      on: :ok,
+      to: :auto_approve,
+      condition: %{path: [:routing, :decision], equals: "auto"}
+    },
+    %{from: :classify, on: :ok, to: :manual_review}
+  ]
+}
+```
+
+At runtime, Squid Mesh evaluates conditional transitions in declaration order.
+The first matching condition wins; an unconditional transition is the fallback.
+Condition `equals` values must be JSON-safe values because the selected route is
+persisted in durable run history.
+
 Invalid specs return structured errors:
 
 ```elixir
@@ -429,6 +462,26 @@ The returned shape is stable across executors:
   ]
 }
 ```
+
+Conditional transition edges include their condition and use a deterministic
+edge id that distinguishes multiple `from` and `on` edges within the same
+workflow spec:
+
+```elixir
+%SquidMesh.Runs.GraphInspection.Edge{
+  id: "classify:ok:auto_approve:condition:0",
+  from: "classify",
+  to: "auto_approve",
+  type: :transition,
+  outcome: :ok,
+  condition: %{path: [:routing, :decision], equals: "auto"},
+  status: :selected
+}
+```
+
+Completed steps also persist the selected transition decision. Editors can use
+that durable fact to explain why one branch was selected and sibling branches
+were skipped after a restart or journal replay.
 
 By default, graph inspection returns topology, run status, node status, edge
 status, active node ids, and sanitized projection anomalies. `current_node_id`
@@ -845,6 +898,7 @@ Supported today:
 
 - one trigger per workflow
 - sequential transitions with explicit `:ok` and `:error` outcomes
+- conditional transition branches with an unconditional fallback
 - dependency-based joins with `after: [...]`
 - durable retries and replay
 - built-in `:wait`, `:log`, `:pause`, and `:approval` steps
@@ -852,6 +906,6 @@ Supported today:
 Not implemented today:
 
 - parallel dispatch of multiple ready steps
-- conditional branching beyond transition outcomes
+- deferred continuation decisions
 - dynamic cron registration after boot
 - custom reclaim logic for interrupted in-flight step ownership

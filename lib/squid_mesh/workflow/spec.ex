@@ -28,7 +28,7 @@ defmodule SquidMesh.Workflow.Spec do
     triggers: [:name, :type, :config, :payload],
     payload: [:name, :type, :opts],
     steps: [:name, :module, :opts, :metadata],
-    transitions: [:from, :on, :to, :recovery],
+    transitions: [:from, :on, :to, :condition, :recovery],
     retries: [:step, :opts]
   }
   @allowed_trigger_types [:manual, :cron]
@@ -780,6 +780,7 @@ defmodule SquidMesh.Workflow.Spec do
            Keyword.keyword?(field(step, :opts) || []) do
         acc
         |> validate_built_in_step(step, index)
+        |> validate_manual_step_transition_conditions(step, index, transitions)
         |> validate_approval_transitions(step, index, transitions)
       else
         acc
@@ -898,6 +899,34 @@ defmodule SquidMesh.Workflow.Spec do
         )
         | errors
       ]
+    else
+      errors
+    end
+  end
+
+  defp validate_manual_step_transition_conditions(errors, step, index, transitions) do
+    if field(step, :module) in [:pause, :approval] do
+      name = field(step, :name)
+
+      conditioned? =
+        Enum.any?(transitions, fn transition ->
+          is_map(transition) and field(transition, :from) == name and
+            not is_nil(field(transition, :condition))
+        end)
+
+      if conditioned? do
+        [
+          error(
+            [:steps, index],
+            :manual_step_transition_condition,
+            "transition from built-in manual step #{inspect(name)} cannot define a condition",
+            %{step: name}
+          )
+          | errors
+        ]
+      else
+        errors
+      end
     else
       errors
     end
@@ -1034,6 +1063,7 @@ defmodule SquidMesh.Workflow.Spec do
         reduce_acc
         |> validate_transition_source(transition, index, step_names)
         |> validate_transition_outcome(transition, index)
+        |> validate_transition_condition(transition, index)
         |> validate_transition_recovery(transition, index)
         |> validate_transition_target(transition, index, step_names)
       end)
@@ -1052,10 +1082,11 @@ defmodule SquidMesh.Workflow.Spec do
   end
 
   defp validate_duplicate_transition(seen, errors, transition, index) when is_map(transition) do
-    key = {field(transition, :from), field(transition, :on)}
+    key =
+      {field(transition, :from), field(transition, :on), transition_condition_key(transition)}
 
     if MapSet.member?(seen, key) do
-      {from, on} = key
+      {from, on, _condition} = key
 
       {
         seen,
@@ -1075,6 +1106,13 @@ defmodule SquidMesh.Workflow.Spec do
   end
 
   defp validate_duplicate_transition(seen, errors, _transition, _index), do: {seen, errors}
+
+  defp transition_condition_key(transition) do
+    case field(transition, :condition) do
+      nil -> :unconditional
+      condition -> {:condition, SquidMesh.Workflow.TransitionCondition.serialize(condition)}
+    end
+  end
 
   defp validate_dependency_transitions(errors, steps, transitions) do
     if dependency_mode?(steps) and transitions != [] do
@@ -1145,6 +1183,32 @@ defmodule SquidMesh.Workflow.Spec do
   end
 
   defp validate_transition_recovery(errors, _transition, _index), do: errors
+
+  defp validate_transition_condition(errors, transition, index) when is_map(transition) do
+    condition = field(transition, :condition)
+    from = field(transition, :from)
+
+    cond do
+      is_nil(condition) ->
+        errors
+
+      match?({:ok, _condition}, SquidMesh.Workflow.TransitionCondition.normalize(condition)) ->
+        errors
+
+      true ->
+        [
+          error(
+            [:transitions, index, :condition],
+            :invalid_transition_condition,
+            "transition from #{inspect(from)} defines an invalid condition",
+            %{from: from, condition: condition}
+          )
+          | errors
+        ]
+    end
+  end
+
+  defp validate_transition_condition(errors, _transition, _index), do: errors
 
   defp has_transition?(transitions, from_step, outcome) do
     Enum.any?(transitions, fn

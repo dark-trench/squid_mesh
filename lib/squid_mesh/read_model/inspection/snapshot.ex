@@ -41,6 +41,7 @@ defmodule SquidMesh.ReadModel.Inspection.Snapshot do
           optional(:owner_id) => String.t(),
           optional(:lease_until) => DateTime.t(),
           optional(:result) => map(),
+          optional(:transition) => map(),
           optional(:error) => map(),
           required(:wakeup_emitted?) => boolean(),
           required(:applied?) => boolean()

@@ -9,6 +9,7 @@ defmodule SquidMesh.Workflow.Definition do
 
   @type built_in_step_kind :: :wait | :log | :pause | :approval
   @type transition_outcome :: :ok | :error
+  @type transition_condition :: SquidMesh.Workflow.TransitionCondition.t()
   @type step_input_mapping :: [atom()] | keyword([atom()])
   @type step_output_mapping :: atom()
   @type step_transaction_boundary :: :repo
@@ -28,6 +29,7 @@ defmodule SquidMesh.Workflow.Definition do
           required(:from) => atom(),
           required(:on) => transition_outcome(),
           required(:to) => transition_target(),
+          optional(:condition) => transition_condition(),
           optional(:recovery) => failure_recovery_strategy()
         }
   @type failure_recovery :: %{
@@ -340,6 +342,21 @@ defmodule SquidMesh.Workflow.Definition do
   end
 
   @doc """
+  Resolves the transition target for a step outcome using accumulated context.
+  """
+  @spec transition_target(t(), atom(), transition_outcome(), map()) ::
+          {:ok, transition_target()}
+          | {:error,
+             {:unknown_transition, atom(), atom()} | {:no_matching_transition, atom(), atom()}}
+  def transition_target(definition, from_step, outcome, context)
+      when is_atom(from_step) and is_atom(outcome) and is_map(context) do
+    case transition(definition, from_step, outcome, context) do
+      {:ok, %{to: to_step}} -> {:ok, to_step}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
   Resolves the full transition metadata for one step outcome.
   """
   @spec transition(t(), atom(), transition_outcome()) ::
@@ -351,6 +368,72 @@ defmodule SquidMesh.Workflow.Definition do
       nil -> {:error, {:unknown_transition, from_step, outcome}}
     end
   end
+
+  @doc """
+  Resolves the selected transition metadata for one step outcome and context.
+  """
+  @spec transition(t(), atom(), transition_outcome(), map()) ::
+          {:ok, transition()}
+          | {:error,
+             {:unknown_transition, atom(), atom()} | {:no_matching_transition, atom(), atom()}}
+  def transition(definition, from_step, outcome, context)
+      when is_atom(from_step) and is_atom(outcome) and is_map(context) do
+    matching_outcome =
+      Enum.filter(definition.transitions, &(&1.from == from_step and &1.on == outcome))
+
+    conditional_transitions = Enum.filter(matching_outcome, &Map.has_key?(&1, :condition))
+    fallback_transition = Enum.find(matching_outcome, &(not Map.has_key?(&1, :condition)))
+
+    selectable_transitions =
+      case fallback_transition do
+        nil -> conditional_transitions
+        fallback -> Enum.concat(conditional_transitions, [fallback])
+      end
+
+    case Enum.find(selectable_transitions, &transition_matches?(&1, context)) do
+      %{} = transition -> {:ok, transition}
+      nil when matching_outcome == [] -> {:error, {:unknown_transition, from_step, outcome}}
+      nil -> {:error, {:no_matching_transition, from_step, outcome}}
+    end
+  end
+
+  @doc false
+  @spec serialize_transition_decision(transition() | nil) :: map() | nil
+  def serialize_transition_decision(nil), do: nil
+
+  def serialize_transition_decision(%{} = transition) do
+    %{
+      "from" => serialize_step(Map.fetch!(transition, :from)),
+      "on" => Atom.to_string(Map.fetch!(transition, :on)),
+      "to" => serialize_transition_target(Map.fetch!(transition, :to))
+    }
+    |> maybe_put_serialized_condition(Map.get(transition, :condition))
+    |> maybe_put_serialized_recovery(Map.get(transition, :recovery))
+  end
+
+  @doc false
+  @spec deserialize_transition_decision(t() | nil, map() | nil) :: map() | nil
+  def deserialize_transition_decision(_definition, nil), do: nil
+
+  def deserialize_transition_decision(definition, transition) when is_map(transition) do
+    from = Map.get(transition, :from) || Map.get(transition, "from")
+    on = Map.get(transition, :on) || Map.get(transition, "on")
+    to = Map.get(transition, :to) || Map.get(transition, "to")
+
+    %{
+      from: deserialize_step(definition, from),
+      on: deserialize_transition_outcome(on),
+      to: deserialize_transition_target(definition, to)
+    }
+    |> maybe_put_deserialized_condition(
+      Map.get(transition, :condition) || Map.get(transition, "condition")
+    )
+    |> maybe_put_deserialized_recovery(
+      Map.get(transition, :recovery) || Map.get(transition, "recovery")
+    )
+  end
+
+  def deserialize_transition_decision(_definition, _transition), do: nil
 
   @doc """
   Returns the explicit failure recovery route for a step when one was declared.
@@ -592,8 +675,9 @@ defmodule SquidMesh.Workflow.Definition do
   @doc """
   Deserializes a persisted step name back to the declared workflow step.
   """
-  @spec deserialize_step(t(), String.t() | nil) :: atom() | String.t() | nil
+  @spec deserialize_step(t() | nil, String.t() | nil) :: atom() | String.t() | nil
   def deserialize_step(_definition, nil), do: nil
+  def deserialize_step(nil, step_name) when is_binary(step_name), do: step_name
 
   def deserialize_step(definition, step_name) when is_binary(step_name) do
     Enum.find_value(definition.steps, step_name, fn
@@ -601,6 +685,64 @@ defmodule SquidMesh.Workflow.Definition do
         if Atom.to_string(step) == step_name, do: step, else: false
     end)
   end
+
+  defp transition_matches?(%{condition: condition}, context) do
+    SquidMesh.Workflow.TransitionCondition.matches?(context, condition)
+  end
+
+  defp transition_matches?(%{}, _context), do: true
+
+  defp maybe_put_serialized_condition(serialized, nil), do: serialized
+
+  defp maybe_put_serialized_condition(serialized, condition) do
+    case SquidMesh.Workflow.TransitionCondition.serialize(condition) do
+      nil -> serialized
+      condition -> Map.put(serialized, "condition", condition)
+    end
+  end
+
+  defp maybe_put_serialized_recovery(serialized, nil), do: serialized
+
+  defp maybe_put_serialized_recovery(serialized, recovery) do
+    Map.put(serialized, "recovery", Atom.to_string(recovery))
+  end
+
+  defp serialize_transition_target(:complete), do: "__complete__"
+  defp serialize_transition_target(step) when is_atom(step), do: serialize_step(step)
+
+  defp deserialize_transition_outcome(outcome) when is_atom(outcome), do: outcome
+  defp deserialize_transition_outcome("ok"), do: :ok
+  defp deserialize_transition_outcome("error"), do: :error
+  defp deserialize_transition_outcome(outcome), do: outcome
+
+  defp deserialize_transition_target(_definition, target)
+       when target in [:complete, "__complete__", "complete"],
+       do: :complete
+
+  defp deserialize_transition_target(definition, target), do: deserialize_step(definition, target)
+
+  defp maybe_put_deserialized_condition(transition, nil), do: transition
+
+  defp maybe_put_deserialized_condition(transition, condition) do
+    case SquidMesh.Workflow.TransitionCondition.deserialize(condition) do
+      nil -> transition
+      condition -> Map.put(transition, :condition, condition)
+    end
+  end
+
+  defp maybe_put_deserialized_recovery(transition, nil), do: transition
+
+  defp maybe_put_deserialized_recovery(transition, recovery) when is_binary(recovery) do
+    Map.put(transition, :recovery, String.to_existing_atom(recovery))
+  rescue
+    ArgumentError -> transition
+  end
+
+  defp maybe_put_deserialized_recovery(transition, recovery) when is_atom(recovery) do
+    Map.put(transition, :recovery, recovery)
+  end
+
+  defp maybe_put_deserialized_recovery(transition, _recovery), do: transition
 
   defp invalid_payload_type(payload, field, acc) do
     case Map.fetch(payload, field.name) do
@@ -622,7 +764,8 @@ defmodule SquidMesh.Workflow.Definition do
             retry: Keyword.get(step.opts, :retry)
           }
         end),
-      transitions: Enum.map(definition.transitions, &Map.take(&1, [:from, :on, :to, :recovery])),
+      transitions:
+        Enum.map(definition.transitions, &Map.take(&1, [:from, :on, :to, :condition, :recovery])),
       retries: definition.retries
     }
   end

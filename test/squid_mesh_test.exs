@@ -90,6 +90,67 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule JournalConditionalWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :conditional_route do
+        manual()
+
+        payload do
+          field :account_id, :string
+          field :decision, :string
+        end
+      end
+
+      step :classify, JournalConditionalWorkflow.Classify
+      step :auto_approve, JournalConditionalWorkflow.AutoApprove
+      step :manual_review, JournalConditionalWorkflow.ManualReview
+
+      transition :classify,
+        on: :ok,
+        to: :auto_approve,
+        condition: [path: [:routing, :decision], equals: "auto"]
+
+      transition :classify, on: :ok, to: :manual_review
+      transition :auto_approve, on: :ok, to: :complete
+      transition :manual_review, on: :ok, to: :complete
+    end
+  end
+
+  defmodule JournalAccumulatedConditionalWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :accumulated_conditional_route do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :load_profile, JournalAccumulatedConditionalWorkflow.LoadProfile
+
+      step :classify, JournalAccumulatedConditionalWorkflow.Classify,
+        input: [account_id: [:account_id]]
+
+      step :auto_approve, JournalAccumulatedConditionalWorkflow.AutoApprove
+      step :manual_review, JournalAccumulatedConditionalWorkflow.ManualReview
+
+      transition :load_profile, on: :ok, to: :classify
+
+      transition :classify,
+        on: :ok,
+        to: :auto_approve,
+        condition: [path: [:profile, :tier], equals: "trusted"]
+
+      transition :classify, on: :ok, to: :manual_review
+      transition :auto_approve, on: :ok, to: :complete
+      transition :manual_review, on: :ok, to: :complete
+    end
+  end
+
   defmodule JournalFailureWorkflow do
     use SquidMesh.Workflow
 
@@ -125,6 +186,29 @@ defmodule SquidMeshTest do
       transition :fail_gateway, on: :ok, to: :complete
       transition :fail_gateway, on: :error, to: :notify_failure
       transition :notify_failure, on: :ok, to: :complete
+    end
+  end
+
+  defmodule JournalConditionalErrorCompleteWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual_error_complete do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :fail_gateway, JournalConditionalErrorCompleteWorkflow.FailGateway
+
+      transition :fail_gateway, on: :ok, to: :complete
+
+      transition :fail_gateway,
+        on: :error,
+        to: :complete,
+        condition: [path: [:account_id], equals: "acct_123"]
     end
   end
 
@@ -336,6 +420,83 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule JournalConditionalWorkflow.Classify do
+    use Jido.Action,
+      name: "classify",
+      description: "Classifies a conditional journal route",
+      schema: [
+        account_id: [type: :string, required: true],
+        decision: [type: :string, required: true]
+      ]
+
+    @impl Jido.Action
+    def run(%{decision: decision}, _context) do
+      {:ok, %{routing: %{decision: decision}}}
+    end
+  end
+
+  defmodule JournalConditionalWorkflow.AutoApprove do
+    use Jido.Action,
+      name: "auto_approve",
+      description: "Records automatic approval",
+      schema: [routing: [type: :map, required: true]]
+
+    @impl Jido.Action
+    def run(_input, _context), do: {:ok, %{approval: %{mode: "auto"}}}
+  end
+
+  defmodule JournalConditionalWorkflow.ManualReview do
+    use Jido.Action,
+      name: "manual_review",
+      description: "Records manual review",
+      schema: [routing: [type: :map, required: true]]
+
+    @impl Jido.Action
+    def run(_input, _context), do: {:ok, %{approval: %{mode: "manual"}}}
+  end
+
+  defmodule JournalAccumulatedConditionalWorkflow.LoadProfile do
+    use Jido.Action,
+      name: "load_profile",
+      description: "Loads account profile data used by a later branch",
+      schema: [account_id: [type: :string, required: true]]
+
+    @impl Jido.Action
+    def run(%{account_id: account_id}, _context) do
+      {:ok, %{profile: %{account_id: account_id, tier: "trusted"}}}
+    end
+  end
+
+  defmodule JournalAccumulatedConditionalWorkflow.Classify do
+    use Jido.Action,
+      name: "classify_accumulated",
+      description: "Returns no profile data so routing must use accumulated context",
+      schema: [account_id: [type: :string, required: true]]
+
+    @impl Jido.Action
+    def run(_input, _context), do: {:ok, %{routing: %{checked?: true}}}
+  end
+
+  defmodule JournalAccumulatedConditionalWorkflow.AutoApprove do
+    use Jido.Action,
+      name: "auto_approve_accumulated",
+      description: "Records automatic approval",
+      schema: [profile: [type: :map, required: true]]
+
+    @impl Jido.Action
+    def run(_input, _context), do: {:ok, %{approval: %{mode: "auto"}}}
+  end
+
+  defmodule JournalAccumulatedConditionalWorkflow.ManualReview do
+    use Jido.Action,
+      name: "manual_review_accumulated",
+      description: "Records manual review",
+      schema: [routing: [type: :map, required: true]]
+
+    @impl Jido.Action
+    def run(_input, _context), do: {:ok, %{approval: %{mode: "manual"}}}
+  end
+
   defmodule JournalFailureWorkflow.FailGateway do
     use Jido.Action,
       name: "fail_gateway",
@@ -377,6 +538,22 @@ defmodule SquidMeshTest do
          retryable?: false,
          account_id: account_id
        }}
+    end
+  end
+
+  defmodule JournalConditionalErrorCompleteWorkflow.FailGateway do
+    use Jido.Action,
+      name: "fail_gateway",
+      description: "Fails and routes to terminal completion",
+      schema: [account_id: [type: :string, required: true]]
+
+    @impl Jido.Action
+    def run(_params, context) do
+      if hook = :persistent_term.get(:journal_conditional_error_complete_conflict_hook, nil) do
+        hook.(context)
+      end
+
+      {:error, %{message: "gateway timeout", code: "gateway_timeout", retryable?: false}}
     end
   end
 
@@ -2764,6 +2941,227 @@ defmodule SquidMeshTest do
              ]
     end
 
+    test "execute_next/1 plans the journal successor selected by a transition condition" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalConditionalWorkflow,
+                 %{account_id: "acct_123", decision: "auto"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = progressed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert progressed_snapshot.run_id == started_snapshot.run_id
+      assert progressed_snapshot.status == :running
+
+      assert [%{step: "auto_approve", status: :available, input: successor_input}] =
+               progressed_snapshot.visible_attempts
+
+      assert successor_input.routing == %{decision: "auto"}
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+
+      assert %{
+               transition: %{
+                 "from" => "classify",
+                 "on" => "ok",
+                 "to" => "auto_approve",
+                 "condition" => %{"path" => ["routing", "decision"], "equals" => "auto"}
+               }
+             } =
+               run_entries
+               |> Enum.find(&(&1.type == :runnable_applied))
+               |> then(& &1.data)
+
+      assert {:ok, graph} =
+               SquidMesh.inspect_run_graph(started_snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert %{
+               {"classify", "auto_approve"} => :selected,
+               {"classify", "manual_review"} => :skipped
+             } =
+               graph.edges
+               |> Enum.filter(&(&1.from == "classify"))
+               |> Map.new(&{{&1.from, &1.to}, &1.status})
+
+      auto_edge = Enum.find(graph.edges, &(&1.from == "classify" and &1.to == "auto_approve"))
+      assert auto_edge.condition == %{path: [:routing, :decision], equals: "auto"}
+    end
+
+    test "execute_next/1 evaluates journal conditions against accumulated context" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalAccumulatedConditionalWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{reason: :attempt_visible}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %Snapshot{} = branched_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_2",
+                 claim_id: "claim_2",
+                 claim_token: "token_2",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert [%{step: "auto_approve", status: :available, input: successor_input}] =
+               branched_snapshot.visible_attempts
+
+      assert successor_input.profile == %{account_id: "acct_123", tier: "trusted"}
+
+      assert {:ok, graph} =
+               SquidMesh.inspect_run_graph(started_snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert %{
+               {"classify", "auto_approve"} => :selected,
+               {"classify", "manual_review"} => :skipped
+             } =
+               graph.edges
+               |> Enum.filter(&(&1.from == "classify"))
+               |> Map.new(&{{&1.from, &1.to}, &1.status})
+    end
+
+    test "execute_next/1 records selected conditional error transitions to complete" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalConditionalErrorCompleteWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = completed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert completed_snapshot.run_id == started_snapshot.run_id
+      assert completed_snapshot.status == :completed
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :run_terminal
+             ]
+
+      assert %{
+               transition: %{
+                 "from" => "fail_gateway",
+                 "on" => "error",
+                 "to" => "__complete__",
+                 "condition" => %{"path" => ["account_id"], "equals" => "acct_123"}
+               }
+             } =
+               run_entries
+               |> Enum.find(&(&1.type == :runnable_applied))
+               |> then(& &1.data)
+    end
+
+    test "execute_next/1 skips conditional error completion after a terminal conflict" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalConditionalErrorCompleteWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      parent = self()
+
+      :persistent_term.put(:journal_conditional_error_complete_conflict_hook, fn %{run_id: run_id} ->
+        assert run_id == started_snapshot.run_id
+        send(parent, :conditional_error_complete_conflict_hook_called)
+
+        append_read_model_run_entries([
+          read_model_entry!(:run_terminal, %{
+            run_id: run_id,
+            status: :cancelled,
+            occurred_at: @read_model_visible_at
+          })
+        ])
+      end)
+
+      try do
+        assert {:error, :terminal_run} =
+                 execute_journal_next(
+                   runtime: :journal,
+                   journal_storage: @read_model_storage,
+                   queue: @read_model_queue,
+                   owner_id: "worker_1",
+                   claim_id: "claim_1",
+                   claim_token: "token_1",
+                   now: @read_model_visible_at
+                 )
+
+        assert_receive :conditional_error_complete_conflict_hook_called
+      after
+        :persistent_term.erase(:journal_conditional_error_complete_conflict_hook)
+      end
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :run_terminal
+             ]
+    end
+
     test "execute_next/1 advances dependency workflows after prerequisites complete" do
       assert {:ok, %Snapshot{} = started_snapshot} =
                SquidMesh.start_run(
@@ -3591,6 +3989,20 @@ defmodule SquidMeshTest do
                )
 
       assert Enum.map(recovered_snapshot.visible_attempts, & &1.step) == ["notify_failure"]
+
+      assert {:ok, graph} =
+               SquidMesh.inspect_run_graph(started_snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert %{status: :selected} =
+               Enum.find(
+                 graph.edges,
+                 &(&1.from == "fail_gateway" and &1.to == "notify_failure")
+               )
 
       assert {:ok, %Snapshot{} = completed_snapshot} =
                execute_journal_next(

@@ -43,6 +43,7 @@ defmodule SquidMesh.Repo.Migrations.CreateSquidMeshSchema do
       add :recovery, :map
       add :resume, :map
       add :manual, :map
+      add :transition, :map
 
       timestamps(type: :utc_datetime_usec)
     end
