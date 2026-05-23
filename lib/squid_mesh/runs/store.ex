@@ -1078,7 +1078,7 @@ defmodule SquidMesh.Runs.Store do
       [step_run],
       step_run.id == ^step_run_id and step_run.status in ["completed", "failed"]
     )
-    |> repo.update_all(set: [transition: transition, updated_at: DateTime.utc_now()])
+    |> repo.update_all(set: [transition: transition, updated_at: DateTime.utc_now(:microsecond)])
     |> case do
       {1, _rows} -> :ok
       {0, _rows} -> {:error, :not_found}
