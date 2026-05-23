@@ -12,6 +12,7 @@ defmodule SquidMesh do
   alias SquidMesh.Run
   alias SquidMesh.Runs
   alias SquidMesh.Runs.Explanation
+  alias SquidMesh.Runs.GraphInspection
   alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.Journal.Executor
   alias SquidMesh.Runtime.Journal.Options
@@ -177,6 +178,29 @@ defmodule SquidMesh do
         :runtime_tables -> inspect_runtime_table_run(run_id, overrides)
         :read_model -> inspect_projected_run(run_id, overrides)
       end
+    end
+  end
+
+  @doc """
+  Fetches one workflow run as graph-oriented inspection data.
+
+  The graph projection preserves `inspect_run/2` as the factual run snapshot and
+  derives nodes and edges from that same durable state. By default this reads the
+  runtime tables. Pass `read_model: :read_model` with `journal_storage:` to
+  rebuild the graph from durable Jido journal entries instead.
+  """
+  @spec inspect_run_graph(String.t(), keyword()) ::
+          {:ok, GraphInspection.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | read_option_error()
+             | Config.config_error()
+             | Inspection.snapshot_error()}
+  def inspect_run_graph(run_id, overrides \\ []) do
+    with {:ok, read_model} <- read_model(overrides),
+         {:ok, inspection} <- inspect_graph_source(run_id, read_model, overrides) do
+      {:ok, graph_inspection(inspection, read_model, overrides)}
     end
   end
 
@@ -547,6 +571,29 @@ defmodule SquidMesh do
 
   defp inspect_projected_run(_run_id, _overrides) do
     {:error, {:invalid_option, {:run_id, :invalid}}}
+  end
+
+  defp inspect_graph_source(run_id, :runtime_tables, overrides) do
+    inspect_runtime_table_run(run_id, Keyword.put(overrides, :include_history, true))
+  end
+
+  defp inspect_graph_source(run_id, :read_model, overrides) do
+    inspect_projected_run(run_id, overrides)
+  end
+
+  defp graph_inspection(%Run{} = run, read_model, overrides) do
+    GraphInspection.from_run(run, graph_inspection_options(read_model, overrides))
+  end
+
+  defp graph_inspection(%Inspection.Snapshot{} = snapshot, read_model, overrides) do
+    GraphInspection.from_snapshot(snapshot, graph_inspection_options(read_model, overrides))
+  end
+
+  defp graph_inspection_options(read_model, overrides) do
+    [
+      source: read_model,
+      include_details: Keyword.get(overrides, :include_history, false)
+    ]
   end
 
   defp explain_projected_run(run_id, overrides) do
