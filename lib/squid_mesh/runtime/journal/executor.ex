@@ -1303,7 +1303,17 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       {:ok, output, extras} when is_map(output) and is_list(extras) -> {:ok, output}
       {:ok, output, _extras} when is_map(output) -> {:ok, output}
       {:error, reason} -> {:error, reason}
+      other -> unexpected_exec_result(other)
     end
+  end
+
+  defp unexpected_exec_result(result) do
+    {:error,
+     %{
+       message: "unexpected Jido.Exec.run result",
+       retryable?: false,
+       result: inspect(result)
+     }}
   end
 
   defp action_input(action, input) do

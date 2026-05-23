@@ -28,10 +28,10 @@ defmodule SquidMesh.ReadModel.Inspection do
   @type snapshot_error ::
           :not_found
           | {:invalid_option,
-             {:now, term()}
-             | {:queue, term()}
-             | {:run_id, term()}
-             | {:opts, term()}
+             {:now, :invalid}
+             | {:queue, :invalid}
+             | {:run_id, :invalid}
+             | {:opts, :invalid}
              | {:option, atom()}}
           | term()
 
