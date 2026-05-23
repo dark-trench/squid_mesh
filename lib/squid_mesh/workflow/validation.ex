@@ -15,6 +15,8 @@ defmodule SquidMesh.Workflow.Validation do
   @built_in_step_kinds [:wait, :log, :pause, :approval]
   @log_levels [:debug, :info, :warning, :error]
 
+  alias SquidMesh.Workflow.InputMapping
+
   @doc """
   Validates a compiled workflow definition and raises a compile error when the
   declaration is invalid.
@@ -420,15 +422,12 @@ defmodule SquidMesh.Workflow.Validation do
       nil ->
         errors
 
-      input_mapping when is_list(input_mapping) ->
-        if input_mapping != [] and Enum.all?(input_mapping, &is_atom/1) do
+      input_mapping ->
+        if InputMapping.valid?(input_mapping) do
           errors
         else
           ["step #{inspect(name)} defines an invalid :input mapping" | errors]
         end
-
-      _other ->
-        ["step #{inspect(name)} defines an invalid :input mapping" | errors]
     end
   end
 

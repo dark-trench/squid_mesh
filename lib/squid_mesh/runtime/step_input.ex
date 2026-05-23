@@ -8,9 +8,10 @@ defmodule SquidMesh.Runtime.StepInput do
 
   alias SquidMesh.Run
   alias SquidMesh.Steps
+  alias SquidMesh.Workflow.InputMapping
 
   @type expected_step :: atom() | String.t() | nil
-  @type input_mapping :: [atom()] | nil
+  @type input_mapping :: InputMapping.t() | nil
 
   @doc false
   @spec deserialize_expected_step(expected_step()) ::
@@ -40,16 +41,35 @@ defmodule SquidMesh.Runtime.StepInput do
   @doc false
   @spec build_step_input(Run.t(), input_mapping()) :: map()
   def build_step_input(%Run{payload: payload, context: context}, input_mapping \\ nil) do
+    case resolve_step_input(%Run{payload: payload, context: context}, input_mapping) do
+      {:ok, input} -> input
+      {:error, reason} -> raise ArgumentError, "invalid step input mapping: #{inspect(reason)}"
+    end
+  end
+
+  @doc false
+  @spec resolve_step_input(Run.t(), input_mapping()) ::
+          {:ok, map()} | {:error, {:missing_input_path, map()} | {:invalid_input_mapping, term()}}
+  def resolve_step_input(%Run{payload: payload, context: context}, input_mapping \\ nil) do
     payload
     |> Kernel.||(%{})
     |> Map.merge(context || %{})
-    |> normalize_map_keys()
     |> apply_input_mapping(input_mapping)
   end
 
   @doc false
   @spec build_dependency_step_input(module(), Run.t(), input_mapping()) :: map()
-  def build_dependency_step_input(repo, %Run{id: run_id} = run, input_mapping \\ nil) do
+  def build_dependency_step_input(repo, %Run{} = run, input_mapping \\ nil) do
+    case resolve_dependency_step_input(repo, run, input_mapping) do
+      {:ok, input} -> input
+      {:error, reason} -> raise ArgumentError, "invalid step input mapping: #{inspect(reason)}"
+    end
+  end
+
+  @doc false
+  @spec resolve_dependency_step_input(module(), Run.t(), input_mapping()) ::
+          {:ok, map()} | {:error, {:missing_input_path, map()} | {:invalid_input_mapping, term()}}
+  def resolve_dependency_step_input(repo, %Run{id: run_id} = run, input_mapping \\ nil) do
     run
     |> build_step_input()
     |> merge_completed_outputs(Steps.Store.completed_outputs(repo, run_id))
@@ -77,10 +97,35 @@ defmodule SquidMesh.Runtime.StepInput do
     Enum.reduce(outputs, input, fn output, acc -> Map.merge(acc, normalize_map_keys(output)) end)
   end
 
-  defp apply_input_mapping(input, nil), do: input
+  @doc false
+  @spec apply_input_mapping(map(), input_mapping()) ::
+          {:ok, map()} | {:error, {:missing_input_path, map()} | {:invalid_input_mapping, term()}}
+  def apply_input_mapping(input, input_mapping) when is_map(input) do
+    input
+    |> normalize_map_keys()
+    |> InputMapping.apply(input_mapping)
+  end
 
-  defp apply_input_mapping(input, input_mapping) when is_list(input_mapping),
-    do: Map.take(input, input_mapping)
+  @doc false
+  @spec input_mapping_error?(term()) :: boolean()
+  def input_mapping_error?({:missing_input_path, details}) when is_map(details), do: true
+  def input_mapping_error?(_reason), do: false
+
+  @doc false
+  @spec input_mapping_error_to_map({:missing_input_path, map()}) :: map()
+  def input_mapping_error_to_map({:missing_input_path, details}) when is_map(details) do
+    %{
+      message: "missing mapped input path",
+      code: "missing_input_path",
+      target: to_error_segment(Map.fetch!(details, :target)),
+      path: Enum.map(Map.fetch!(details, :path), &to_error_segment/1),
+      missing_at: Enum.map(Map.fetch!(details, :missing_at), &to_error_segment/1),
+      retryable?: false
+    }
+  end
+
+  defp to_error_segment(segment) when is_atom(segment), do: Atom.to_string(segment)
+  defp to_error_segment(segment), do: to_string(segment)
 
   defp to_existing_atom(key) do
     String.to_existing_atom(key)

@@ -129,6 +129,34 @@ defmodule SquidMesh.Workflow.RunicPlannerTest do
     end
   end
 
+  defmodule PathMappedWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+          field :review, :map
+        end
+      end
+
+      step :load_account, LoadAccount,
+        input: [:account_id],
+        output: :draft
+
+      step :send_email, SendEmail,
+        input: [
+          account: [:draft, :account],
+          reviewer_id: [:review, :reviewer_id]
+        ]
+
+      transition :load_account, on: :ok, to: :send_email
+      transition :send_email, on: :ok, to: :complete
+    end
+  end
+
   defmodule ErrorRoutingWorkflow do
     use SquidMesh.Workflow
 
@@ -225,6 +253,43 @@ defmodule SquidMesh.Workflow.RunicPlannerTest do
              invoice_id: "inv_123",
              account: %{id: "acct_123"}
            }
+  end
+
+  test "plans named path mapped step inputs" do
+    {:ok, planner} = RunicPlanner.new(PathMappedWorkflow)
+
+    {:ok, planned, [load_account]} =
+      RunicPlanner.plan(planner, %{
+        account_id: "acct_123",
+        review: %{reviewer_id: "user_123"}
+      })
+
+    assert load_account.input == %{account_id: "acct_123"}
+
+    {:ok, planned_with_account} =
+      RunicPlanner.apply_result(planned, load_account, {:ok, %{account: %{id: "acct_123"}}})
+
+    {:ok, _planned, [send_email]} = RunicPlanner.plan(planned_with_account)
+
+    assert send_email.input == %{
+             account: %{id: "acct_123"},
+             reviewer_id: "user_123"
+           }
+  end
+
+  test "returns structured errors when named path mapped planner input is missing" do
+    {:ok, planner} = RunicPlanner.new(PathMappedWorkflow)
+
+    {:ok, planned, [load_account]} =
+      RunicPlanner.plan(planner, %{account_id: "acct_123"})
+
+    {:ok, planned_with_account} =
+      RunicPlanner.apply_result(planned, load_account, {:ok, %{account: %{id: "acct_123"}}})
+
+    assert {:error,
+            {:missing_input_path,
+             %{target: :reviewer_id, path: [:review, :reviewer_id], missing_at: [:review]}}} =
+             RunicPlanner.plan(planned_with_account)
   end
 
   test "routes successful and failed outcomes to their declared transition targets" do

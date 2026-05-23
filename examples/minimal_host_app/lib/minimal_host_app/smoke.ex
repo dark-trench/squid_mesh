@@ -121,6 +121,10 @@ defmodule MinimalHostApp.Smoke do
         raise "unexpected dependency inspection history"
       end
 
+      unless mapped_dependency_input?(history_run) do
+        raise "unexpected dependency mapped input"
+      end
+
       inspected_run
     else
       {:error, reason} ->
@@ -285,6 +289,22 @@ defmodule MinimalHostApp.Smoke do
   defp smoke_cron_signal_id do
     "minimal-host-app:smoke:daily_digest:#{System.unique_integer([:positive])}"
   end
+
+  defp mapped_dependency_input?(%SquidMesh.Run{step_runs: step_runs}) when is_list(step_runs) do
+    Enum.any?(step_runs, fn
+      %{step: :prepare_notification, input: input} ->
+        input == %{
+          account_id: "acct_dependency_demo",
+          invoice_id: "inv_dependency_demo",
+          account_tier: "standard"
+        }
+
+      _step_run ->
+        false
+    end)
+  end
+
+  defp mapped_dependency_input?(_run), do: false
 
   @spec run_cron_digest() :: :ok
   defp run_cron_digest do

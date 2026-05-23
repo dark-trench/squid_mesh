@@ -9,7 +9,7 @@ defmodule SquidMesh.Workflow.Definition do
 
   @type built_in_step_kind :: :wait | :log | :pause | :approval
   @type transition_outcome :: :ok | :error
-  @type step_input_mapping :: [atom()]
+  @type step_input_mapping :: [atom()] | keyword([atom()])
   @type step_output_mapping :: atom()
   @type step_transaction_boundary :: :repo
   @type payload_field :: %{name: atom(), type: atom(), opts: keyword()}
@@ -616,7 +616,7 @@ defmodule SquidMesh.Workflow.Definition do
           %{
             name: step.name,
             module: inspect(step.module),
-            input: canonical_atom_list(Keyword.get(step.opts, :input)),
+            input: canonical_input_mapping(Keyword.get(step.opts, :input)),
             output: Keyword.get(step.opts, :output),
             after: canonical_dependency_list(Keyword.get(step.opts, :after)),
             retry: Keyword.get(step.opts, :retry)
@@ -629,6 +629,16 @@ defmodule SquidMesh.Workflow.Definition do
 
   defp canonical_dependency_list(nil), do: []
   defp canonical_dependency_list(dependencies), do: canonical_atom_list(dependencies)
+
+  defp canonical_input_mapping(nil), do: nil
+
+  defp canonical_input_mapping(input_mapping) when is_list(input_mapping) do
+    if Keyword.keyword?(input_mapping) do
+      Enum.sort_by(input_mapping, fn {target, _path} -> Atom.to_string(target) end)
+    else
+      canonical_atom_list(input_mapping)
+    end
+  end
 
   defp canonical_atom_list(nil), do: nil
 

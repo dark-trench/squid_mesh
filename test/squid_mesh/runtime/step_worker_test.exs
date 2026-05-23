@@ -21,6 +21,9 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.FailingWorkflow
   alias __MODULE__.InputIsolationWorkflow
   alias __MODULE__.MissingExecutor
+  alias __MODULE__.MissingPathMappingWorkflow
+  alias __MODULE__.NamedPathMappingWorkflow
+  alias __MODULE__.NativeNamedPathMappingWorkflow
   alias __MODULE__.NativeStepErrorRoutingWorkflow
   alias __MODULE__.NativeStepInputValidationWorkflow
   alias __MODULE__.NativeStepOutputValidationWorkflow
@@ -33,6 +36,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.PauseWorkflow
   alias __MODULE__.RetrySurfaceWorkflow
   alias __MODULE__.SuccessfulWorkflow
+  alias __MODULE__.SuccessMissingPathMappingWorkflow
   alias __MODULE__.TransactionalFailureWorkflow
   alias __MODULE__.TransactionalSuccessWorkflow
   alias __MODULE__.UndoRoutingWorkflow
@@ -47,6 +51,40 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias SquidMesh.Steps
   alias SquidMesh.Test.Job
   alias SquidMesh.Test.StepWorker
+
+  defmodule FailedTransitionRepo do
+    alias SquidMesh.Persistence.Run
+    alias SquidMesh.Test.Repo
+
+    @spec transaction((-> term())) :: term()
+    def transaction(fun), do: Repo.transaction(fun)
+    @spec transaction((-> term()), keyword()) :: term()
+    def transaction(fun, opts), do: Repo.transaction(fun, opts)
+    @spec rollback(term()) :: no_return()
+    def rollback(reason), do: Repo.rollback(reason)
+    @spec one(Ecto.Queryable.t()) :: term()
+    def one(query), do: Repo.one(query)
+    @spec one(Ecto.Queryable.t(), keyword()) :: term()
+    def one(query, opts), do: Repo.one(query, opts)
+    @spec get(module(), term()) :: term()
+    def get(schema, id), do: Repo.get(schema, id)
+    @spec get!(module(), term()) :: term()
+    def get!(schema, id), do: Repo.get!(schema, id)
+    @spec insert_all(module(), [map()], keyword()) :: term()
+    def insert_all(schema, entries, opts), do: Repo.insert_all(schema, entries, opts)
+    @spec update_all(Ecto.Queryable.t(), keyword()) :: term()
+    def update_all(query, updates), do: Repo.update_all(query, updates)
+
+    @spec update(Ecto.Changeset.t()) :: term()
+    def update(%Ecto.Changeset{data: %Run{}} = changeset) do
+      case Ecto.Changeset.fetch_change(changeset, :status) do
+        {:ok, "failed"} -> {:error, Ecto.Changeset.add_error(changeset, :status, "forced")}
+        _other -> Repo.update(changeset)
+      end
+    end
+
+    def update(changeset), do: Repo.update(changeset)
+  end
 
   describe "workflow execution through the configured executor" do
     test "enqueues and executes the declared steps through Jido-backed actions" do
@@ -333,6 +371,146 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                {:load_account, %{account_id: "acct_123"}, %{account: %{id: "acct_123"}}},
                {:record_delivery, %{account: %{id: "acct_123"}, invoice_id: "inv_456"},
                 %{delivery: %{account_id: "acct_123", invoice_id: "inv_456"}}}
+             ]
+    end
+
+    test "maps named nested paths into raw Jido action inputs" do
+      input = %{account_id: "acct_123", reviewer_id: "user_123"}
+
+      assert {:ok, run} = SquidMesh.start_run(NamedPathMappingWorkflow, input, repo: Repo)
+
+      assert %{success: 2, failure: 0} =
+               SquidMesh.Test.Executor.drain()
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+
+      assert completed_run.context.review == %{
+               draft_count: 2,
+               reviewer_id: "user_123"
+             }
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.input, &1.output}) == [
+               {:load_review_context, %{account_id: "acct_123", reviewer_id: "user_123"},
+                %{
+                  draft: %{drafts: [%{id: "draft_1"}, %{id: "draft_2"}]},
+                  review_draft: %{reviewer: %{id: "user_123"}}
+                }},
+               {:record_review,
+                %{drafts: [%{id: "draft_1"}, %{id: "draft_2"}], reviewer: %{id: "user_123"}},
+                %{review: %{draft_count: 2, reviewer_id: "user_123"}}}
+             ]
+    end
+
+    test "maps named nested paths into native Squid Mesh step inputs" do
+      input = %{account_id: "acct_123", reviewer_id: "user_123"}
+
+      assert {:ok, run} = SquidMesh.start_run(NativeNamedPathMappingWorkflow, input, repo: Repo)
+
+      assert %{success: 2, failure: 0} =
+               SquidMesh.Test.Executor.drain()
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.input, &1.output}) == [
+               {:load_review_context, %{account_id: "acct_123", reviewer_id: "user_123"},
+                %{
+                  draft: %{drafts: [%{id: "draft_1"}, %{id: "draft_2"}]},
+                  review_draft: %{reviewer: %{id: "user_123"}}
+                }},
+               {:record_review,
+                %{drafts: [%{id: "draft_1"}, %{id: "draft_2"}], reviewer: %{id: "user_123"}},
+                %{review: %{draft_count: 2, reviewer_id: "user_123"}}}
+             ]
+    end
+
+    test "fails before executing a step when a named path input is missing" do
+      assert {:ok, run} =
+               SquidMesh.start_run(MissingPathMappingWorkflow, %{draft: %{}}, repo: Repo)
+
+      expected_error = %{
+        message: "missing mapped input path",
+        code: "missing_input_path",
+        target: "drafts",
+        path: ["draft", "drafts"],
+        missing_at: ["draft", "drafts"],
+        retryable?: false
+      }
+
+      assert {:error,
+              {:missing_input_path,
+               %{target: :drafts, path: [:draft, :drafts], missing_at: [:draft, :drafts]}}} =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "record_review"}
+               })
+
+      assert {:ok, inspected_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert inspected_run.status == :failed
+      assert inspected_run.current_step == :record_review
+      assert inspected_run.last_error == expected_error
+
+      assert [
+               %{step: :record_review, status: :failed, input: %{}, last_error: ^expected_error}
+             ] = inspected_run.step_runs
+    end
+
+    test "rolls back prepared missing-path step rows when terminal transition fails" do
+      assert {:ok, run} =
+               SquidMesh.start_run(MissingPathMappingWorkflow, %{draft: %{}}, repo: Repo)
+
+      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(MissingPathMappingWorkflow)
+
+      config = %Config{
+        repo: FailedTransitionRepo,
+        executor: SquidMesh.Test.Executor,
+        stale_step_timeout: :disabled
+      }
+
+      assert {:error, _reason} = Preparation.prepare(config, definition, run, :record_review)
+
+      assert {:ok, inspected_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert inspected_run.status == :pending
+      assert inspected_run.current_step == :record_review
+      assert inspected_run.last_error == nil
+      assert inspected_run.step_runs == []
+    end
+
+    test "stores a JSON-safe error when named path mapping fails during successor dispatch" do
+      assert {:ok, run} =
+               SquidMesh.start_run(SuccessMissingPathMappingWorkflow, %{draft: %{}}, repo: Repo)
+
+      assert %{success: 1, failure: 0} =
+               SquidMesh.Test.Executor.drain()
+
+      assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert failed_run.status == :failed
+      assert failed_run.current_step == nil
+
+      assert failed_run.last_error == %{
+               message: "failed to dispatch workflow step",
+               next_steps: ["record_review"],
+               dispatch_reason: %{
+                 message: "missing mapped input path",
+                 code: "missing_input_path",
+                 target: "drafts",
+                 path: ["draft", "drafts"],
+                 missing_at: ["draft", "drafts"],
+                 retryable?: false
+               }
+             }
+
+      assert Enum.map(failed_run.step_runs, &{&1.step, &1.status}) == [
+               {:load_review_context, :completed}
              ]
     end
 
@@ -3010,6 +3188,205 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     @impl Jido.Action
     def run(%{account: account, invoice_id: invoice_id}, _context) do
       {:ok, %{account_id: account.id, invoice_id: invoice_id}}
+    end
+  end
+
+  defmodule NamedPathMappingWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+          field :reviewer_id, :string
+        end
+      end
+
+      step :load_review_context, NamedPathMappingWorkflow.LoadReviewContext
+
+      step :record_review, NamedPathMappingWorkflow.RecordReview,
+        input: [
+          drafts: [:draft, :drafts],
+          reviewer: [:review_draft, :reviewer]
+        ],
+        output: :review
+
+      transition :load_review_context, on: :ok, to: :record_review
+      transition :record_review, on: :ok, to: :complete
+    end
+  end
+
+  defmodule NamedPathMappingWorkflow.LoadReviewContext do
+    use Jido.Action,
+      name: "load_review_context",
+      description: "Loads nested review context",
+      schema: [
+        account_id: [type: :string, required: true],
+        reviewer_id: [type: :string, required: true]
+      ]
+
+    @impl Jido.Action
+    def run(%{reviewer_id: reviewer_id}, _context) do
+      {:ok,
+       %{
+         draft: %{drafts: [%{id: "draft_1"}, %{id: "draft_2"}]},
+         review_draft: %{reviewer: %{id: reviewer_id}}
+       }}
+    end
+  end
+
+  defmodule NamedPathMappingWorkflow.RecordReview do
+    use Jido.Action,
+      name: "record_review",
+      description: "Records review details from mapped nested input",
+      schema: [
+        drafts: [type: {:list, :map}, required: true],
+        reviewer: [type: :map, required: true]
+      ]
+
+    @impl Jido.Action
+    def run(%{drafts: drafts, reviewer: reviewer}, _context) do
+      {:ok, %{draft_count: length(drafts), reviewer_id: reviewer.id}}
+    end
+  end
+
+  defmodule NativeNamedPathMappingWorkflow.LoadReviewContext do
+    use SquidMesh.Step,
+      name: :load_review_context,
+      input_schema: [
+        account_id: [type: :string, required: true],
+        reviewer_id: [type: :string, required: true]
+      ],
+      output_schema: [
+        draft: [type: :map, required: true],
+        review_draft: [type: :map, required: true]
+      ]
+
+    @impl SquidMesh.Step
+    def run(%{reviewer_id: reviewer_id}, _context) do
+      {:ok,
+       %{
+         draft: %{drafts: [%{id: "draft_1"}, %{id: "draft_2"}]},
+         review_draft: %{reviewer: %{id: reviewer_id}}
+       }}
+    end
+  end
+
+  defmodule NativeNamedPathMappingWorkflow.RecordReview do
+    use SquidMesh.Step,
+      name: :record_review,
+      input_schema: [
+        drafts: [type: :list, required: true],
+        reviewer: [type: :map, required: true]
+      ],
+      output_schema: [
+        review: [type: :map, required: true]
+      ]
+
+    @impl SquidMesh.Step
+    def run(%{drafts: drafts, reviewer: reviewer}, _context) do
+      {:ok, %{review: %{draft_count: length(drafts), reviewer_id: reviewer.id}}}
+    end
+  end
+
+  defmodule NativeNamedPathMappingWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+          field :reviewer_id, :string
+        end
+      end
+
+      step :load_review_context, NativeNamedPathMappingWorkflow.LoadReviewContext
+
+      step :record_review, NativeNamedPathMappingWorkflow.RecordReview,
+        input: [
+          drafts: [:draft, :drafts],
+          reviewer: [:review_draft, :reviewer]
+        ]
+
+      transition :load_review_context, on: :ok, to: :record_review
+      transition :record_review, on: :ok, to: :complete
+    end
+  end
+
+  defmodule MissingPathMappingWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :draft, :map
+        end
+      end
+
+      step :record_review, MissingPathMappingWorkflow.RecordReview,
+        input: [drafts: [:draft, :drafts]]
+
+      transition :record_review, on: :ok, to: :complete
+    end
+  end
+
+  defmodule MissingPathMappingWorkflow.RecordReview do
+    use Jido.Action,
+      name: "record_review",
+      description: "Should not execute when mapped input is missing",
+      schema: [drafts: [type: {:list, :map}, required: true]]
+
+    @impl Jido.Action
+    def run(_input, _context) do
+      raise "record_review should not execute when mapped input is missing"
+    end
+  end
+
+  defmodule SuccessMissingPathMappingWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :draft, :map
+        end
+      end
+
+      step :load_review_context, SuccessMissingPathMappingWorkflow.LoadReviewContext
+
+      step :record_review, SuccessMissingPathMappingWorkflow.RecordReview,
+        after: [:load_review_context],
+        input: [drafts: [:draft, :drafts]]
+    end
+  end
+
+  defmodule SuccessMissingPathMappingWorkflow.LoadReviewContext do
+    use Jido.Action,
+      name: "load_review_context",
+      description: "Returns a partial nested context",
+      schema: [draft: [type: :map, required: true]]
+
+    @impl Jido.Action
+    def run(%{draft: draft}, _context), do: {:ok, %{draft: draft}}
+  end
+
+  defmodule SuccessMissingPathMappingWorkflow.RecordReview do
+    use Jido.Action,
+      name: "record_review",
+      description: "Should not execute when successor mapped input is missing",
+      schema: [drafts: [type: {:list, :map}, required: true]]
+
+    @impl Jido.Action
+    def run(_input, _context) do
+      raise "record_review should not execute when successor mapped input is missing"
     end
   end
 

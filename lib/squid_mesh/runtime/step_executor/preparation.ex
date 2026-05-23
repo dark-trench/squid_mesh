@@ -83,10 +83,47 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
            SquidMesh.Workflow.Definition.step_input_mapping(definition, execution_step),
          {:ok, running_run, events} <-
            ensure_running(config.repo, run, definition, execution_step),
-         candidate_input = StepInput.build_step_input(running_run, input_mapping),
          {:ok, recovery_policy} <-
-           SquidMesh.Workflow.Definition.step_recovery_policy(definition, execution_step),
-         {:ok, step_run, execution_mode} <-
+           SquidMesh.Workflow.Definition.step_recovery_policy(definition, execution_step) do
+      case StepInput.resolve_step_input(running_run, input_mapping) do
+        {:ok, candidate_input} ->
+          begin_prepared_step(
+            config,
+            definition,
+            running_run,
+            execution_step,
+            step,
+            candidate_input,
+            recovery_policy,
+            events
+          )
+
+        {:error, reason} ->
+          fail_prepared_step_input_mapping(
+            config,
+            running_run,
+            execution_step,
+            recovery_policy,
+            reason,
+            events
+          )
+      end
+    else
+      {:error, _reason} = error -> {error, []}
+    end
+  end
+
+  defp begin_prepared_step(
+         config,
+         definition,
+         running_run,
+         execution_step,
+         step,
+         candidate_input,
+         recovery_policy,
+         events
+       ) do
+    with {:ok, step_run, execution_mode} <-
            Steps.Store.begin_step(
              config.repo,
              running_run.id,
@@ -106,6 +143,37 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
         )
 
       prepare_execution_mode(config, prepared, execution_mode, events)
+    end
+  end
+
+  defp fail_prepared_step_input_mapping(
+         config,
+         running_run,
+         execution_step,
+         recovery_policy,
+         reason,
+         events
+       ) do
+    error = StepInput.input_mapping_error_to_map(reason)
+
+    with {:ok, step_run, _execution_mode} <-
+           Steps.Store.begin_step(
+             config.repo,
+             running_run.id,
+             execution_step,
+             %{},
+             recovery_policy
+           ),
+         {:ok, _failed_step} <- Steps.Store.fail_step(config.repo, step_run.id, error),
+         {:ok, {failed_run, from_status, to_status}} <-
+           Runs.Store.transition_run_silent(config.repo, running_run.id, :failed, %{
+             current_step: execution_step,
+             last_error: error
+           }) do
+      failure_event = run_transition_event(failed_run, from_status, to_status)
+      {{:error, reason}, Enum.reverse([failure_event | Enum.reverse(events)])}
+    else
+      {:error, reason} -> config.repo.rollback(reason)
     end
   end
 

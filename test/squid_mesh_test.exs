@@ -219,6 +219,28 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule JournalMissingPathWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual_missing_path do
+        manual()
+
+        payload do
+          field :draft, :map
+        end
+      end
+
+      step :load_review_context, JournalMissingPathWorkflow.LoadReviewContext
+
+      step :record_review, JournalMissingPathWorkflow.RecordReview,
+        input: [drafts: [:draft, :drafts]]
+
+      transition :load_review_context, on: :ok, to: :record_review
+      transition :record_review, on: :ok, to: :complete
+    end
+  end
+
   defmodule ReorderedWorkflow do
     use SquidMesh.Workflow
 
@@ -506,6 +528,28 @@ defmodule SquidMeshTest do
 
   defmodule JournalDependencyFailureWorkflow.SendEmail do
     defdelegate run(params, context), to: JournalDependencyWorkflow.SendEmail
+  end
+
+  defmodule JournalMissingPathWorkflow.LoadReviewContext do
+    use Jido.Action,
+      name: "journal_missing_path_load_context",
+      description: "Returns a partial nested context",
+      schema: [draft: [type: :map, required: true]]
+
+    @impl Jido.Action
+    def run(%{draft: draft}, _context), do: {:ok, %{draft: draft}}
+  end
+
+  defmodule JournalMissingPathWorkflow.RecordReview do
+    use Jido.Action,
+      name: "journal_missing_path_record_review",
+      description: "Should not execute when successor mapped input is missing",
+      schema: [drafts: [type: {:list, :map}, required: true]]
+
+    @impl Jido.Action
+    def run(_params, _context) do
+      raise "record_review should not execute when successor mapped input is missing"
+    end
   end
 
   defmodule ReorderedWorkflow.LoadInvoice do
@@ -2577,6 +2621,162 @@ defmodule SquidMeshTest do
              ]
     end
 
+    test "execute_next/1 fails journal runs durably when successor named path input is missing" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalMissingPathWorkflow,
+                 %{draft: %{}},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = failed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert failed_snapshot.run_id == started_snapshot.run_id
+      assert failed_snapshot.status == :failed
+      assert failed_snapshot.reason == :terminal
+      assert failed_snapshot.terminal? == true
+      assert failed_snapshot.visible_attempts == []
+
+      assert [
+               %{
+                 step: "load_review_context",
+                 status: :completed,
+                 result: %{draft: %{}}
+               }
+             ] = failed_snapshot.attempts
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :run_terminal
+             ]
+
+      assert %{
+               error: %{
+                 code: "missing_input_path",
+                 path: ["draft", "drafts"],
+                 target: "drafts",
+                 missing_at: ["draft", "drafts"]
+               }
+             } = List.last(run_entries).data
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.map(dispatch_entries, & &1.type) == [
+               :run_queued,
+               :attempt_scheduled,
+               :attempt_claimed,
+               :attempt_completed
+             ]
+    end
+
+    test "execute_next/1 recovers completed successor mapping failures with terminal error history" do
+      run_id = Ecto.UUID.generate()
+      assert {:ok, definition} = Definition.load(JournalMissingPathWorkflow)
+      runnable = journal_missing_path_runnable(run_id)
+      claim_token_hash = claim_token_hash("token_1")
+
+      append_read_model_run_entries([
+        read_model_entry!(:run_started, %{
+          run_id: run_id,
+          workflow: Atom.to_string(JournalMissingPathWorkflow),
+          definition_fingerprint: Definition.fingerprint(definition),
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [runnable],
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:run_queued, %{
+          run_id: run_id,
+          queue: @read_model_queue,
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(
+          :attempt_scheduled,
+          Map.put(runnable, :occurred_at, @read_model_started_at)
+        ),
+        read_model_entry!(:attempt_claimed, %{
+          run_id: run_id,
+          runnable_key: runnable.runnable_key,
+          claim_id: "claim_1",
+          claim_token_hash: claim_token_hash,
+          owner_id: "worker_1",
+          queue: @read_model_queue,
+          lease_until: DateTime.add(@read_model_visible_at, 300, :second),
+          occurred_at: @read_model_visible_at
+        }),
+        read_model_entry!(:attempt_completed, %{
+          run_id: run_id,
+          runnable_key: runnable.runnable_key,
+          claim_id: "claim_1",
+          claim_token_hash: claim_token_hash,
+          queue: @read_model_queue,
+          result: %{draft: %{}},
+          occurred_at: @read_model_visible_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_2",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert snapshot.status == :failed
+      assert snapshot.reason == :terminal
+
+      assert [
+               %{
+                 step: "load_review_context",
+                 status: :completed,
+                 result: %{draft: %{}}
+               }
+             ] = snapshot.attempts
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :run_terminal
+             ]
+
+      assert %{
+               error: %{
+                 code: "missing_input_path",
+                 path: ["draft", "drafts"],
+                 target: "drafts",
+                 missing_at: ["draft", "drafts"]
+               }
+             } = List.last(run_entries).data
+    end
+
     test "execute_next/1 recomputes dependency progress after concurrent root append conflicts" do
       on_exit(fn -> :persistent_term.erase(:journal_dependency_invoice_hook) end)
 
@@ -4175,6 +4375,10 @@ defmodule SquidMeshTest do
     entry
   end
 
+  defp claim_token_hash(token) do
+    Base.encode16(:crypto.hash(:sha256, token), case: :lower)
+  end
+
   defp journal_start_runnable(run_id, account_id \\ "acct_123") do
     %{
       run_id: run_id,
@@ -4184,6 +4388,19 @@ defmodule SquidMeshTest do
       queue: @read_model_queue,
       step: "check_gateway",
       input: %{account_id: account_id},
+      visible_at: @read_model_started_at
+    }
+  end
+
+  defp journal_missing_path_runnable(run_id) do
+    %{
+      run_id: run_id,
+      runnable_key: "#{run_id}:load_review_context:1",
+      idempotency_key: "#{run_id}:load_review_context:1",
+      attempt_number: 1,
+      queue: @read_model_queue,
+      step: "load_review_context",
+      input: %{draft: %{}},
       visible_at: @read_model_started_at
     }
   end

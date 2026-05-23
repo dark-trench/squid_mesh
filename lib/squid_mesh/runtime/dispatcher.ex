@@ -255,18 +255,20 @@ defmodule SquidMesh.Runtime.Dispatcher do
            SquidMesh.Workflow.Definition.step_input_mapping(definition, step_name),
          {:ok, recovery} <-
            SquidMesh.Workflow.Definition.step_recovery_policy(definition, step_name) do
-      {:ok, build_scheduled_step_input(definition, repo, run, input_mapping), recovery}
+      with {:ok, input} <- build_scheduled_step_input(definition, repo, run, input_mapping) do
+        {:ok, input, recovery}
+      end
     end
   end
 
   defp scheduled_step_input(_config, %Run{} = run, _step_name),
-    do: {:ok, StepInput.build_step_input(run), nil}
+    do: with({:ok, input} <- StepInput.resolve_step_input(run), do: {:ok, input, nil})
 
   defp build_scheduled_step_input(definition, repo, run, input_mapping) do
     if SquidMesh.Workflow.Definition.dependency_mode?(definition) do
-      StepInput.build_dependency_step_input(repo, run, input_mapping)
+      StepInput.resolve_dependency_step_input(repo, run, input_mapping)
     else
-      StepInput.build_step_input(run, input_mapping)
+      StepInput.resolve_step_input(run, input_mapping)
     end
   end
 end
