@@ -109,7 +109,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       runtime = %{storage: storage, queue: queue, now: finished_at}
       claim = claim_context(dispatch_agent, workflow_agent, attempt, claim_id, claim_token)
 
-      case run_step(step, attempt.input || %{}, context) do
+      case run_step(step, attempt.input, context) do
         {:ok, output} ->
           complete_attempt(runtime, claim, definition, step_name, output)
 
@@ -641,8 +641,6 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     end
   end
 
-  defp append_run_entries(_storage, workflow_agent, [], _retries_left), do: {:ok, workflow_agent}
-
   defp append_run_entries(_storage, workflow_agent, _entries, _retries_left)
        when workflow_agent.state.projection.terminal_status in [:completed, :failed, :cancelled] do
     {:ok, workflow_agent}
@@ -907,7 +905,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       attempt_number: attempt_number,
       queue: queue,
       step: step,
-      input: input || %{},
+      input: input,
       visible_at: now
     }
   end
@@ -1212,7 +1210,6 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          {:ok, step} <- Definition.step(definition, step_name) do
       {:ok, workflow, definition, step_name, step}
     else
-      nil -> {:error, {:unknown_step, attempt.step}}
       step_name when is_binary(step_name) -> {:error, {:unknown_step, step_name}}
       {:error, _reason} = error -> error
     end
@@ -1253,28 +1250,36 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       workflow: workflow,
       step: step_name,
       attempt: attempt.attempt_number,
-      state: attempt.input || %{}
+      state: attempt.input
     }
   end
 
-  defp run_step(%{module: built_in_kind}, _input, _context)
-       when built_in_kind in [:wait, :log, :pause, :approval] do
-    {:error,
-     %{
-       message: "journal executor cannot execute built-in steps yet",
-       retryable?: false,
-       step_kind: built_in_kind
-     }}
+  @spec run_step(map(), map(), map()) :: {:ok, map()} | {:error, term()}
+  defp run_step(%{module: module}, input, context) do
+    if module in [:wait, :log, :pause, :approval] do
+      {:error,
+       %{
+         message: "journal executor cannot execute built-in steps yet",
+         retryable?: false,
+         step_kind: module
+       }}
+    else
+      run_action_step(module, input, context)
+    end
   end
 
-  defp run_step(%{module: action}, input, context) do
+  defp run_action_step(action, input, context) do
     {action, input} = action_input(action, input)
 
-    case Jido.Exec.run(action, input, context,
-           max_retries: 0,
-           log_level: :none,
-           telemetry: :silent
-         ) do
+    result =
+      :erlang.apply(Jido.Exec, :run, [
+        action,
+        input,
+        context,
+        [max_retries: 0, log_level: :none, telemetry: :silent]
+      ])
+
+    case result do
       {:ok, output} when is_map(output) -> {:ok, output}
       {:ok, output, extras} when is_map(output) and is_list(extras) -> {:ok, output}
       {:ok, output, _extras} when is_map(output) -> {:ok, output}

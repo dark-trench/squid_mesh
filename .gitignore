@@ -25,5 +25,8 @@ squid_mesh-*.tar
 # Temporary files, for example, from tests.
 /tmp/
 
+# Dialyzer PLTs are generated locally.
+/priv/plts/
+
 # Editor tooling.
 /.elixir_ls/
