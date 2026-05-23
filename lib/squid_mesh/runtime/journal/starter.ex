@@ -1,4 +1,4 @@
-defmodule SquidMesh.Runtime.JournalStarter do
+defmodule SquidMesh.Runtime.Journal.Starter do
   @moduledoc """
   Opt-in journal-backed workflow start boundary for the Jido-native runtime.
 
@@ -20,7 +20,7 @@ defmodule SquidMesh.Runtime.JournalStarter do
   alias SquidMesh.Runtime.DispatchAgent
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.Journal
-  alias SquidMesh.Runtime.JournalOptions
+  alias SquidMesh.Runtime.Journal.Options
   alias SquidMesh.Runtime.RunIndexProjection
   alias SquidMesh.Runtime.WorkflowAgent
   alias SquidMesh.Workflow.Definition
@@ -56,7 +56,8 @@ defmodule SquidMesh.Runtime.JournalStarter do
          {:ok, _planned, runnables} <- RunicPlanner.plan(planner, resolved_payload),
          {:ok, run_id} <- run_id(opts),
          {:ok, journal_runnables} <- journal_runnables(run_id, queue, runnables, now),
-         :ok <- ensure_run_started(storage, workflow, run_id, journal_runnables, now) do
+         :ok <- ensure_run_queued(storage, run_id, queue, now),
+         :ok <- ensure_run_started(storage, workflow, definition, run_id, journal_runnables, now) do
       complete_started_run(storage, workflow, run_id, queue, now)
     end
   end
@@ -66,11 +67,12 @@ defmodule SquidMesh.Runtime.JournalStarter do
 
   defp trigger(definition, trigger_name), do: Definition.trigger(definition, trigger_name)
 
-  defp ensure_run_started(storage, workflow, run_id, runnables, %DateTime{} = now) do
+  defp ensure_run_started(storage, workflow, definition, run_id, runnables, %DateTime{} = now) do
     with {:ok, run_started} <-
            DispatchProtocol.new_entry(:run_started, %{
              run_id: run_id,
              workflow: Definition.serialize_workflow(workflow),
+             definition_fingerprint: Definition.fingerprint(definition),
              occurred_at: now
            }),
          {:ok, runnables_planned} <-
@@ -88,6 +90,27 @@ defmodule SquidMesh.Runtime.JournalStarter do
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp ensure_run_queued(storage, run_id, queue, %DateTime{} = now) do
+    ensure_run_queued(storage, run_id, queue, now, @dispatch_schedule_retries)
+  end
+
+  defp ensure_run_queued(_storage, _run_id, _queue, %DateTime{}, 0), do: {:error, :conflict}
+
+  defp ensure_run_queued(storage, run_id, queue, %DateTime{} = now, retries_left) do
+    with {:ok, dispatch_agent} <- DispatchAgent.rebuild(storage, queue) do
+      case DispatchAgent.ensure_run_queued(storage, dispatch_agent, run_id, now: now) do
+        {:ok, _queued} ->
+          :ok
+
+        {:error, :conflict} ->
+          ensure_run_queued(storage, run_id, queue, now, retries_left - 1)
+
+        {:error, _reason} = error ->
+          error
+      end
     end
   end
 
@@ -311,13 +334,13 @@ defmodule SquidMesh.Runtime.JournalStarter do
   defp journal_storage(opts) do
     opts
     |> Keyword.get(:journal_storage)
-    |> JournalOptions.storage()
+    |> Options.storage()
   end
 
   defp queue(opts) do
     opts
     |> Keyword.get(:queue, "default")
-    |> JournalOptions.queue()
+    |> Options.queue()
   end
 
   defp now(opts) do
@@ -329,7 +352,7 @@ defmodule SquidMesh.Runtime.JournalStarter do
 
   defp run_id(opts) do
     case Keyword.get(opts, :run_id, Ecto.UUID.generate()) do
-      run_id -> JournalOptions.uuid(run_id)
+      run_id -> Options.uuid(run_id)
     end
   end
 

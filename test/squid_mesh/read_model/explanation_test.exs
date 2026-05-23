@@ -234,7 +234,7 @@ defmodule SquidMesh.ReadModel.ExplanationTest do
   end
 
   test "returns a structured error for invalid run identifiers" do
-    assert {:error, {:invalid_option, {:run_id, 123}}} =
+    assert {:error, {:invalid_option, {:run_id, :invalid}}} =
              Explanation.explain(@storage, 123, queue: @queue, now: @visible_at)
   end
 

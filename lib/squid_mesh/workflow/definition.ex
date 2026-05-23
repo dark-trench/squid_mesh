@@ -531,6 +531,22 @@ defmodule SquidMesh.Workflow.Definition do
   def serialize_workflow(workflow) when is_atom(workflow), do: Atom.to_string(workflow)
 
   @doc """
+  Returns a stable fingerprint for runtime-significant workflow semantics.
+
+  Journal-backed execution stores this value at start so later executors can
+  reject stale attempts when a deploy changes step modules, transitions,
+  mappings, dependency declarations, or retry policy for already-planned work.
+  """
+  @spec fingerprint(t()) :: String.t()
+  def fingerprint(definition) when is_map(definition) do
+    definition
+    |> fingerprint_terms()
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  @doc """
   Serializes a trigger identifier for persistence.
   """
   @spec serialize_trigger(atom() | String.t() | nil) :: String.t() | nil
@@ -591,6 +607,24 @@ defmodule SquidMesh.Workflow.Definition do
       {:ok, value} -> maybe_put_invalid_payload_type(acc, field, value)
       :error -> acc
     end
+  end
+
+  defp fingerprint_terms(definition) do
+    %{
+      steps:
+        Enum.map(definition.steps, fn step ->
+          %{
+            name: step.name,
+            module: inspect(step.module),
+            input: Keyword.get(step.opts, :input),
+            output: Keyword.get(step.opts, :output),
+            after: Keyword.get(step.opts, :after),
+            retry: Keyword.get(step.opts, :retry)
+          }
+        end),
+      transitions: Enum.map(definition.transitions, &Map.take(&1, [:from, :on, :to, :recovery])),
+      retries: definition.retries
+    }
   end
 
   defp maybe_put_invalid_payload_type(acc, field, value) do

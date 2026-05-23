@@ -81,6 +81,24 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
     assert scheduled_entry.data.occurred_at == @visible_at
   end
 
+  test "records known run ids idempotently on the dispatch queue" do
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: queued_agent, queued?: true}} =
+             DispatchAgent.ensure_run_queued(@storage, agent, @run_id, now: @started_at)
+
+    assert DispatchAgent.run_ids(queued_agent) == MapSet.new([@run_id])
+
+    assert {:ok, %{agent: ^queued_agent, queued?: false}} =
+             DispatchAgent.ensure_run_queued(@storage, queued_agent, @run_id, now: @visible_at)
+
+    assert {:ok, [queued_entry]} = Journal.load_entries(@storage, {:dispatch, "default"})
+    assert queued_entry.type == :run_queued
+    assert queued_entry.data.run_id == @run_id
+    assert queued_entry.data.queue == "default"
+    assert queued_entry.data.occurred_at == @started_at
+  end
+
   test "treats already scheduled runnable attempts as idempotent" do
     assert {:ok, scheduled_entry} =
              DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
@@ -165,6 +183,33 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
 
     assert agent.state.projection == checkpoint_projection
     assert agent.state.thread_rev == thread.rev
+  end
+
+  test "upgrades dispatch checkpoints written before queued run ids existed" do
+    assert {:ok, queued_entry} =
+             DispatchProtocol.new_entry(:run_queued, %{
+               run_id: @run_id,
+               queue: "default",
+               occurred_at: @started_at
+             })
+
+    assert {:ok, thread} = Journal.append_entries(@storage, [queued_entry])
+
+    legacy_projection = Map.delete(Projection.new(), :queued_run_ids)
+
+    assert :ok =
+             Journal.put_checkpoint(
+               @storage,
+               {:dispatch, "default"},
+               legacy_projection,
+               0,
+               updated_at: @visible_at
+             )
+
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert agent.state.thread_rev == thread.rev
+    assert DispatchAgent.run_ids(agent) == MapSet.new([@run_id])
   end
 
   test "persists a checkpoint from the rebuilt dispatch agent state" do
@@ -714,6 +759,51 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
 
     assert agent.state.thread_rev == 2
     assert DispatchAgent.expired_claims(agent, @expired_at) == []
+  end
+
+  test "loads run-thread applied overlays for attempts restored from checkpoint" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, claimed_entry} =
+             DispatchProtocol.new_entry(:attempt_claimed, claimed_attrs())
+
+    assert {:ok, completed_entry} =
+             DispatchProtocol.new_entry(:attempt_completed, %{
+               run_id: @run_id,
+               runnable_key: @runnable_key,
+               claim_id: "claim_1",
+               claim_token_hash: "token_hash_1",
+               queue: "default",
+               result: %{"status" => "captured"},
+               occurred_at: @claimed_at
+             })
+
+    assert {:ok, applied_entry} =
+             DispatchProtocol.new_entry(:runnable_applied, %{
+               run_id: @run_id,
+               runnable_key: @runnable_key,
+               result: %{"status" => "captured"},
+               occurred_at: @claimed_at
+             })
+
+    dispatch_entries = [scheduled_entry, claimed_entry, completed_entry]
+    assert {:ok, thread} = Journal.append_entries(@storage, dispatch_entries)
+
+    assert :ok =
+             Journal.put_checkpoint(
+               @storage,
+               {:dispatch, "default"},
+               Projection.rebuild(dispatch_entries),
+               thread.rev,
+               updated_at: @claimed_at
+             )
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [applied_entry])
+
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert %{applied?: true} = Map.fetch!(agent.state.projection.attempts, @runnable_key)
   end
 
   test "fences dispatch work for runs with terminal run-thread entries" do

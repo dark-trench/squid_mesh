@@ -13,8 +13,9 @@ defmodule SquidMesh do
   alias SquidMesh.Runs
   alias SquidMesh.Runs.Explanation
   alias SquidMesh.Runtime.Dispatcher
-  alias SquidMesh.Runtime.JournalOptions
-  alias SquidMesh.Runtime.JournalStarter
+  alias SquidMesh.Runtime.Journal.Executor
+  alias SquidMesh.Runtime.Journal.Options
+  alias SquidMesh.Runtime.Journal.Starter
   alias SquidMesh.Runtime.Reviewer
   alias SquidMesh.Runtime.Unblocker
 
@@ -207,6 +208,42 @@ defmodule SquidMesh do
         :read_model -> explain_projected_run(run_id, overrides)
       end
     end
+  end
+
+  @doc """
+  Executes the next visible workflow attempt through the selected executor.
+
+  Pass `runtime: :journal` with explicit `journal_storage:` to claim one visible
+  Jido journal-backed attempt, run its declared step, and append durable attempt
+  completion or failure facts.
+  """
+  @spec execute_next(keyword()) :: Executor.execute_result()
+  def execute_next(overrides \\ [])
+
+  def execute_next(overrides) when is_list(overrides) do
+    case public_execute_options(overrides) do
+      :ok -> Executor.execute_next(overrides)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def execute_next(overrides), do: Executor.execute_next(overrides)
+
+  defp public_execute_options(opts) do
+    cond do
+      not Keyword.keyword?(opts) ->
+        :ok
+
+      unsupported = Enum.find(Keyword.keys(opts), &(&1 not in public_execute_option_keys())) ->
+        {:error, {:invalid_option, {:option, unsupported}}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp public_execute_option_keys do
+    [:runtime, :journal_storage, :queue, :owner_id, :lease_for, :now]
   end
 
   @doc """
@@ -411,7 +448,7 @@ defmodule SquidMesh do
   end
 
   defp start_default_run_with_runtime(:journal, workflow, payload, overrides) do
-    JournalStarter.start_run(workflow, nil, payload, journal_start_options(overrides))
+    Starter.start_run(workflow, nil, payload, journal_start_options(overrides))
   end
 
   defp start_triggered_run(config, workflow, trigger_name, payload) do
@@ -436,7 +473,7 @@ defmodule SquidMesh do
   end
 
   defp start_triggered_run_with_runtime(:journal, workflow, trigger_name, payload, overrides) do
-    JournalStarter.start_run(workflow, trigger_name, payload, journal_start_options(overrides))
+    Starter.start_run(workflow, trigger_name, payload, journal_start_options(overrides))
   end
 
   defp normalize_created_run({:ok, %Run{} = run}) do
@@ -508,8 +545,8 @@ defmodule SquidMesh do
     end
   end
 
-  defp inspect_projected_run(run_id, _overrides) do
-    {:error, {:invalid_option, {:run_id, run_id}}}
+  defp inspect_projected_run(_run_id, _overrides) do
+    {:error, {:invalid_option, {:run_id, :invalid}}}
   end
 
   defp explain_projected_run(run_id, overrides) do
@@ -526,30 +563,30 @@ defmodule SquidMesh do
     if Keyword.keyword?(overrides) do
       case Keyword.get(overrides, :read_model, :runtime_tables) do
         read_model when read_model in @read_models -> {:ok, read_model}
-        read_model -> {:error, {:invalid_option, {:read_model, read_model}}}
+        _read_model -> {:error, {:invalid_option, {:read_model, :invalid}}}
       end
     else
-      {:error, {:invalid_option, {:opts, overrides}}}
+      {:error, {:invalid_option, {:opts, :invalid}}}
     end
   end
 
-  defp read_model(overrides), do: {:error, {:invalid_option, {:opts, overrides}}}
+  defp read_model(_overrides), do: {:error, {:invalid_option, {:opts, :invalid}}}
 
   defp runtime(overrides) when is_list(overrides) do
     if Keyword.keyword?(overrides) do
       case Keyword.get(overrides, :runtime, :runtime_tables) do
         runtime when runtime in @runtimes -> {:ok, runtime}
-        runtime -> {:error, {:invalid_option, {:runtime, runtime}}}
+        _runtime -> {:error, {:invalid_option, {:runtime, :invalid}}}
       end
     else
-      {:error, {:invalid_option, {:opts, overrides}}}
+      {:error, {:invalid_option, {:opts, :invalid}}}
     end
   end
 
   defp journal_storage(overrides) do
     overrides
     |> Keyword.get(:journal_storage)
-    |> JournalOptions.storage()
+    |> Options.storage()
   end
 
   defp projected_snapshot_options(overrides) do
