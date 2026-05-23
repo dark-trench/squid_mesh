@@ -101,6 +101,686 @@ defmodule SquidMesh.WorkflowTest do
            }
   end
 
+  test "converts a workflow module into a normalized workflow spec" do
+    assert {:ok, %SquidMesh.Workflow.Spec{} = spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    assert spec.workflow == InvoiceReminder
+    assert Enum.map(spec.triggers, & &1.name) == [:manual]
+    assert Enum.map(spec.steps, & &1.name) == [:load_invoice, :send_email, :record_delivery]
+
+    assert Enum.map(spec.transitions, &{&1.from, &1.on, &1.to}) == [
+             {:load_invoice, :ok, :send_email},
+             {:send_email, :ok, :record_delivery},
+             {:record_delivery, :ok, :complete}
+           ]
+
+    assert spec.retries == [%{step: :send_email, opts: [max_attempts: 3]}]
+  end
+
+  test "validates normalized workflow specs without starting a run" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    assert :ok = SquidMesh.Workflow.validate_spec(spec)
+  end
+
+  test "returns structured validation errors for invalid workflow specs" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    invalid_spec = %{
+      spec
+      | transitions: [
+          %{from: :load_invoice, on: :ok, to: :missing_step}
+        ]
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:transitions, 0, :to],
+             code: :unknown_transition_target,
+             message: "transition targets unknown step: :missing_step",
+             details: %{to: :missing_step}
+           } in errors
+  end
+
+  test "returns structured validation errors for malformed root workflow specs" do
+    assert {:error, {:invalid_workflow_spec, errors}} = SquidMesh.Workflow.validate_spec(nil)
+
+    assert %{
+             path: [],
+             code: :invalid_spec,
+             message: "workflow spec must be a map",
+             details: %{spec: nil}
+           } in errors
+  end
+
+  test "returns structured validation errors for malformed workflow spec collections" do
+    invalid_spec = %{
+      workflow: InvoiceReminder,
+      triggers: [],
+      payload: [],
+      steps: "not a list",
+      transitions: [],
+      retries: [],
+      entry_steps: [],
+      initial_step: nil,
+      entry_step: nil
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:steps],
+             code: :invalid_collection,
+             message: "steps must be a list",
+             details: %{field: :steps, value: "not a list"}
+           } in errors
+  end
+
+  test "returns structured validation errors for missing workflow spec declarations" do
+    invalid_spec = %{
+      workflow: InvoiceReminder,
+      triggers: [],
+      payload: [],
+      steps: [],
+      transitions: [],
+      retries: [],
+      entry_steps: [],
+      initial_step: nil,
+      entry_step: nil
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:triggers],
+             code: :missing_triggers,
+             message: "at least one trigger is required",
+             details: %{}
+           } in errors
+
+    assert %{
+             path: [:steps],
+             code: :missing_steps,
+             message: "at least one step is required",
+             details: %{}
+           } in errors
+  end
+
+  test "rejects ambiguous atom and string keys in workflow specs" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    invalid_spec =
+      spec
+      |> Map.from_struct()
+      |> Map.put("workflow", "Elixir.System")
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:workflow],
+             code: :ambiguous_key,
+             message: "workflow cannot be provided with both atom and string keys",
+             details: %{key: :workflow}
+           } in errors
+  end
+
+  test "rejects ambiguous atom and string keys in nested workflow spec data" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    invalid_spec = %{
+      spec
+      | triggers: [
+          %{
+            name: :scheduled,
+            type: :cron,
+            config: %{
+              "expression" => "bad",
+              expression: "* * * * *",
+              timezone: "Etc/UTC"
+            },
+            payload: [
+              %{
+                "name" => "account_id",
+                name: :account_id,
+                type: :string,
+                opts: []
+              }
+            ]
+          }
+        ]
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:triggers, 0, :config, :expression],
+             code: :ambiguous_key,
+             message: "expression cannot be provided with both atom and string keys",
+             details: %{key: :expression}
+           } in errors
+
+    assert %{
+             path: [:triggers, 0, :payload, 0, :name],
+             code: :ambiguous_key,
+             message: "name cannot be provided with both atom and string keys",
+             details: %{key: :name}
+           } in errors
+  end
+
+  test "returns structured validation errors for duplicate workflow spec steps" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    [step | _rest] = spec.steps
+    invalid_spec = %{spec | steps: [step | spec.steps]}
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:steps, 1, :name],
+             code: :duplicate_step_name,
+             message: "duplicate step name: :load_invoice",
+             details: %{step: :load_invoice}
+           } in errors
+  end
+
+  test "rejects string-keyed nested workflow spec records" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    invalid_spec = %{
+      spec
+      | steps: [
+          %{"name" => :load_invoice, "module" => InvoiceReminder.LoadInvoice, "opts" => []}
+        ],
+        transitions: [],
+        retries: [],
+        entry_steps: []
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:steps, 0, :name],
+             code: :invalid_step_name,
+             message: "step name must be an atom",
+             details: %{step: nil}
+           } in errors
+
+    assert %{
+             path: [:steps, 0, :opts],
+             code: :invalid_step_opts,
+             message: "step nil opts must be a keyword list",
+             details: %{step: nil, opts: nil}
+           } in errors
+  end
+
+  test "rejects workflow spec steps missing required opts" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    invalid_spec = %{
+      spec
+      | steps: [
+          %{name: :load_invoice, module: InvoiceReminder.LoadInvoice},
+          %{name: :send_email, module: InvoiceReminder.SendEmail, opts: []},
+          %{name: :record_delivery, module: InvoiceReminder.RecordDelivery, opts: []}
+        ]
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:steps, 0, :opts],
+             code: :invalid_step_opts,
+             message: "step :load_invoice opts must be a keyword list",
+             details: %{step: :load_invoice, opts: nil}
+           } in errors
+  end
+
+  test "rejects workflow specs with non-module workflow atoms" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+    invalid_spec = %{spec | workflow: :not_a_module}
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:workflow],
+             code: :invalid_workflow,
+             message: "workflow must be a module atom",
+             details: %{workflow: :not_a_module}
+           } in errors
+  end
+
+  test "rejects invalid workflow spec trigger shape" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    invalid_spec = %{
+      spec
+      | triggers: [%{name: :manual, type: :webhook, config: %{}, payload: []}]
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:triggers, 0, :type],
+             code: :invalid_trigger_type,
+             message: "trigger :manual defines unsupported type :webhook",
+             details: %{trigger: :manual, type: :webhook}
+           } in errors
+  end
+
+  test "rejects workflow spec payload that does not match trigger payloads" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    [trigger | _rest] = spec.triggers
+    invalid_spec = %{spec | triggers: [%{trigger | payload: [hd(spec.payload)]}], payload: []}
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:payload],
+             code: :invalid_payload_contract,
+             message: "payload must match trigger payload fields",
+             details: %{payload: [], expected: [hd(spec.payload)]}
+           } in errors
+  end
+
+  test "rejects workflow spec payload fields missing required opts" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+    invalid_field = Map.delete(hd(spec.payload), :opts)
+
+    invalid_spec = %{
+      spec
+      | payload: [invalid_field],
+        triggers: [
+          %{
+            hd(spec.triggers)
+            | payload: [invalid_field]
+          }
+        ]
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:payload, 0, :opts],
+             code: :invalid_payload_field_opts,
+             message: "payload field :account_id opts must be a keyword list",
+             details: %{field: :account_id, opts: nil}
+           } in errors
+
+    assert %{
+             path: [:triggers, 0, :payload, 0, :opts],
+             code: :invalid_payload_field_opts,
+             message: "payload field :account_id opts must be a keyword list",
+             details: %{field: :account_id, opts: nil}
+           } in errors
+  end
+
+  test "rejects conflicting trigger payload fields in workflow specs" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    invalid_spec = %{
+      spec
+      | triggers: [
+          %{
+            name: :manual,
+            type: :manual,
+            config: %{},
+            payload: [%{name: :account_id, type: :string, opts: []}]
+          },
+          %{
+            name: :scheduled,
+            type: :manual,
+            config: %{},
+            payload: [%{name: :account_id, type: :integer, opts: []}]
+          }
+        ]
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:triggers],
+             code: :conflicting_payload_field,
+             message:
+               "payload field :account_id defines conflicting types across triggers: [:integer, :string]",
+             details: %{field: :account_id, types: [:integer, :string]}
+           } in errors
+  end
+
+  test "rejects invalid workflow spec step mappings and built-in step options" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    invalid_spec = %{
+      spec
+      | steps: [
+          %{name: :wait_for_gateway, module: :wait, opts: [duration: 0]},
+          %{
+            name: :send_email,
+            module: InvoiceReminder.SendEmail,
+            opts: [input: [], output: "email"]
+          }
+        ],
+        transitions: [
+          %{from: :wait_for_gateway, on: :ok, to: :send_email},
+          %{from: :send_email, on: :ok, to: :complete}
+        ],
+        retries: [],
+        entry_steps: [:wait_for_gateway],
+        initial_step: :wait_for_gateway,
+        entry_step: :wait_for_gateway
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:steps, 0, :opts, :duration],
+             code: :invalid_wait_duration,
+             message: "built-in step :wait_for_gateway requires a positive :duration option",
+             details: %{step: :wait_for_gateway, duration: 0}
+           } in errors
+
+    assert %{
+             path: [:steps, 1, :opts, :input],
+             code: :invalid_step_input_mapping,
+             message: "step :send_email defines an invalid :input mapping",
+             details: %{step: :send_email, input: []}
+           } in errors
+
+    assert %{
+             path: [:steps, 1, :opts, :output],
+             code: :invalid_step_output_mapping,
+             message: "step :send_email defines an invalid :output mapping",
+             details: %{step: :send_email, output: "email"}
+           } in errors
+  end
+
+  test "rejects invalid workflow spec retry options" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+    invalid_spec = %{spec | retries: [%{step: :send_email, opts: [max_attempts: 0]}]}
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:retries, 0, :opts, :max_attempts],
+             code: :invalid_retry_max_attempts,
+             message: "retry for :send_email must define a positive :max_attempts",
+             details: %{step: :send_email, max_attempts: 0}
+           } in errors
+  end
+
+  test "rejects workflow spec retries that disagree with step retry options" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    invalid_steps =
+      Enum.map(spec.steps, fn
+        %{name: :send_email} = step -> %{step | opts: [retry: [max_attempts: 0]]}
+        step -> step
+      end)
+
+    invalid_spec = %{
+      spec
+      | steps: invalid_steps,
+        retries: [%{step: :send_email, opts: [max_attempts: 1]}]
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:steps, 1, :opts, :retry, :max_attempts],
+             code: :invalid_step_retry_max_attempts,
+             message: "retry for :send_email must define a positive :max_attempts",
+             details: %{step: :send_email, max_attempts: 0}
+           } in errors
+
+    assert %{
+             path: [:retries],
+             code: :invalid_retry_derivation,
+             message: "retries must match step retry options",
+             details: %{
+               retries: [%{step: :send_email, opts: [max_attempts: 1]}],
+               expected: [%{step: :send_email, opts: [max_attempts: 0]}]
+             }
+           } in errors
+  end
+
+  test "rejects duplicate and invalid workflow spec transition recovery markers" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    invalid_spec = %{
+      spec
+      | transitions: [
+          %{from: :load_invoice, on: :ok, to: :send_email, recovery: :compensation},
+          %{from: :load_invoice, on: :ok, to: :record_delivery}
+        ]
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:transitions, 1],
+             code: :duplicate_transition,
+             message: "duplicate transition declared from :load_invoice on outcome :ok",
+             details: %{from: :load_invoice, on: :ok}
+           } in errors
+
+    assert %{
+             path: [:transitions, 0, :recovery],
+             code: :invalid_transition_recovery,
+             message:
+               "transition from :load_invoice can only define recovery markers for :error outcomes",
+             details: %{from: :load_invoice, on: :ok, recovery: :compensation}
+           } in errors
+  end
+
+  test "rejects transition workflow specs without a root entry step" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    invalid_spec = %{
+      spec
+      | steps: [
+          %{name: :load_invoice, module: InvoiceReminder.LoadInvoice, opts: []},
+          %{name: :send_email, module: InvoiceReminder.SendEmail, opts: []}
+        ],
+        transitions: [
+          %{from: :load_invoice, on: :ok, to: :send_email},
+          %{from: :send_email, on: :ok, to: :load_invoice}
+        ],
+        retries: [],
+        entry_steps: [],
+        initial_step: nil,
+        entry_step: nil
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:entry_steps],
+             code: :missing_entry_steps,
+             message: "workflow must define at least one entry step",
+             details: %{}
+           } in errors
+  end
+
+  test "rejects transition workflow specs with disconnected cycles" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    invalid_spec = %{
+      spec
+      | steps: [
+          %{name: :load_invoice, module: InvoiceReminder.LoadInvoice, opts: []},
+          %{name: :send_email, module: InvoiceReminder.SendEmail, opts: []},
+          %{name: :record_delivery, module: InvoiceReminder.RecordDelivery, opts: []}
+        ],
+        transitions: [
+          %{from: :load_invoice, on: :ok, to: :complete},
+          %{from: :send_email, on: :ok, to: :record_delivery},
+          %{from: :record_delivery, on: :ok, to: :send_email}
+        ],
+        retries: [],
+        entry_steps: [:load_invoice],
+        initial_step: :load_invoice,
+        entry_step: :load_invoice
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:transitions],
+             code: :transition_cycle,
+             message: "workflow transition graph must be acyclic",
+             details: %{}
+           } in errors
+  end
+
+  test "rejects invalid workflow spec dependency graphs" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(DependencyWorkflow)
+
+    invalid_spec = %{
+      spec
+      | steps: [
+          %{
+            name: :load_account,
+            module: DependencyWorkflow.LoadAccount,
+            opts: [after: [:send_email]]
+          },
+          %{
+            name: :load_invoice,
+            module: DependencyWorkflow.LoadInvoice,
+            opts: [after: [:missing_step]]
+          },
+          %{
+            name: :send_email,
+            module: DependencyWorkflow.SendEmail,
+            opts: [after: [:load_account]]
+          }
+        ],
+        transitions: [
+          %{from: :load_account, on: :ok, to: :send_email}
+        ]
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:steps, 1, :opts, :after],
+             code: :unknown_step_dependency,
+             message: "step :load_invoice depends on unknown step :missing_step",
+             details: %{step: :load_invoice, dependency: :missing_step}
+           } in errors
+
+    assert %{
+             path: [:steps],
+             code: :dependency_cycle,
+             message: "workflow dependency graph must be acyclic",
+             details: %{}
+           } in errors
+
+    assert %{
+             path: [:transitions],
+             code: :dependency_transitions,
+             message: "dependency-based workflows cannot declare transitions",
+             details: %{}
+           } in errors
+  end
+
+  test "rejects workflow specs with entry metadata that does not match the graph" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    invalid_spec = %{
+      spec
+      | entry_steps: [:send_email],
+        initial_step: :send_email,
+        entry_step: :send_email
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(invalid_spec)
+
+    assert %{
+             path: [:entry_steps],
+             code: :invalid_entry_steps,
+             message: "entry_steps must match workflow roots",
+             details: %{entry_steps: [:send_email], expected: [:load_invoice]}
+           } in errors
+
+    assert %{
+             path: [:initial_step],
+             code: :invalid_initial_step,
+             message: "initial_step must be the first workflow root",
+             details: %{initial_step: :send_email, expected: :load_invoice}
+           } in errors
+
+    assert %{
+             path: [:entry_step],
+             code: :invalid_entry_step,
+             message: "entry_step must match the transition workflow root",
+             details: %{entry_step: :send_email, expected: :load_invoice}
+           } in errors
+  end
+
+  test "rejects serialized module names in workflow specs without resolving modules" do
+    serialized_spec = %{
+      workflow: "Elixir.System",
+      triggers: [
+        %{
+          name: :manual,
+          type: :manual,
+          config: %{},
+          payload: []
+        }
+      ],
+      payload: [],
+      steps: [
+        %{name: :load_invoice, module: "Elixir.System", opts: []}
+      ],
+      transitions: [
+        %{from: :load_invoice, on: :ok, to: :complete}
+      ],
+      retries: [],
+      entry_steps: [:load_invoice],
+      initial_step: :load_invoice,
+      entry_step: :load_invoice
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} =
+             SquidMesh.Workflow.validate_spec(serialized_spec)
+
+    assert %{
+             path: [:workflow],
+             code: :invalid_workflow,
+             message: "workflow must be a module atom",
+             details: %{workflow: "Elixir.System"}
+           } in errors
+
+    assert %{
+             path: [:steps, 0, :module],
+             code: :invalid_step_module,
+             message: "step :load_invoice must use a module atom or built-in step kind",
+             details: %{step: :load_invoice, module: "Elixir.System"}
+           } in errors
+  end
+
   test "supports dependency-based step declarations with multiple entry steps" do
     definition = DependencyWorkflow.workflow_definition()
 

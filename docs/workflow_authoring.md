@@ -60,6 +60,84 @@ defmodule Billing.Workflows.PaymentRecovery do
 end
 ```
 
+## Validate Workflow Specs
+
+Compiled workflows can be exposed as normalized, serializable specs for tooling,
+inspection, and planner rebuilds:
+
+```elixir
+{:ok, spec} = SquidMesh.Workflow.to_spec(Billing.Workflows.PaymentRecovery)
+:ok = SquidMesh.Workflow.validate_spec(spec)
+```
+
+`validate_spec/1` validates the spec as data. It checks trigger shape, payload
+fields, step modules, step options, transitions, dependency graphs, retry
+policies, and entry metadata without starting a run and without coupling the
+workflow to a specific executor.
+
+The spec is an Elixir data representation with atom keys and module atoms:
+
+```elixir
+%SquidMesh.Workflow.Spec{
+  workflow: Billing.Workflows.PaymentRecovery,
+  triggers: [
+    %{
+      name: :payment_recovery,
+      type: :manual,
+      config: %{},
+      payload: [
+        %{name: :account_id, type: :string, opts: []},
+        %{name: :invoice_id, type: :string, opts: []}
+      ]
+    }
+  ],
+  payload: [
+    %{name: :account_id, type: :string, opts: []},
+    %{name: :invoice_id, type: :string, opts: []}
+  ],
+  steps: [
+    %{name: :load_invoice, module: Billing.Steps.LoadInvoice, opts: []},
+    %{
+      name: :check_gateway_status,
+      module: Billing.Steps.CheckGatewayStatus,
+      opts: [retry: [max_attempts: 5]]
+    }
+  ],
+  transitions: [
+    %{from: :load_invoice, on: :ok, to: :check_gateway_status},
+    %{from: :check_gateway_status, on: :ok, to: :complete}
+  ],
+  retries: [%{step: :check_gateway_status, opts: [max_attempts: 5]}],
+  entry_steps: [:load_invoice],
+  initial_step: :load_invoice,
+  entry_step: :load_invoice
+}
+```
+
+Invalid specs return structured errors:
+
+```elixir
+{:error, {:invalid_workflow_spec, errors}} =
+  SquidMesh.Workflow.validate_spec(%{
+    workflow: "Elixir.System",
+    triggers: [],
+    payload: [],
+    steps: [],
+    transitions: [],
+    retries: [],
+    entry_steps: []
+  })
+
+[%{path: [:workflow], code: :invalid_workflow} | _] = errors
+```
+
+Serialized module names and string-keyed runtime records are intentionally
+rejected. Runtime-authored workflows are still out of scope; host applications
+should define workflows as compiled Elixir modules and use `to_spec/1` when
+they need a stable data representation for executor-agnostic tooling or
+distributed workflow planning. `validate_spec/1` checks shape and invariants; it
+does not act as a module ownership allowlist.
+
 ## Triggers
 
 Triggers define how a workflow run starts.

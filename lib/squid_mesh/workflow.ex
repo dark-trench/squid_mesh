@@ -33,6 +33,8 @@ defmodule SquidMesh.Workflow do
     optional: [:transition]
   }
 
+  alias SquidMesh.Workflow.Info
+  alias SquidMesh.Workflow.Spec
   alias SquidMesh.Workflow.StepSpec
   alias SquidMesh.Workflow.Validation
 
@@ -226,6 +228,24 @@ defmodule SquidMesh.Workflow do
       Enum.map(steps, &resolve_step_metadata/1)
     end)
   end
+
+  @doc """
+  Converts a compiled workflow module into Squid Mesh's normalized workflow spec.
+  """
+  @spec to_spec(module()) ::
+          {:ok, Spec.t()} | {:error, SquidMesh.Workflow.Definition.load_error()}
+  def to_spec(workflow) when is_atom(workflow), do: Info.fetch_spec(workflow)
+
+  @doc """
+  Validates a normalized workflow spec without resolving workflow or step modules.
+
+  This validates the structural contract used by Squid Mesh planner state. It
+  does not prove that arbitrary module atoms are owned by the host application
+  or executable as runtime-authored workflow code.
+  """
+  @spec validate_spec(Spec.t() | map() | term()) ::
+          :ok | {:error, {:invalid_workflow_spec, [map()]}}
+  def validate_spec(spec), do: Spec.validate(spec)
 
   @doc """
   Adds one trigger definition to the workflow module currently being compiled.
