@@ -386,7 +386,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          } = success,
          retries_left
        ) do
-    with {:ok, progression_entries} <-
+    with {:ok, transition, progression_entries} <-
            success_progression_entries(
              workflow_agent,
              attempt,
@@ -396,7 +396,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
              queue,
              now
            ) do
-      entries = [runnable_applied_entry!(attempt, result, now) | progression_entries]
+      entries = [runnable_applied_entry!(attempt, result, transition, now) | progression_entries]
       append_success_entries(runtime, workflow_agent, success, entries, retries_left)
     end
   end
@@ -499,18 +499,26 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          now
        ) do
     if Definition.dependency_mode?(definition) do
-      dependency_success_progression_entries(
-        workflow_agent,
-        attempt,
-        definition,
-        step_name,
-        result,
-        queue,
-        now
-      )
+      with {:ok, progression_entries} <-
+             dependency_success_progression_entries(
+               workflow_agent,
+               attempt,
+               definition,
+               step_name,
+               result,
+               queue,
+               now
+             ) do
+        {:ok, nil, progression_entries}
+      end
     else
-      with {:ok, target} <- Definition.transition_target(definition, step_name, :ok) do
-        success_progression_entries(attempt, definition, target, result, queue, now)
+      context = journal_context(workflow_agent, attempt, result)
+
+      with {:ok, %{to: target} = transition} <-
+             Definition.transition(definition, step_name, :ok, context),
+           {:ok, progression_entries} <-
+             success_progression_entries(attempt, definition, target, context, queue, now) do
+        {:ok, Definition.serialize_transition_decision(transition), progression_entries}
       end
     end
   end
@@ -562,24 +570,50 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          _error,
          []
        ) do
-    case Definition.transition_target(definition, step_name, :error) do
-      {:ok, :complete} ->
-        append_run_entries(
+    case Definition.transition(
+           definition,
+           step_name,
+           :error,
+           journal_context(workflow_agent, attempt, %{})
+         ) do
+      {:ok, %{to: :complete} = transition} ->
+        append_failure_run_entries(
           storage,
           workflow_agent,
-          [run_terminal_entry!(attempt.run_id, :completed, now)],
+          attempt,
+          [
+            runnable_applied_entry!(
+              attempt,
+              %{},
+              Definition.serialize_transition_decision(transition),
+              now
+            ),
+            run_terminal_entry!(attempt.run_id, :completed, now)
+          ],
           @run_append_retries
         )
 
-      {:ok, next_step} when is_atom(next_step) ->
+      {:ok, %{to: next_step} = transition} when is_atom(next_step) ->
         with {:ok, runnable} <-
-               successor_runnable(attempt, definition, next_step, %{}, queue, now) do
+               successor_runnable(
+                 attempt,
+                 definition,
+                 next_step,
+                 journal_context(workflow_agent, attempt, %{}),
+                 queue,
+                 now
+               ) do
           append_failure_run_entries(
             storage,
             workflow_agent,
             attempt,
             [
-              runnable_applied_entry!(attempt, %{}, now),
+              runnable_applied_entry!(
+                attempt,
+                %{},
+                Definition.serialize_transition_decision(transition),
+                now
+              ),
               runnables_planned_entry!(attempt.run_id, [runnable], now)
             ],
             @run_append_retries
@@ -587,6 +621,14 @@ defmodule SquidMesh.Runtime.Journal.Executor do
         end
 
       {:error, {:unknown_transition, _from_step, :error}} ->
+        append_run_entries(
+          storage,
+          workflow_agent,
+          [run_terminal_entry!(attempt.run_id, :failed, now)],
+          @run_append_retries
+        )
+
+      {:error, {:no_matching_transition, _from_step, :error}} ->
         append_run_entries(
           storage,
           workflow_agent,
@@ -752,27 +794,36 @@ defmodule SquidMesh.Runtime.Journal.Executor do
 
   defp dependency_context(workflow_agent, current_result) do
     applied_results =
-      workflow_agent.state.projection
-      |> Map.get(:applied_results, %{})
-      |> Map.values()
-      |> Enum.filter(&is_map/1)
-      |> Enum.reduce(%{}, &Map.merge(&2, &1))
+      applied_result_context(workflow_agent)
 
     Map.merge(applied_results, current_result || %{})
+  end
+
+  defp journal_context(workflow_agent, %ActionAttempt{input: input}, current_result) do
+    workflow_agent
+    |> applied_result_context()
+    |> Map.merge(input || %{})
+    |> Map.merge(current_result || %{})
+  end
+
+  defp applied_result_context(workflow_agent) do
+    workflow_agent.state.projection
+    |> Map.get(:applied_results, %{})
+    |> Map.values()
+    |> Enum.filter(&is_map/1)
+    |> Enum.reduce(%{}, &Map.merge(&2, &1))
   end
 
   defp successor_runnable(
          %ActionAttempt{} = attempt,
          definition,
          next_step,
-         result,
+         context,
          queue,
          %DateTime{} = now
        ) do
     input =
-      attempt
-      |> attempt_context(result)
-      |> successor_input(definition, next_step)
+      successor_input(context, definition, next_step)
 
     case input do
       {:ok, input} ->
@@ -781,10 +832,6 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       {:error, _reason} = error ->
         error
     end
-  end
-
-  defp attempt_context(%ActionAttempt{input: input}, result) do
-    Map.merge(input || %{}, result || %{})
   end
 
   defp successor_input(context, definition, next_step) do
@@ -1018,10 +1065,15 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   defp retry_delay_ms(_error, policy_delay_ms), do: policy_delay_ms
 
   defp runnable_applied_entry!(%ActionAttempt{} = attempt, result, %DateTime{} = now) do
+    runnable_applied_entry!(attempt, result, nil, now)
+  end
+
+  defp runnable_applied_entry!(%ActionAttempt{} = attempt, result, transition, %DateTime{} = now) do
     entry!(:runnable_applied, %{
       run_id: attempt.run_id,
       runnable_key: attempt.runnable_key,
       result: result,
+      transition: transition,
       occurred_at: now
     })
   end
@@ -1375,7 +1427,8 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     retry_key = runnable_key(attempt.run_id, attempt.step, attempt.attempt_number + 1)
 
     MapSet.member?(WorkflowAgent.applied_runnable_keys(workflow_agent), attempt.runnable_key) or
-      Enum.member?(WorkflowAgent.planned_runnable_keys(workflow_agent), retry_key)
+      Enum.member?(WorkflowAgent.planned_runnable_keys(workflow_agent), retry_key) or
+      workflow_agent.state.projection.terminal_status in [:completed, :failed, :cancelled]
   end
 
   defp durable_retry_options(dispatch_agent, %ActionAttempt{} = failed_attempt) do

@@ -18,7 +18,11 @@ defmodule SquidMesh.Runs.Store.Persistence do
   @type transition_attrs :: %{
           optional(:context) => map(),
           optional(:current_step) => String.t() | atom() | nil,
-          optional(:last_error) => map() | nil
+          optional(:last_error) => map() | nil,
+          optional(:step_transition) => %{
+            required(:step_run_id) => Ecto.UUID.t(),
+            required(:transition) => map()
+          }
         }
   @type schedule_start_identity :: %{
           workflow: String.t(),

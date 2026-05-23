@@ -15,6 +15,7 @@ defmodule SquidMesh.Runs.GraphInspection.Node do
           output: map() | nil,
           error: map() | nil,
           recovery: map() | nil,
+          transition: map() | nil,
           manual_state: map() | nil,
           attempts: [map()]
         }
@@ -29,6 +30,7 @@ defmodule SquidMesh.Runs.GraphInspection.Node do
     :output,
     :error,
     :recovery,
+    :transition,
     :manual_state,
     attempts: []
   ]

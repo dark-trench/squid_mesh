@@ -365,6 +365,7 @@ defmodule SquidMesh.Workflow.Validation do
     errors
     |> validate_dependency_manual_step_kind(steps, :pause)
     |> validate_dependency_manual_step_kind(steps, :approval)
+    |> validate_manual_step_transition_conditions(steps, transitions)
     |> validate_approval_transitions(steps, transitions)
   end
 
@@ -392,6 +393,24 @@ defmodule SquidMesh.Workflow.Validation do
     else
       errors
     end
+  end
+
+  defp validate_manual_step_transition_conditions(errors, steps, transitions) do
+    manual_steps =
+      steps
+      |> Enum.filter(&(&1.module in [:pause, :approval]))
+      |> MapSet.new(& &1.name)
+
+    Enum.reduce(transitions, errors, fn transition, acc ->
+      if Map.has_key?(transition, :condition) and MapSet.member?(manual_steps, transition.from) do
+        [
+          "transition from built-in manual step #{inspect(transition.from)} cannot define a condition"
+          | acc
+        ]
+      else
+        acc
+      end
+    end)
   end
 
   defp validate_approval_transitions(errors, steps, transitions) do
@@ -581,6 +600,7 @@ defmodule SquidMesh.Workflow.Validation do
         reduce_acc
         |> validate_transition_from(transition, step_names)
         |> validate_transition_outcome(transition)
+        |> validate_transition_condition(transition)
         |> validate_transition_recovery_marker(transition)
         |> validate_transition_to(transition, step_names)
       end)
@@ -643,19 +663,57 @@ defmodule SquidMesh.Workflow.Validation do
     end
   end
 
+  defp validate_transition_condition(errors, %{condition: condition, from: from}) do
+    case SquidMesh.Workflow.TransitionCondition.normalize(condition) do
+      {:ok, _condition} ->
+        errors
+
+      {:error, :invalid_condition} ->
+        ["transition from #{inspect(from)} defines an invalid condition" | errors]
+    end
+  end
+
+  defp validate_transition_condition(errors, _transition), do: errors
+
   defp validate_duplicate_transitions(errors, transitions) do
     transitions
     |> Enum.group_by(fn %{from: from, on: outcome} -> {from, outcome} end)
     |> Enum.reduce(errors, fn
-      {{_from, _outcome}, [_single_transition]}, acc ->
-        acc
+      {{from, outcome}, grouped}, acc ->
+        validate_transition_group(acc, from, outcome, grouped)
+    end)
+  end
 
-      {{from, outcome}, [_first, _second | _rest]}, acc ->
+  defp validate_transition_group(errors, _from, _outcome, [_single_transition]), do: errors
+
+  defp validate_transition_group(errors, from, outcome, transitions) do
+    unconditional_count = Enum.count(transitions, &(not Map.has_key?(&1, :condition)))
+
+    cond do
+      unconditional_count > 1 ->
         [
           "duplicate transition declared from #{inspect(from)} on outcome #{inspect(outcome)}"
-          | acc
+          | errors
         ]
-    end)
+
+      duplicate_transition_condition?(transitions) ->
+        [
+          "duplicate transition declared from #{inspect(from)} on outcome #{inspect(outcome)}"
+          | errors
+        ]
+
+      true ->
+        errors
+    end
+  end
+
+  defp duplicate_transition_condition?(transitions) do
+    conditions =
+      transitions
+      |> Enum.filter(&Map.has_key?(&1, :condition))
+      |> Enum.map(&SquidMesh.Workflow.TransitionCondition.serialize(&1.condition))
+
+    Enum.uniq(conditions) != conditions
   end
 
   defp has_transition?(transitions, from_step, outcome) do

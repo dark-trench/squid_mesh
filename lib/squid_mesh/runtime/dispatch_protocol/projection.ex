@@ -327,7 +327,18 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
         add_anomaly(projection, entry, :terminal_run)
 
       attempt.status == :completed ->
-        put_attempt(projection, %ActionAttempt{attempt | applied?: true})
+        put_attempt(projection, %ActionAttempt{
+          attempt
+          | applied?: true,
+            transition: Map.get(entry.data, :transition)
+        })
+
+      attempt.status == :failed and is_map(Map.get(entry.data, :transition)) ->
+        put_attempt(projection, %ActionAttempt{
+          attempt
+          | applied?: true,
+            transition: Map.get(entry.data, :transition)
+        })
 
       true ->
         add_anomaly(projection, entry, :result_not_completed)
@@ -356,6 +367,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
             owner_id: nil,
             lease_until: nil,
             result: nil,
+            transition: nil,
             error: nil,
             wakeup_emitted?: false,
             applied?: false

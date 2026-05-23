@@ -195,12 +195,36 @@ defmodule SquidMesh.Workflow do
       }
 
       transition_config =
-        case Keyword.fetch(opts, :recovery) do
-          {:ok, recovery} -> Map.put(transition, :recovery, recovery)
-          :error -> transition
-        end
+        transition
+        |> SquidMesh.Workflow.maybe_put_transition_recovery(opts)
+        |> SquidMesh.Workflow.maybe_put_transition_condition(opts)
 
       @squid_mesh_transitions transition_config
+    end
+  end
+
+  @doc false
+  @spec maybe_put_transition_recovery(map(), keyword()) :: map()
+  def maybe_put_transition_recovery(transition, opts) do
+    case Keyword.fetch(opts, :recovery) do
+      {:ok, recovery} -> Map.put(transition, :recovery, recovery)
+      :error -> transition
+    end
+  end
+
+  @doc false
+  @spec maybe_put_transition_condition(map(), keyword()) :: map()
+  def maybe_put_transition_condition(transition, opts) do
+    case Keyword.fetch(opts, :condition) do
+      {:ok, condition} ->
+        Map.put(
+          transition,
+          :condition,
+          SquidMesh.Workflow.TransitionCondition.normalize!(condition)
+        )
+
+      :error ->
+        transition
     end
   end
 

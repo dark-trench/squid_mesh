@@ -13,6 +13,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.ConcurrentDependencyFailureWorkflow
   alias __MODULE__.ConcurrentDependencyWorkflow
   alias __MODULE__.ConcurrentRetryWorkflow
+  alias __MODULE__.ConditionalRoutingWorkflow
   alias __MODULE__.DependencyFailureWorkflow
   alias __MODULE__.DependencyWorkflow
   alias __MODULE__.ErrorRoutingWorkflow
@@ -427,6 +428,71 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                 %{drafts: [%{id: "draft_1"}, %{id: "draft_2"}], reviewer: %{id: "user_123"}},
                 %{review: %{draft_count: 2, reviewer_id: "user_123"}}}
              ]
+    end
+
+    test "routes transition workflows through the first matching condition" do
+      assert {:ok, run} =
+               SquidMesh.start_run(
+                 ConditionalRoutingWorkflow,
+                 %{account_id: "acct_123", decision: "auto"},
+                 repo: Repo
+               )
+
+      assert %{success: 2, failure: 0} =
+               SquidMesh.Test.Executor.drain()
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.routing == %{decision: "auto"}
+      assert completed_run.context.approval == %{mode: "auto"}
+
+      assert Enum.map(completed_run.step_runs, & &1.step) == [:classify, :auto_approve]
+
+      assert %{transition: %{to: :auto_approve, condition: %{path: [:routing, :decision]}}} =
+               Enum.find(completed_run.step_runs, &(&1.step == :classify))
+
+      assert {:ok, graph} =
+               SquidMesh.inspect_run_graph(run.id,
+                 include_details: true,
+                 repo: Repo
+               )
+
+      assert %{
+               {:classify, :auto_approve} => :selected,
+               {:classify, :manual_review} => :skipped
+             } =
+               graph.edges
+               |> Enum.filter(&(&1.from == "classify"))
+               |> Map.new(fn edge ->
+                 {{String.to_existing_atom(edge.from), String.to_existing_atom(edge.to)},
+                  edge.status}
+               end)
+
+      auto_edge = Enum.find(graph.edges, &(&1.from == "classify" and &1.to == "auto_approve"))
+      assert auto_edge.condition == %{path: [:routing, :decision], equals: "auto"}
+    end
+
+    test "keeps the selected condition when successor dispatch fails" do
+      assert {:ok, run} =
+               SquidMesh.Runs.Store.create_run(
+                 Repo,
+                 ConditionalRoutingWorkflow,
+                 %{account_id: "acct_123", decision: "auto"}
+               )
+
+      assert :ok = StepExecutor.execute(run.id, nil, repo: Repo, executor: MissingExecutor)
+
+      assert {:ok, failed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert failed_run.status == :failed
+      assert failed_run.current_step == :auto_approve
+      assert failed_run.last_error.message == "failed to dispatch workflow step"
+
+      assert %{transition: %{to: :auto_approve, condition: %{path: [:routing, :decision]}}} =
+               Enum.find(failed_run.step_runs, &(&1.step == :classify))
     end
 
     test "fails before executing a step when a named path input is missing" do
@@ -2517,6 +2583,56 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert cancelled_run.current_step == nil
     end
 
+    test "does not record a conditional route when cancellation wins progression" do
+      assert {:ok, config} = Config.load(repo: Repo)
+      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(ConditionalRoutingWorkflow)
+
+      assert {:ok, run} =
+               SquidMesh.start_run(
+                 ConditionalRoutingWorkflow,
+                 %{account_id: "acct_123", decision: "auto"},
+                 repo: Repo
+               )
+
+      assert {:ok, running_run} =
+               SquidMesh.Runs.Store.transition_run(Repo, run.id, :running, %{
+                 current_step: :classify
+               })
+
+      assert {:ok, step_run, :execute} =
+               Steps.Store.begin_step(Repo, run.id, :classify, %{
+                 account_id: "acct_123",
+                 decision: "auto"
+               })
+
+      assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+      assert {:ok, cancelling_run} = SquidMesh.cancel_run(run.id, repo: Repo)
+      assert cancelling_run.status == :cancelling
+
+      assert :ok =
+               Outcome.apply_execution_result(
+                 {:ok, %{routing: %{decision: "auto"}}, []},
+                 %{
+                   config: config,
+                   definition: definition,
+                   run: running_run,
+                   step_name: :classify,
+                   step_run_id: step_run.id,
+                   attempt_id: attempt.id,
+                   attempt_number: attempt.attempt_number,
+                   started_at: System.monotonic_time()
+                 }
+               )
+
+      assert {:ok, cancelled_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert cancelled_run.status == :cancelled
+
+      assert %{transition: nil} =
+               Enum.find(cancelled_run.step_runs, &(&1.step == :classify))
+    end
+
     test "finalizes pause step history when cancellation wins before pause progression" do
       assert {:ok, config} = Config.load(repo: Repo)
       assert {:ok, definition} = SquidMesh.Workflow.Definition.load(PauseWorkflow)
@@ -3429,6 +3545,69 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
          }
        }}
     end
+  end
+
+  defmodule ConditionalRoutingWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+          field :decision, :string
+        end
+      end
+
+      step :classify, ConditionalRoutingWorkflow.Classify
+      step :auto_approve, ConditionalRoutingWorkflow.AutoApprove
+      step :manual_review, ConditionalRoutingWorkflow.ManualReview
+
+      transition :classify,
+        on: :ok,
+        to: :auto_approve,
+        condition: [path: [:routing, :decision], equals: "auto"]
+
+      transition :classify, on: :ok, to: :manual_review
+      transition :auto_approve, on: :ok, to: :complete
+      transition :manual_review, on: :ok, to: :complete
+    end
+  end
+
+  defmodule ConditionalRoutingWorkflow.Classify do
+    use Jido.Action,
+      name: "classify",
+      description: "Classifies a conditional route",
+      schema: [
+        account_id: [type: :string, required: true],
+        decision: [type: :string, required: true]
+      ]
+
+    @impl Jido.Action
+    def run(%{decision: decision}, _context) do
+      {:ok, %{routing: %{decision: decision}}}
+    end
+  end
+
+  defmodule ConditionalRoutingWorkflow.AutoApprove do
+    use Jido.Action,
+      name: "auto_approve",
+      description: "Records automatic approval",
+      schema: [routing: [type: :map, required: true]]
+
+    @impl Jido.Action
+    def run(_input, _context), do: {:ok, %{approval: %{mode: "auto"}}}
+  end
+
+  defmodule ConditionalRoutingWorkflow.ManualReview do
+    use Jido.Action,
+      name: "manual_review",
+      description: "Records manual review",
+      schema: [routing: [type: :map, required: true]]
+
+    @impl Jido.Action
+    def run(_input, _context), do: {:ok, %{approval: %{mode: "manual"}}}
   end
 
   defmodule FailingWorkflow do

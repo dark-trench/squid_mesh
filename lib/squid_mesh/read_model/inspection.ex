@@ -257,6 +257,7 @@ defmodule SquidMesh.ReadModel.Inspection do
       owner_id: attempt.owner_id,
       lease_until: attempt.lease_until,
       result: attempt.result,
+      transition: attempt.transition,
       error: attempt.error,
       wakeup_emitted?: attempt.wakeup_emitted?,
       applied?: attempt.applied?

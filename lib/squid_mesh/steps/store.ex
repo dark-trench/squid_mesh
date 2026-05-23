@@ -166,12 +166,13 @@ defmodule SquidMesh.Steps.Store do
   @doc """
   Marks a step run as completed and persists its output.
   """
-  @spec complete_step(module(), Ecto.UUID.t(), step_output()) ::
+  @spec complete_step(module(), Ecto.UUID.t(), step_output(), map() | nil) ::
           {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
-  def complete_step(repo, step_run_id, output) when is_map(output) do
+  def complete_step(repo, step_run_id, output, transition \\ nil) when is_map(output) do
     update_running_step(repo, step_run_id, %{
       status: "completed",
       output: output,
+      transition: transition,
       manual: nil,
       resume: nil,
       last_error: nil

@@ -288,18 +288,41 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
          result: {:ok, _output, execution_opts}
        }) do
     with {:ok, _attempt} <-
-           AttemptStore.complete_latest_running_attempt(config.repo, step_run_id, attempt_id),
-         {:ok, _step_run} <- Steps.Store.complete_step(config.repo, step_run_id, mapped_output) do
+           AttemptStore.complete_latest_running_attempt(config.repo, step_run_id, attempt_id) do
       with {:ok, events} <-
-             advance_after_completed_step(
+             complete_step_and_advance(
                config,
                definition,
                run,
                step_name,
+               step_run_id,
                mapped_output,
                execution_opts
              ) do
         {:ok, [Events.completed(run, step_name, attempt_number, duration) | events]}
+      end
+    end
+  end
+
+  defp complete_step_and_advance(config, definition, run, step_name, step_run_id, output, opts) do
+    if SquidMesh.Workflow.Definition.dependency_mode?(definition) do
+      with {:ok, _step_run} <- Steps.Store.complete_step(config.repo, step_run_id, output) do
+        advance_after_completed_step(config, definition, run, step_name, output, opts)
+      end
+    else
+      resolution = success_resolution(config.repo, definition, run, step_name, output)
+
+      with {:ok, _step_run} <- Steps.Store.complete_step(config.repo, step_run_id, output) do
+        advance_after_completed_step(
+          config,
+          definition,
+          run,
+          step_name,
+          output,
+          opts,
+          resolution,
+          step_transition_attrs(step_run_id, success_transition_decision(resolution))
+        )
       end
     end
   end
@@ -361,19 +384,41 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
          run,
          step_name,
          mapped_output,
-         execution_opts
+         execution_opts,
+         resolution \\ nil,
+         step_transition \\ nil
        ) do
-    case success_resolution(config.repo, definition, run, step_name) do
+    case resolution || success_resolution(config.repo, definition, run, step_name, mapped_output) do
       {:ok, latest_run, target} ->
         progression =
-          success_progression(
-            config,
-            definition,
-            latest_run,
-            step_name,
-            target,
-            mapped_output,
-            execution_opts
+          attach_step_transition(
+            success_progression(
+              config,
+              definition,
+              latest_run,
+              step_name,
+              target,
+              mapped_output,
+              execution_opts
+            ),
+            step_transition
+          )
+
+        apply_progression(config, latest_run.id, progression)
+
+      {:ok, latest_run, target, _transition} ->
+        progression =
+          attach_step_transition(
+            success_progression(
+              config,
+              definition,
+              latest_run,
+              step_name,
+              target,
+              mapped_output,
+              execution_opts
+            ),
+            step_transition
           )
 
         apply_progression(config, latest_run.id, progression)
@@ -489,7 +534,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     )
   end
 
-  defp success_resolution(repo, definition, run, step_name) do
+  defp success_resolution(repo, definition, run, step_name, output) do
     with {:ok, latest_run} <- Runs.Store.get_run(repo, run.id) do
       cond do
         latest_run.status in [:failed, :completed, :cancelled] ->
@@ -503,15 +548,55 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
           resolve_dependency_success(repo, definition, latest_run)
 
         true ->
-          success_transition_target(definition, latest_run, step_name)
+          success_transition_target(definition, latest_run, step_name, output)
       end
     end
   end
 
-  defp success_transition_target(definition, latest_run, step_name) do
-    case SquidMesh.Workflow.Definition.transition_target(definition, step_name, :ok) do
-      {:ok, target} -> {:ok, latest_run, target}
+  defp success_transition_target(definition, latest_run, step_name, output) do
+    context = merged_context(latest_run, output)
+
+    case SquidMesh.Workflow.Definition.transition(definition, step_name, :ok, context) do
+      {:ok, %{to: target} = transition} -> {:ok, latest_run, target, transition}
       {:error, reason} -> {:error, latest_run, reason}
+    end
+  end
+
+  defp success_transition_decision({:ok, _latest_run, _target, transition}) do
+    SquidMesh.Workflow.Definition.serialize_transition_decision(transition)
+  end
+
+  defp success_transition_decision(_resolution), do: nil
+
+  defp step_transition_attrs(_step_run_id, nil), do: nil
+
+  defp step_transition_attrs(step_run_id, transition_decision) when is_binary(step_run_id) do
+    %{step_run_id: step_run_id, transition: transition_decision}
+  end
+
+  defp attach_step_transition(progression, nil), do: progression
+
+  defp attach_step_transition(%Complete{attrs_fun: attrs_fun} = progression, step_transition) do
+    %{progression | attrs_fun: with_step_transition(attrs_fun, step_transition)}
+  end
+
+  defp attach_step_transition(%Update{attrs_fun: attrs_fun} = progression, step_transition) do
+    %{progression | attrs_fun: with_step_transition(attrs_fun, step_transition)}
+  end
+
+  defp attach_step_transition(%DispatchRun{attrs_fun: attrs_fun} = progression, step_transition) do
+    %{progression | attrs_fun: with_step_transition(attrs_fun, step_transition)}
+  end
+
+  defp attach_step_transition(%DispatchSteps{attrs_fun: attrs_fun} = progression, step_transition) do
+    %{progression | attrs_fun: with_step_transition(attrs_fun, step_transition)}
+  end
+
+  defp with_step_transition(attrs_fun, step_transition) do
+    fn current_run ->
+      current_run
+      |> attrs_fun.()
+      |> Map.put(:step_transition, step_transition)
     end
   end
 
@@ -586,12 +671,21 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       Logger.error("workflow step failed")
       fail_run_and_request_compensation(config, definition, run, step_name, error)
     else
-      case SquidMesh.Workflow.Definition.transition_target(definition, step_name, :error) do
-        {:ok, target} ->
+      case SquidMesh.Workflow.Definition.transition(
+             definition,
+             step_name,
+             :error,
+             run.context || %{}
+           ) do
+        {:ok, %{to: target} = transition} ->
           Logger.warning("workflow step failed; routing to error transition")
-          record_failure_and_advance(config, definition, run, step_name, step_run_id, target)
+          record_failure_and_advance(config, run, step_run_id, target, transition)
 
         {:error, {:unknown_transition, _from_step, :error}} ->
+          Logger.error("workflow step failed")
+          fail_run_and_request_compensation(config, definition, run, step_name, error)
+
+        {:error, {:no_matching_transition, _from_step, :error}} ->
           Logger.error("workflow step failed")
           fail_run_and_request_compensation(config, definition, run, step_name, error)
 
@@ -601,25 +695,27 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     end
   end
 
-  defp record_failure_and_advance(config, definition, run, step_name, step_run_id, target) do
-    case record_failure_recovery(config.repo, definition, step_name, step_run_id) do
-      :ok -> advance_after_failure(config, run, target)
-      {:error, reason} -> {:error, reason}
+  defp record_failure_and_advance(config, run, step_run_id, target, transition) do
+    with :ok <- record_failure_recovery(config.repo, step_run_id, transition) do
+      advance_after_failure(
+        config,
+        run,
+        target,
+        step_transition_attrs(
+          step_run_id,
+          SquidMesh.Workflow.Definition.serialize_transition_decision(transition)
+        )
+      )
     end
   end
 
-  defp record_failure_recovery(repo, definition, step_name, step_run_id) do
-    case SquidMesh.Workflow.Definition.failure_recovery(definition, step_name) do
-      {:ok, nil} ->
-        :ok
-
-      {:ok, failure_recovery} ->
-        case Steps.Store.record_failure_recovery(repo, step_run_id, failure_recovery) do
-          {:ok, _step_run} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
-
-      {:error, {:unknown_transition, _from_step, :error}} ->
+  defp record_failure_recovery(repo, step_run_id, %{recovery: strategy, to: target})
+       when strategy in [:compensation, :undo] do
+    case Steps.Store.record_failure_recovery(repo, step_run_id, %{
+           strategy: strategy,
+           target: target
+         }) do
+      {:ok, _step_run} ->
         :ok
 
       {:error, reason} ->
@@ -627,34 +723,42 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     end
   end
 
-  defp advance_after_failure(config, run, :complete) do
+  defp record_failure_recovery(_repo, _step_run_id, _transition), do: :ok
+
+  defp advance_after_failure(config, run, :complete, step_transition) do
     apply_progression(
       config,
       run.id,
-      Progression.complete(fn _run -> %{current_step: nil, last_error: nil} end)
+      attach_step_transition(
+        Progression.complete(fn _run -> %{current_step: nil, last_error: nil} end),
+        step_transition
+      )
     )
   end
 
-  defp advance_after_failure(config, run, next_step) when is_atom(next_step) do
+  defp advance_after_failure(config, run, next_step, step_transition) when is_atom(next_step) do
     attrs = %{current_step: next_step, last_error: nil}
 
     apply_progression(
       config,
       run.id,
-      Progression.dispatch_run(
-        fn _current_run -> attrs end,
-        [],
-        fn _current_run, reason ->
-          dispatch_error = %{
-            message: "failed to dispatch workflow step",
-            next_step: next_step,
-            dispatch_reason: normalize_dispatch_cause(reason)
-          }
+      attach_step_transition(
+        Progression.dispatch_run(
+          fn _current_run -> attrs end,
+          [],
+          fn _current_run, reason ->
+            dispatch_error = %{
+              message: "failed to dispatch workflow step",
+              next_step: next_step,
+              dispatch_reason: normalize_dispatch_cause(reason)
+            }
 
-          attrs
-          |> Map.take([:context, :current_step])
-          |> Map.put(:last_error, dispatch_error)
-        end
+            attrs
+            |> Map.take([:context, :current_step])
+            |> Map.put(:last_error, dispatch_error)
+          end
+        ),
+        step_transition
       )
     )
   end

@@ -17,6 +17,7 @@ defmodule SquidMesh.Runs.GraphInspection.Edge do
           type: edge_type(),
           status: edge_status(),
           outcome: atom() | nil,
+          condition: map() | nil,
           recovery: atom() | nil
         }
 
@@ -29,6 +30,7 @@ defmodule SquidMesh.Runs.GraphInspection.Edge do
     :type,
     :status,
     :outcome,
+    :condition,
     :recovery
   ]
 end
