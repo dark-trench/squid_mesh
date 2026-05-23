@@ -166,6 +166,18 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              {:load_invoice, :completed, []},
              {:prepare_notification, :completed, [:load_account, :load_invoice]}
            ]
+
+    assert [
+             _load_account,
+             _load_invoice,
+             %{step: :prepare_notification, input: prepare_notification_input}
+           ] = history_run.step_runs
+
+    assert prepare_notification_input == %{
+             account_id: "acct_123",
+             invoice_id: "inv_456",
+             account_tier: "standard"
+           }
   end
 
   test "commits local repo transaction groups through the host boundary" do

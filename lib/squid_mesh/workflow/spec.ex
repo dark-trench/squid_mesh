@@ -9,6 +9,7 @@ defmodule SquidMesh.Workflow.Spec do
   """
 
   alias SquidMesh.Workflow.Definition
+  alias SquidMesh.Workflow.InputMapping
 
   @built_in_step_kinds [:wait, :log, :pause, :approval]
   @collection_fields [:triggers, :payload, :steps, :transitions, :retries, :entry_steps]
@@ -590,7 +591,7 @@ defmodule SquidMesh.Workflow.Spec do
       is_nil(input) ->
         errors
 
-      is_list(input) and input != [] and Enum.all?(input, &is_atom/1) ->
+      InputMapping.valid?(input) ->
         errors
 
       true ->

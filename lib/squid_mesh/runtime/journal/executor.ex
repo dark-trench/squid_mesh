@@ -15,6 +15,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.Journal.Options
   alias SquidMesh.Runtime.RetryPolicy
+  alias SquidMesh.Runtime.StepInput
   alias SquidMesh.Runtime.WorkflowAgent
   alias SquidMesh.Workflow.Definition
 
@@ -156,6 +157,16 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          step_name,
          output
        ) do
+    runtime = %{storage: storage, queue: queue, now: now}
+
+    claim = %{
+      dispatch_agent: dispatch_agent,
+      workflow_agent: workflow_agent,
+      attempt: attempt,
+      claim_id: claim_id,
+      claim_token: claim_token
+    }
+
     with {:ok, result} <- Definition.apply_output_mapping(definition, step_name, output),
          {:ok, %{agent: dispatch_agent}} <-
            complete_current_claim(
@@ -166,17 +177,79 @@ defmodule SquidMesh.Runtime.Journal.Executor do
              claim_token,
              result,
              now: now
-           ),
-         {:ok, workflow_agent} <-
-           append_success_progression(
-             storage,
+           ) do
+      append_completed_attempt_progression(
+        runtime,
+        %{claim | dispatch_agent: dispatch_agent},
+        definition,
+        step_name,
+        result
+      )
+    else
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp append_completed_attempt_progression(
+         %{storage: storage, queue: queue, now: now} = runtime,
+         %{
+           dispatch_agent: dispatch_agent,
+           workflow_agent: workflow_agent,
+           attempt: %ActionAttempt{} = attempt
+         } = claim,
+         definition,
+         step_name,
+         result
+       ) do
+    case append_success_progression(
+           storage,
+           workflow_agent,
+           attempt,
+           definition,
+           step_name,
+           result,
+           queue,
+           now
+         ) do
+      {:ok, workflow_agent} ->
+        with {:ok, _schedule_update} <-
+               schedule_pending_dispatches(storage, workflow_agent, dispatch_agent, now) do
+          Inspection.snapshot(storage, attempt.run_id, queue: queue, now: now)
+        end
+
+      {:error, reason} when is_tuple(reason) ->
+        if StepInput.input_mapping_error?(reason) do
+          fail_success_progression(runtime, claim, result, reason)
+        else
+          {:error, reason}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp fail_success_progression(
+         %{storage: storage, queue: queue, now: now},
+         %{
+           dispatch_agent: dispatch_agent,
+           workflow_agent: workflow_agent,
+           attempt: %ActionAttempt{} = attempt
+         },
+         result,
+         reason
+       ) do
+    error = normalize_error(reason)
+
+    with {:ok, workflow_agent} <-
+           append_failed_success_progression(
+             %{storage: storage, now: now},
              workflow_agent,
              attempt,
-             definition,
-             step_name,
              result,
-             queue,
-             now
+             error,
+             @run_append_retries
            ),
          {:ok, _schedule_update} <-
            schedule_pending_dispatches(storage, workflow_agent, dispatch_agent, now) do
@@ -353,6 +426,68 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     MapSet.member?(WorkflowAgent.applied_runnable_keys(workflow_agent), attempt.runnable_key) or
       workflow_agent.state.projection.terminal_status in [:completed, :failed, :cancelled]
   end
+
+  defp append_failed_success_progression(
+         _runtime,
+         workflow_agent,
+         %ActionAttempt{},
+         _result,
+         _error,
+         _retries_left
+       )
+       when workflow_agent.state.projection.terminal_status in [:completed, :failed, :cancelled] do
+    {:ok, workflow_agent}
+  end
+
+  defp append_failed_success_progression(
+         %{storage: storage, now: now} = runtime,
+         workflow_agent,
+         %ActionAttempt{} = attempt,
+         result,
+         error,
+         retries_left
+       )
+       when retries_left > 0 do
+    entries =
+      if MapSet.member?(WorkflowAgent.applied_runnable_keys(workflow_agent), attempt.runnable_key) do
+        [run_terminal_entry!(attempt.run_id, :failed, now, error)]
+      else
+        [
+          runnable_applied_entry!(attempt, result, now),
+          run_terminal_entry!(attempt.run_id, :failed, now, error)
+        ]
+      end
+
+    case Journal.append_entries(storage, entries, expected_rev: workflow_agent.state.thread_rev) do
+      {:ok, _thread} ->
+        WorkflowAgent.rebuild(storage, workflow_agent.state.run_id)
+
+      {:error, :conflict} ->
+        with {:ok, workflow_agent} <- WorkflowAgent.rebuild(storage, workflow_agent.state.run_id) do
+          append_failed_success_progression(
+            runtime,
+            workflow_agent,
+            attempt,
+            result,
+            error,
+            retries_left - 1
+          )
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp append_failed_success_progression(
+         _runtime,
+         _workflow_agent,
+         %ActionAttempt{},
+         _result,
+         _error,
+         0
+       ),
+       do: {:error, :conflict}
 
   defp success_progression_entries(
          workflow_agent,
@@ -654,8 +789,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
 
   defp successor_input(context, definition, next_step) do
     case Definition.step_input_mapping(definition, next_step) do
-      {:ok, nil} -> {:ok, context}
-      {:ok, input_mapping} when is_list(input_mapping) -> {:ok, Map.take(context, input_mapping)}
+      {:ok, input_mapping} -> StepInput.apply_input_mapping(context, input_mapping)
       {:error, _reason} = error -> error
     end
   end
@@ -908,6 +1042,15 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     })
   end
 
+  defp run_terminal_entry!(run_id, status, %DateTime{} = now, error) when is_map(error) do
+    entry!(:run_terminal, %{
+      run_id: run_id,
+      status: status,
+      error: error,
+      occurred_at: now
+    })
+  end
+
   defp entry!(type, attrs) do
     {:ok, entry} = DispatchProtocol.new_entry(type, attrs)
     entry
@@ -1081,6 +1224,41 @@ defmodule SquidMesh.Runtime.Journal.Executor do
            ),
          {:ok, _schedule_update} <-
            schedule_pending_dispatches(storage, workflow_agent, dispatch_agent, now),
+         {:ok, %Inspection.Snapshot{} = snapshot} <-
+           Inspection.snapshot(storage, attempt.run_id, queue: queue, now: now) do
+      {:ok, {:recovered, snapshot}}
+    else
+      {:error, reason} when is_tuple(reason) ->
+        if StepInput.input_mapping_error?(reason) do
+          recover_success_progression_failure(
+            storage,
+            queue,
+            workflow_agent,
+            attempt,
+            now,
+            reason
+          )
+        else
+          {:error, reason}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp recover_success_progression_failure(storage, queue, workflow_agent, attempt, now, reason) do
+    error = normalize_error(reason)
+
+    with {:ok, _workflow_agent} <-
+           append_failed_success_progression(
+             %{storage: storage, now: now},
+             workflow_agent,
+             attempt,
+             attempt.result || %{},
+             error,
+             @run_append_retries
+           ),
          {:ok, %Inspection.Snapshot{} = snapshot} <-
            Inspection.snapshot(storage, attempt.run_id, queue: queue, now: now) do
       {:ok, {:recovered, snapshot}}
@@ -1329,6 +1507,10 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     details
     |> Map.put(:message, message)
     |> redact_error()
+  end
+
+  defp normalize_error({:missing_input_path, _details} = reason) do
+    StepInput.input_mapping_error_to_map(reason)
   end
 
   defp normalize_error(%{__struct__: _struct, message: message}) when is_binary(message) do

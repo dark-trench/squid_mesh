@@ -560,7 +560,7 @@ That means later steps can use values produced by earlier steps without manual
 state persistence in the host application.
 
 If you want a step to consume only a subset of the available data, declare an
-explicit input mapping:
+explicit input mapping. A list selects top-level keys without renaming them:
 
 ```elixir
 step :load_account, Billing.Steps.LoadAccount, input: [:account_id], output: :account
@@ -574,10 +574,37 @@ In that example:
 - `:send_email` receives only `%{account: ..., invoice_id: ...}`
 - its returned map is stored under `:delivery`
 
+Use a keyword mapping when a step should receive renamed values from nested
+paths in the accumulated payload and context:
+
+```elixir
+step :prepare_notification, Billing.Steps.PrepareNotification,
+  after: [:load_account, :load_invoice],
+  input: [
+    account_id: [:account, :id],
+    invoice_id: [:invoice, :id],
+    account_tier: [:account, :tier]
+  ]
+```
+
+In that example, `:prepare_notification` receives only:
+
+```elixir
+%{
+  account_id: "acct_123",
+  invoice_id: "inv_456",
+  account_tier: "standard"
+}
+```
+
+If any named path is absent, Squid Mesh returns a structured
+`:missing_input_path` error before the step begins execution.
+
 Current boundary:
 
 - run context is still a flat merged map
-- explicit `input: [...]` lets a step declare which keys it consumes
+- explicit `input: [:key, ...]` lets a step declare which top-level keys it consumes
+- explicit `input: [name: [:path, ...]]` lets a step consume named values from nested context
 - explicit `output: :key` lets a step namespace its returned map under one top-level key
 - dependency-based workflows with parallel branches should still emit disjoint top-level keys unless they intentionally namespace outputs
 - if multiple parallel branches write the same key, the result is not a stable workflow contract today

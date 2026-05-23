@@ -783,6 +783,10 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
   defp normalize_dispatch_cause({:dispatch_failed, reason}), do: normalize_dispatch_cause(reason)
 
+  defp normalize_dispatch_cause({:missing_input_path, _details} = reason) do
+    StepInput.input_mapping_error_to_map(reason)
+  end
+
   defp normalize_dispatch_cause(%{__struct__: _module} = error),
     do: %{message: Exception.message(error)}
 

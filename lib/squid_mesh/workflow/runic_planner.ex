@@ -6,6 +6,7 @@ defmodule SquidMesh.Workflow.RunicPlanner do
   alias Runic.Workflow.Events.FactProduced
   alias Runic.Workflow.Fact
   alias Runic.Workflow.Invokable
+  alias SquidMesh.Runtime.StepInput
   alias SquidMesh.Workflow.Info
   alias SquidMesh.Workflow.RunicPlanner.Runnable
   alias SquidMesh.Workflow.Spec
@@ -37,13 +38,13 @@ defmodule SquidMesh.Workflow.RunicPlanner do
   @doc """
   Plans from existing planner facts and returns externally executable steps.
   """
-  @spec plan(t()) :: {:ok, t(), [Runnable.t()]}
+  @spec plan(t()) :: {:ok, t(), [Runnable.t()]} | {:error, term()}
   def plan(%__MODULE__{} = planner), do: plan(planner, @no_input)
 
   @doc """
   Adds a new durable input fact, plans through Runic, and returns runnable steps.
   """
-  @spec plan(t(), term()) :: {:ok, t(), [Runnable.t()]}
+  @spec plan(t(), term()) :: {:ok, t(), [Runnable.t()]} | {:error, term()}
   def plan(%__MODULE__{} = planner, input) do
     workflow =
       case input do
@@ -201,7 +202,10 @@ defmodule SquidMesh.Workflow.RunicPlanner do
 
     if internal == [] and blocked == [] do
       prepared_planner = %{planner | runic_workflow: prepared_workflow}
-      {:ok, prepared_planner, Enum.map(allowed, &to_squid_mesh_runnable(&1, planner.spec))}
+
+      with {:ok, runnables} <- to_squid_mesh_runnables(allowed, planner.spec) do
+        {:ok, prepared_planner, runnables}
+      end
     else
       workflow =
         Enum.reduce(internal, prepared_workflow, fn runic_runnable, acc ->
@@ -246,19 +250,37 @@ defmodule SquidMesh.Workflow.RunicPlanner do
 
   defp runnable_allowed?(_runnable, _spec), do: true
 
+  defp to_squid_mesh_runnables(runnables, %Spec{} = spec) do
+    result =
+      Enum.reduce_while(runnables, {:ok, []}, fn runic_runnable, {:ok, acc} ->
+        case to_squid_mesh_runnable(runic_runnable, spec) do
+          {:ok, runnable} -> {:cont, {:ok, [runnable | acc]}}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+
+    case result do
+      {:ok, mapped_runnables} -> {:ok, Enum.reverse(mapped_runnables)}
+      {:error, _reason} = error -> error
+    end
+  end
+
   defp to_squid_mesh_runnable(%Runic.Workflow.Runnable{} = runic_runnable, %Spec{} = spec) do
     step = Enum.find(spec.steps, &(&1.name == runic_runnable.node.name))
 
-    %Runnable{
-      id: runic_runnable.id,
-      step: step.name,
-      input:
-        runic_runnable.input_fact
-        |> fact_context()
-        |> apply_input_mapping(step),
-      metadata: Map.get(step, :metadata, %{}),
-      runic_runnable: runic_runnable
-    }
+    with {:ok, input} <-
+           runic_runnable.input_fact
+           |> fact_context()
+           |> apply_input_mapping(step) do
+      {:ok,
+       %Runnable{
+         id: runic_runnable.id,
+         step: step.name,
+         input: input,
+         metadata: Map.get(step, :metadata, %{}),
+         runic_runnable: runic_runnable
+       }}
+    end
   end
 
   defp consume_blocked_runnable(%Runic.Workflow.Runnable{} = runic_runnable) do
@@ -284,10 +306,7 @@ defmodule SquidMesh.Workflow.RunicPlanner do
   defp fact_outcome(%Fact{}), do: :ok
 
   defp apply_input_mapping(input, %{opts: opts}) do
-    case Keyword.get(opts, :input) do
-      nil -> input
-      input_mapping when is_list(input_mapping) -> Map.take(input, input_mapping)
-    end
+    StepInput.apply_input_mapping(input, Keyword.get(opts, :input))
   end
 
   defp normalize_step_input(values) when is_list(values) do

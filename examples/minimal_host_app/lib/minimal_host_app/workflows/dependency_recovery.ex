@@ -20,6 +20,11 @@ defmodule MinimalHostApp.Workflows.DependencyRecovery do
     step :load_invoice, MinimalHostApp.Steps.LoadInvoice
 
     step :prepare_notification, MinimalHostApp.Steps.PrepareNotification,
-      after: [:load_account, :load_invoice]
+      after: [:load_account, :load_invoice],
+      input: [
+        account_id: [:account, :id],
+        invoice_id: [:invoice, :id],
+        account_tier: [:account, :tier]
+      ]
   end
 end

@@ -509,6 +509,26 @@ defmodule SquidMesh.WorkflowTest do
            } in errors
   end
 
+  test "accepts named path input mappings in workflow specs" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    path_mapped_spec = %{
+      spec
+      | steps: [
+          %{
+            name: :load_invoice,
+            module: InvoiceReminder.LoadInvoice,
+            opts: [input: [invoice_id: [:trigger, :invoice_id]]]
+          },
+          %{name: :send_email, module: InvoiceReminder.SendEmail, opts: []},
+          %{name: :record_delivery, module: InvoiceReminder.RecordDelivery, opts: []}
+        ],
+        retries: []
+    }
+
+    assert :ok = SquidMesh.Workflow.validate_spec(path_mapped_spec)
+  end
+
   test "rejects invalid workflow spec retry options" do
     assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
     invalid_spec = %{spec | retries: [%{step: :send_email, opts: [max_attempts: 0]}]}
@@ -855,6 +875,44 @@ defmodule SquidMesh.WorkflowTest do
              SquidMesh.Workflow.Definition.fingerprint(explicit_definition)
   end
 
+  test "fingerprint canonicalizes named path input mappings" do
+    base_definition = %{
+      steps: [
+        %{
+          name: :send_email,
+          module: DependencyWorkflow.SendEmail,
+          opts: [
+            input: [
+              invoice_id: [:invoice, :id],
+              account_id: [:account, :id]
+            ]
+          ]
+        }
+      ],
+      transitions: [],
+      retries: []
+    }
+
+    reordered_definition = %{
+      base_definition
+      | steps: [
+          %{
+            name: :send_email,
+            module: DependencyWorkflow.SendEmail,
+            opts: [
+              input: [
+                account_id: [:account, :id],
+                invoice_id: [:invoice, :id]
+              ]
+            ]
+          }
+        ]
+    }
+
+    assert SquidMesh.Workflow.Definition.fingerprint(base_definition) ==
+             SquidMesh.Workflow.Definition.fingerprint(reordered_definition)
+  end
+
   test "supports explicit step input and output mapping options" do
     module =
       compile_module("""
@@ -885,6 +943,44 @@ defmodule SquidMesh.WorkflowTest do
                name: :load_account,
                module: Module.safe_concat(module, LoadAccount),
                opts: [input: [:account_id], output: :account]
+             }
+           ]
+  end
+
+  test "supports named path step input mapping options" do
+    module =
+      compile_module("""
+      defmodule WorkflowWithNamedPathStepMappings do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step :record_review, WorkflowWithNamedPathStepMappings.RecordReview,
+            input: [
+              drafts: [:draft, :drafts],
+              reviewer: [:review_draft, :reviewer]
+            ],
+            output: :review
+
+          transition :record_review, on: :ok, to: :complete
+        end
+      end
+      """)
+
+    assert module.workflow_definition().steps == [
+             %{
+               name: :record_review,
+               module: Module.safe_concat(module, RecordReview),
+               opts: [
+                 input: [
+                   drafts: [:draft, :drafts],
+                   reviewer: [:review_draft, :reviewer]
+                 ],
+                 output: :review
+               ]
              }
            ]
   end
@@ -1313,7 +1409,7 @@ defmodule SquidMesh.WorkflowTest do
     )
   end
 
-  test "fails when step input mapping is not a non-empty atom list" do
+  test "fails when step input mapping is not a non-empty atom list or named path mapping" do
     assert_compile_error(
       """
       defmodule WorkflowWithInvalidStepInput do
@@ -1325,6 +1421,60 @@ defmodule SquidMesh.WorkflowTest do
           end
 
           step :send_email, WorkflowWithInvalidStepInput.SendEmail, input: "account_id"
+        end
+      end
+      """,
+      "step :send_email defines an invalid :input mapping"
+    )
+
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidStepInputPath do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step :send_email, WorkflowWithInvalidStepInputPath.SendEmail,
+            input: [reviewer: []]
+        end
+      end
+      """,
+      "step :send_email defines an invalid :input mapping"
+    )
+
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidStepInputPathSegment do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step :send_email, WorkflowWithInvalidStepInputPathSegment.SendEmail,
+            input: [reviewer: [:review_draft, "reviewer"]]
+        end
+      end
+      """,
+      "step :send_email defines an invalid :input mapping"
+    )
+
+    assert_compile_error(
+      """
+      defmodule WorkflowWithDuplicateStepInputPathTargets do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step :send_email, WorkflowWithDuplicateStepInputPathTargets.SendEmail,
+            input: [reviewer: [:review_draft, :reviewer], reviewer: [:fallback, :reviewer]]
         end
       end
       """,

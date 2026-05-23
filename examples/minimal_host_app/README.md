@@ -167,6 +167,22 @@ When that path runs, `inspect_run(run_id, include_history: true)` exposes a
 `:compensation_routed` audit event and the failed step's
 `recovery.failure.strategy`.
 
+The dependency recovery workflow demonstrates named path input mapping on a
+join step. `:load_account` and `:load_invoice` keep their outputs in the run
+context, while `:prepare_notification` receives only the nested values it needs:
+
+```elixir
+step :prepare_notification, MinimalHostApp.Steps.PrepareNotification,
+  after: [:load_account, :load_invoice],
+  input: [
+    account_id: [:account, :id],
+    invoice_id: [:invoice, :id],
+    account_tier: [:account, :tier]
+  ]
+```
+
+The smoke task verifies that persisted step history records that mapped input.
+
 The local ledger checkout workflow demonstrates a same-process host repo
 transaction group:
 
@@ -257,8 +273,14 @@ defmodule MinimalHostApp.Workflows.DependencyRecovery do
 
     step :load_account, MinimalHostApp.Steps.LoadAccount
     step :load_invoice, MinimalHostApp.Steps.LoadInvoice
+
     step :prepare_notification, MinimalHostApp.Steps.PrepareNotification,
-      after: [:load_account, :load_invoice]
+      after: [:load_account, :load_invoice],
+      input: [
+        account_id: [:account, :id],
+        invoice_id: [:invoice, :id],
+        account_tier: [:account, :tier]
+      ]
   end
 end
 ```

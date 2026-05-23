@@ -96,6 +96,35 @@ defmodule SquidMesh.ObservabilityTest do
     end
   end
 
+  defmodule MissingPathWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :draft, :map
+        end
+      end
+
+      step :record_review, MissingPathWorkflow.RecordReview, input: [drafts: [:draft, :drafts]]
+      transition :record_review, on: :ok, to: :complete
+    end
+  end
+
+  defmodule MissingPathWorkflow.RecordReview do
+    use Jido.Action,
+      name: "record_review",
+      description: "Records a review",
+      schema: [drafts: [type: {:list, :map}, required: true]]
+
+    @impl Jido.Action
+    def run(_params, _context) do
+      raise "record_review should not execute when mapped input is missing"
+    end
+  end
+
   defmodule RetryWorkflow do
     use SquidMesh.Workflow
 
@@ -337,6 +366,31 @@ defmodule SquidMesh.ObservabilityTest do
 
     assert_receive {:preparation_tx_event, [:squid_mesh, :run, :transition], false}
     refute_receive {:preparation_tx_event, _event, true}
+  end
+
+  test "emits prepare-time mapping failure transitions in lifecycle order" do
+    assert {:ok, run} = SquidMesh.start_run(MissingPathWorkflow, %{draft: %{}}, repo: Repo)
+
+    flush_telemetry_events()
+
+    assert {:error, {:missing_input_path, _details}} =
+             StepWorker.perform(%SquidMesh.Test.Job{
+               args: %{"run_id" => run.id, "step" => "record_review"}
+             })
+
+    assert_receive {:telemetry_event, [:squid_mesh, :run, :transition], %{system_time: _},
+                    pending_to_running}
+
+    assert pending_to_running.run_id == run.id
+    assert pending_to_running.from_status == :pending
+    assert pending_to_running.to_status == :running
+
+    assert_receive {:telemetry_event, [:squid_mesh, :run, :transition], %{system_time: _},
+                    running_to_failed}
+
+    assert running_to_failed.run_id == run.id
+    assert running_to_failed.from_status == :running
+    assert running_to_failed.to_status == :failed
   end
 
   test "emits successor dispatch telemetry after the outcome transaction commits" do
