@@ -431,6 +431,33 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert daily_digest.trigger == :daily_digest
   end
 
+  test "runs the journal executor smoke path" do
+    assert %SquidMesh.ReadModel.Inspection.Snapshot{} = run = Smoke.run_journal_executor!()
+
+    assert run.status == :completed
+    assert run.workflow == "Elixir.MinimalHostApp.Workflows.DependencyRecovery"
+    assert run.applied_runnable_keys == run.planned_runnable_keys
+
+    assert Enum.map(run.attempts, &{&1.step, &1.status, &1.applied?}) == [
+             {"load_account", :completed, true},
+             {"load_invoice", :completed, true},
+             {"prepare_notification", :completed, true}
+           ]
+
+    assert Enum.find_value(run.attempts, fn
+             %{step: "prepare_notification", result: %{notification: notification}} ->
+               notification
+
+             _attempt ->
+               nil
+           end) == %{
+             account_id: "acct_journal_demo",
+             account_tier: "standard",
+             channel: "email",
+             invoice_id: "inv_journal_demo"
+           }
+  end
+
   test "runs the cancellation smoke path" do
     assert %SquidMesh.Run{} = run = Smoke.run_cancellation!()
     assert run.status == :cancelled

@@ -25,15 +25,19 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
   @type t :: %__MODULE__{
           attempts: %{optional(String.t()) => ActionAttempt.t()},
           anomalies: [anomaly()],
+          queued_run_ids: string_set(),
           terminal_runs: string_set()
         }
 
-  defstruct attempts: %{}, anomalies: [], terminal_runs: MapSet.new()
+  defstruct attempts: %{},
+            anomalies: [],
+            queued_run_ids: MapSet.new(),
+            terminal_runs: MapSet.new()
 
   @doc false
   @spec new() :: t()
   def new do
-    %__MODULE__{terminal_runs: MapSet.new()}
+    %__MODULE__{queued_run_ids: MapSet.new(), terminal_runs: MapSet.new()}
   end
 
   @doc false
@@ -45,7 +49,18 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
   @doc false
   @spec replay(t(), [Entry.t()]) :: t()
   def replay(%__MODULE__{} = projection, entries) when is_list(entries) do
-    Enum.reduce(entries, projection, &apply_entry/2)
+    Enum.reduce(entries, normalize(projection), &apply_entry/2)
+  end
+
+  @doc false
+  @spec normalize(t()) :: t()
+  def normalize(%__MODULE__{} = projection) do
+    %__MODULE__{
+      attempts: Map.get(projection, :attempts, %{}),
+      anomalies: Map.get(projection, :anomalies, []),
+      queued_run_ids: Map.get(projection, :queued_run_ids, MapSet.new()),
+      terminal_runs: Map.get(projection, :terminal_runs, MapSet.new())
+    }
   end
 
   @doc false
@@ -87,6 +102,16 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
   end
 
   @doc false
+  @spec run_ids(t()) :: MapSet.t(String.t())
+  def run_ids(%__MODULE__{attempts: attempts, queued_run_ids: queued_run_ids}) do
+    attempts
+    |> Map.values()
+    |> Enum.map(& &1.run_id)
+    |> MapSet.new()
+    |> MapSet.union(queued_run_ids)
+  end
+
+  @doc false
   @spec results_ready_to_apply(t()) :: [ActionAttempt.t()]
   def results_ready_to_apply(%__MODULE__{} = projection) do
     projection
@@ -97,6 +122,10 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
   @doc false
   @spec anomalies(t()) :: [anomaly()]
   def anomalies(%__MODULE__{anomalies: anomalies}), do: Enum.reverse(anomalies)
+
+  defp apply_entry(%Entry{type: :run_queued, data: data}, %__MODULE__{} = projection) do
+    %__MODULE__{projection | queued_run_ids: MapSet.put(projection.queued_run_ids, data.run_id)}
+  end
 
   defp apply_entry(%Entry{type: :attempt_scheduled, data: data} = entry, projection) do
     if terminal_run?(projection, data.run_id) do

@@ -1,4 +1,4 @@
-defmodule SquidMesh.Runtime.JournalOptions do
+defmodule SquidMesh.Runtime.Journal.Options do
   @moduledoc """
   Validates public options that reach Jido-backed journal threads.
 
@@ -50,28 +50,28 @@ defmodule SquidMesh.Runtime.JournalOptions do
   Atoms are converted to strings. Queue names must be non-empty and use the
   conservative portable thread-id character set enforced by this module.
   """
-  @spec queue(term()) :: {:ok, String.t()} | {:error, {:invalid_option, {:queue, term()}}}
+  @spec queue(term()) :: {:ok, String.t()} | {:error, {:invalid_option, {:queue, :invalid}}}
   def queue(queue \\ "default")
 
   def queue(queue) when is_atom(queue),
-    do: validate_thread_part(Atom.to_string(queue), :queue, queue)
+    do: validate_thread_part(Atom.to_string(queue), :queue)
 
-  def queue(queue) when is_binary(queue), do: validate_thread_part(queue, :queue, queue)
-  def queue(queue), do: {:error, {:invalid_option, {:queue, queue}}}
+  def queue(queue) when is_binary(queue), do: validate_thread_part(queue, :queue)
+  def queue(_queue), do: invalid_option(:queue)
 
   @doc """
   Validates a caller-provided journal thread-id component.
 
   Use this for public identifiers, such as run ids in projection reads, that are
-  not required to be UUIDs but still become part of a Jido thread id.
+      not required to be UUIDs but still become part of a Jido thread id.
   """
   @spec thread_part(term(), atom()) :: {:ok, String.t()} | {:error, {:invalid_option, term()}}
   def thread_part(value, field) when is_binary(value) and is_atom(field) do
-    validate_thread_part(value, field, value)
+    validate_thread_part(value, field)
   end
 
-  def thread_part(value, field) when is_atom(field) do
-    {:error, {:invalid_option, {field, value}}}
+  def thread_part(_value, field) when is_atom(field) do
+    invalid_option(field)
   end
 
   @doc """
@@ -80,27 +80,29 @@ defmodule SquidMesh.Runtime.JournalOptions do
   Journal starts use UUID run ids so caller-provided ids are safe as stable
   workflow thread identifiers and duplicate-start fences.
   """
-  @spec uuid(term()) :: {:ok, String.t()} | {:error, {:invalid_option, {:run_id, term()}}}
+  @spec uuid(term()) :: {:ok, String.t()} | {:error, {:invalid_option, {:run_id, :invalid}}}
   def uuid(value) when is_binary(value) do
     case Ecto.UUID.cast(value) do
       {:ok, uuid} -> {:ok, uuid}
-      :error -> {:error, {:invalid_option, {:run_id, value}}}
+      :error -> invalid_option(:run_id)
     end
   end
 
-  def uuid(value), do: {:error, {:invalid_option, {:run_id, value}}}
+  def uuid(_value), do: invalid_option(:run_id)
 
-  defp validate_thread_part("", field, original) do
-    {:error, {:invalid_option, {field, original}}}
+  defp validate_thread_part("", field) do
+    invalid_option(field)
   end
 
-  defp validate_thread_part(value, field, original) do
+  defp validate_thread_part(value, field) do
     if Regex.match?(@thread_part_pattern, value) do
       {:ok, value}
     else
-      {:error, {:invalid_option, {field, original}}}
+      invalid_option(field)
     end
   end
+
+  defp invalid_option(field), do: {:error, {:invalid_option, {field, :invalid}}}
 
   defp validate_storage_module(module, storage, opts) do
     with {:module, ^module} <- Code.ensure_loaded(module),

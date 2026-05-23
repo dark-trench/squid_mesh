@@ -163,7 +163,7 @@ defmodule SquidMesh.ReadModel.InspectionTest do
     assert snapshot.applied_runnable_keys == [@runnable_key]
     assert snapshot.pending_results == []
 
-    assert [%{runnable_key: @runnable_key, status: :completed, applied?: false}] =
+    assert [%{runnable_key: @runnable_key, status: :completed, applied?: true}] =
              snapshot.attempts
   end
 
@@ -246,10 +246,10 @@ defmodule SquidMesh.ReadModel.InspectionTest do
   end
 
   test "returns invalid option errors for invalid option values" do
-    assert {:error, {:invalid_option, {:now, :soon}}} =
+    assert {:error, {:invalid_option, {:now, :invalid}}} =
              Inspection.snapshot(@storage, @run_id, queue: @queue, now: :soon)
 
-    assert {:error, {:invalid_option, {:queue, %{name: @queue}}}} =
+    assert {:error, {:invalid_option, {:queue, :invalid}}} =
              Inspection.snapshot(@storage, @run_id,
                queue: %{name: @queue},
                now: @visible_at
@@ -257,14 +257,49 @@ defmodule SquidMesh.ReadModel.InspectionTest do
   end
 
   test "returns invalid option errors for malformed or unsupported options" do
-    assert {:error, {:invalid_option, {:opts, %{queue: @queue}}}} =
+    assert {:error, {:invalid_option, {:opts, :invalid}}} =
              Inspection.snapshot(@storage, @run_id, %{queue: @queue})
 
-    assert {:error, {:invalid_option, {:opts, [:bad]}}} =
+    assert {:error, {:invalid_option, {:opts, :invalid}}} =
              Inspection.snapshot(@storage, @run_id, [:bad])
 
     assert {:error, {:invalid_option, {:option, :unknown}}} =
              Inspection.snapshot(@storage, @run_id, unknown: true)
+  end
+
+  test "redacts malformed option values from public errors" do
+    assert {:error, reason} =
+             Inspection.snapshot(@storage, @run_id, %{claim_token: "super-secret-token"})
+
+    assert reason == {:invalid_option, {:opts, :invalid}}
+    refute inspect(reason) =~ "super-secret-token"
+
+    assert {:error, reason} =
+             Inspection.snapshot(@storage, @run_id, [
+               {:claim_token, "super-secret-token"},
+               :bad
+             ])
+
+    assert reason == {:invalid_option, {:opts, :invalid}}
+    refute inspect(reason) =~ "super-secret-token"
+
+    assert {:error, reason} =
+             Inspection.snapshot(@storage, @run_id,
+               queue: %{claim_token: "super-secret-token"},
+               now: @visible_at
+             )
+
+    assert reason == {:invalid_option, {:queue, :invalid}}
+    refute inspect(reason) =~ "super-secret-token"
+
+    assert {:error, reason} =
+             Inspection.snapshot(@storage, @run_id,
+               queue: @queue,
+               now: %{claim_token: "super-secret-token"}
+             )
+
+    assert reason == {:invalid_option, {:now, :invalid}}
+    refute inspect(reason) =~ "super-secret-token"
   end
 
   defp append_run_entries(entries) do

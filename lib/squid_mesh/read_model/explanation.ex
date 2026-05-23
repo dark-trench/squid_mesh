@@ -18,7 +18,7 @@ defmodule SquidMesh.ReadModel.Explanation do
   @type storage_config :: Inspection.storage_config()
   @type explanation_option :: Inspection.snapshot_option()
   @type explanation_error ::
-          Inspection.snapshot_error() | {:invalid_option, {:run_id, term()}}
+          Inspection.snapshot_error() | {:invalid_option, {:run_id, :invalid}}
 
   @doc """
   Builds a projection-backed explanation for one workflow run.
@@ -37,8 +37,8 @@ defmodule SquidMesh.ReadModel.Explanation do
     end
   end
 
-  def explain(_storage, run_id, _opts) do
-    {:error, {:invalid_option, {:run_id, run_id}}}
+  def explain(_storage, _run_id, _opts) do
+    {:error, {:invalid_option, {:run_id, :invalid}}}
   end
 
   @doc """

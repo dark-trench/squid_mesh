@@ -114,6 +114,7 @@ defmodule SquidMesh.MixProject do
         "credo --strict",
         "doctor",
         "deps.audit --ignore-file config/deps_audit.ignore",
+        "dialyzer",
         "test"
       ]
     ]

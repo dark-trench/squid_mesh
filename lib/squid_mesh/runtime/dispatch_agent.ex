@@ -39,6 +39,10 @@ defmodule SquidMesh.Runtime.DispatchAgent do
           required(:agent) => Agent.t(),
           required(:runnables) => [map()]
         }
+  @type queue_update :: %{
+          required(:agent) => Agent.t(),
+          required(:queued?) => boolean()
+        }
   @type storage_config :: Journal.storage_config()
 
   @doc """
@@ -124,6 +128,54 @@ defmodule SquidMesh.Runtime.DispatchAgent do
   @spec runnable_keys(Agent.t()) :: MapSet.t(String.t())
   def runnable_keys(%Agent{agent_module: __MODULE__, state: %{projection: projection}}) do
     Projection.attempt_runnable_keys(projection)
+  end
+
+  @doc """
+  Returns every run id known by the dispatch projection.
+  """
+  @spec run_ids(Agent.t()) :: MapSet.t(String.t())
+  def run_ids(%Agent{agent_module: __MODULE__, state: %{projection: projection}}) do
+    Projection.run_ids(projection)
+  end
+
+  @doc """
+  Records that a run belongs to this dispatch queue before runnable attempts are
+  scheduled.
+
+  This queue marker lets recovery discover a started run even if the process
+  crashes after the run thread is committed and before the first
+  `:attempt_scheduled` entry is written.
+  """
+  @spec ensure_run_queued(storage_config(), Agent.t(), String.t(), keyword()) ::
+          {:ok, queue_update()} | {:error, term()}
+  def ensure_run_queued(storage, agent, run_id, opts \\ [])
+
+  def ensure_run_queued(
+        storage,
+        %Agent{
+          agent_module: __MODULE__,
+          state: %{queue: queue, projection: %Projection{} = projection, thread_rev: thread_rev}
+        } = agent,
+        run_id,
+        opts
+      )
+      when is_binary(queue) and is_binary(run_id) and is_integer(thread_rev) and
+             thread_rev >= 0 and is_list(opts) do
+    if MapSet.member?(Projection.run_ids(projection), run_id) do
+      {:ok, %{agent: agent, queued?: false}}
+    else
+      with {:ok, now} <- lifecycle_now(opts),
+           {:ok, queued_entry} <-
+             DispatchProtocol.new_entry(:run_queued, %{
+               run_id: run_id,
+               queue: queue,
+               occurred_at: now
+             }),
+           {:ok, queued_agent} <-
+             persist_dispatch_entry(storage, agent, projection, thread_rev, queued_entry) do
+        {:ok, %{agent: queued_agent, queued?: true}}
+      end
+    end
   end
 
   @doc """
@@ -456,8 +508,8 @@ defmodule SquidMesh.Runtime.DispatchAgent do
 
   defp current_projection(storage, %{thread: thread, rev: rev, entries: entries}) do
     with {:ok, projection} <- projection_from_checkpoint(storage, thread, rev, entries),
-         {:ok, run_terminal_entries} <- load_run_terminal_entries(storage, entries) do
-      {:ok, Projection.replay(projection, run_terminal_entries)}
+         {:ok, run_overlay_entries} <- load_run_overlay_entries(storage, entries) do
+      {:ok, Projection.replay(projection, run_overlay_entries)}
     end
   end
 
@@ -478,37 +530,39 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     end
   end
 
-  defp load_run_terminal_entries(storage, entries) do
+  defp load_run_overlay_entries(storage, entries) do
     entries
-    |> run_ids()
-    |> Enum.reduce_while({:ok, []}, fn run_id, {:ok, terminal_entry_chunks} ->
+    |> entry_run_ids()
+    |> Enum.reduce_while({:ok, []}, fn run_id, {:ok, overlay_entry_chunks} ->
       case Journal.load_thread(storage, {:run, run_id}) do
         {:ok, %{entries: run_entries}} ->
-          terminal_entries = Enum.filter(run_entries, &(&1.type == :run_terminal))
-          {:cont, {:ok, [terminal_entries | terminal_entry_chunks]}}
+          overlay_entries =
+            Enum.filter(run_entries, &(&1.type in [:runnable_applied, :run_terminal]))
+
+          {:cont, {:ok, [overlay_entries | overlay_entry_chunks]}}
 
         {:error, :not_found} ->
-          {:cont, {:ok, terminal_entry_chunks}}
+          {:cont, {:ok, overlay_entry_chunks}}
 
         {:error, _reason} = error ->
           {:halt, error}
       end
     end)
     |> case do
-      {:ok, terminal_entry_chunks} ->
-        terminal_entries =
-          terminal_entry_chunks
+      {:ok, overlay_entry_chunks} ->
+        overlay_entries =
+          overlay_entry_chunks
           |> Enum.reverse()
           |> Enum.flat_map(& &1)
 
-        {:ok, terminal_entries}
+        {:ok, overlay_entries}
 
       {:error, _reason} = error ->
         error
     end
   end
 
-  defp run_ids(entries) do
+  defp entry_run_ids(entries) do
     entries
     |> Enum.map(&Map.get(&1.data, :run_id))
     |> Enum.reject(&is_nil/1)

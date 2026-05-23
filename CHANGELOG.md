@@ -9,6 +9,11 @@ development.
 ## Unreleased
 
 ### Added
+- Opt-in journal executor runtime through `SquidMesh.execute_next/1`, including
+  durable `:run_queued` dispatch markers, journal-backed attempt execution,
+  dependency progression, retry scheduling, stale-definition fencing through
+  `SquidMesh.Workflow.Definition.fingerprint/1`, and `Journal.*` runtime
+  modules under `SquidMesh.Runtime.Journal`.
 - Durable dispatch-agent claim lifecycle APIs through `DispatchAgent.claim_next/4`,
   `DispatchAgent.heartbeat/6`, `DispatchAgent.complete/7`, and
   `DispatchAgent.fail/7`, including optimistic dispatch-thread fencing,

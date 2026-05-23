@@ -119,6 +119,62 @@ defmodule SquidMesh.WorkflowTest do
     assert definition.entry_step == nil
   end
 
+  test "fingerprint canonicalizes unordered dependency declarations" do
+    base_definition = %{
+      steps: [
+        %{
+          name: :send_email,
+          module: DependencyWorkflow.SendEmail,
+          opts: [after: [:load_invoice, :load_account]]
+        }
+      ],
+      transitions: [],
+      retries: []
+    }
+
+    reordered_definition = %{
+      base_definition
+      | steps: [
+          %{
+            name: :send_email,
+            module: DependencyWorkflow.SendEmail,
+            opts: [after: [:load_account, :load_invoice]]
+          }
+        ]
+    }
+
+    assert SquidMesh.Workflow.Definition.fingerprint(base_definition) ==
+             SquidMesh.Workflow.Definition.fingerprint(reordered_definition)
+  end
+
+  test "fingerprint treats missing dependency declarations as empty dependencies" do
+    base_definition = %{
+      steps: [
+        %{
+          name: :send_email,
+          module: DependencyWorkflow.SendEmail,
+          opts: []
+        }
+      ],
+      transitions: [],
+      retries: []
+    }
+
+    explicit_definition = %{
+      base_definition
+      | steps: [
+          %{
+            name: :send_email,
+            module: DependencyWorkflow.SendEmail,
+            opts: [after: []]
+          }
+        ]
+    }
+
+    assert SquidMesh.Workflow.Definition.fingerprint(base_definition) ==
+             SquidMesh.Workflow.Definition.fingerprint(explicit_definition)
+  end
+
   test "supports explicit step input and output mapping options" do
     module =
       compile_module("""

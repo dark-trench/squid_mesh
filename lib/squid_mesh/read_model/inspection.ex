@@ -20,7 +20,7 @@ defmodule SquidMesh.ReadModel.Inspection do
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.DispatchProtocol.ActionAttempt
   alias SquidMesh.Runtime.Journal
-  alias SquidMesh.Runtime.JournalOptions
+  alias SquidMesh.Runtime.Journal.Options
   alias SquidMesh.Runtime.WorkflowAgent
 
   @type storage_config :: Journal.storage_config()
@@ -28,10 +28,10 @@ defmodule SquidMesh.ReadModel.Inspection do
   @type snapshot_error ::
           :not_found
           | {:invalid_option,
-             {:now, term()}
-             | {:queue, term()}
-             | {:run_id, term()}
-             | {:opts, term()}
+             {:now, :invalid}
+             | {:queue, :invalid}
+             | {:run_id, :invalid}
+             | {:opts, :invalid}
              | {:option, atom()}}
           | term()
 
@@ -54,7 +54,7 @@ defmodule SquidMesh.ReadModel.Inspection do
   def snapshot(storage, run_id, opts \\ [])
 
   def snapshot(storage, run_id, opts) when is_binary(run_id) and is_list(opts) do
-    with {:ok, run_id} <- JournalOptions.thread_part(run_id, :run_id),
+    with {:ok, run_id} <- Options.thread_part(run_id, :run_id),
          {:ok, opts} <- snapshot_options(opts),
          {:ok, queue} <- snapshot_queue(opts),
          {:ok, now} <- snapshot_time(opts),
@@ -64,8 +64,8 @@ defmodule SquidMesh.ReadModel.Inspection do
     end
   end
 
-  def snapshot(_storage, run_id, opts) when is_binary(run_id) do
-    {:error, {:invalid_option, {:opts, opts}}}
+  def snapshot(_storage, run_id, _opts) when is_binary(run_id) do
+    {:error, {:invalid_option, {:opts, :invalid}}}
   end
 
   defp build_snapshot(
@@ -282,14 +282,14 @@ defmodule SquidMesh.ReadModel.Inspection do
   defp snapshot_time(opts) do
     case Keyword.get(opts, :now, DateTime.utc_now()) do
       %DateTime{} = now -> {:ok, now}
-      invalid -> {:error, {:invalid_option, {:now, invalid}}}
+      _invalid -> {:error, {:invalid_option, {:now, :invalid}}}
     end
   end
 
   defp snapshot_options(opts) when is_list(opts) do
     cond do
       not Keyword.keyword?(opts) ->
-        {:error, {:invalid_option, {:opts, opts}}}
+        {:error, {:invalid_option, {:opts, :invalid}}}
 
       unsupported = Enum.find(Keyword.keys(opts), &(&1 not in [:queue, :now])) ->
         {:error, {:invalid_option, {:option, unsupported}}}
@@ -302,7 +302,7 @@ defmodule SquidMesh.ReadModel.Inspection do
   defp snapshot_queue(opts) do
     opts
     |> Keyword.get(:queue, "default")
-    |> JournalOptions.queue()
+    |> Options.queue()
   end
 
   defp compact(map) do

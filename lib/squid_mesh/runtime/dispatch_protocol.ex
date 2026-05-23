@@ -25,6 +25,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
           | :manual_step_resolved
           | :run_terminal
           | :run_indexed
+          | :run_queued
           | :attempt_scheduled
           | :attempt_claimed
           | :attempt_heartbeat
@@ -44,6 +45,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
   ]
 
   @dispatch_entry_types [
+    :run_queued,
     :attempt_scheduled,
     :attempt_claimed,
     :attempt_heartbeat,
@@ -62,6 +64,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
     manual_step_resolved: [:run_id, :step, :action, :occurred_at],
     run_terminal: [:run_id, :status, :occurred_at],
     run_indexed: [:run_id, :workflow, :occurred_at],
+    run_queued: [:run_id, :queue, :occurred_at],
     attempt_scheduled: [
       :run_id,
       :runnable_key,

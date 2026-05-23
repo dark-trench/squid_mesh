@@ -1,19 +1,26 @@
 defmodule SquidMeshTest do
   use SquidMesh.DataCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias SquidMesh.Executor.Payload
   alias SquidMesh.ReadModel.Explanation.Diagnostic
   alias SquidMesh.ReadModel.Inspection.Snapshot
   alias SquidMesh.Run
   alias SquidMesh.Runs
   alias SquidMesh.Runs.StepState
+  alias SquidMesh.Runtime.DispatchAgent
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.Journal
+  alias SquidMesh.Runtime.Journal.Executor
   alias SquidMesh.Runtime.Runner
   alias SquidMesh.Runtime.Unblocker
   alias SquidMesh.Test.Job
   alias SquidMesh.Test.StepWorker
   alias SquidMesh.TestSupport.LazyWorkflow
+  alias SquidMesh.Workflow.Definition
+
+  defp execute_journal_next(opts), do: Executor.execute_next(opts)
 
   defmodule CommitThenFailStorage do
     @behaviour Jido.Storage
@@ -28,6 +35,7 @@ defmodule SquidMeshTest do
     def delete_checkpoint(_key, _opts), do: :ok
 
     @impl Jido.Storage
+    def load_thread("squid_mesh:dispatch:" <> _queue, _opts), do: :not_found
     def load_thread(_thread_id, _opts), do: {:error, :load_failed}
 
     @impl Jido.Storage
@@ -79,6 +87,135 @@ defmodule SquidMeshTest do
 
       step :check_gateway, PaymentRecoveryWorkflow.CheckGateway, retry: [max_attempts: 2]
       transition :check_gateway, on: :ok, to: :complete
+    end
+  end
+
+  defmodule JournalFailureWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual_failure do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :fail_gateway, JournalFailureWorkflow.FailGateway
+      transition :fail_gateway, on: :ok, to: :complete
+    end
+  end
+
+  defmodule JournalErrorTransitionWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual_error_transition do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :fail_gateway, JournalErrorTransitionWorkflow.FailGateway
+      step :notify_failure, JournalErrorTransitionWorkflow.NotifyFailure
+
+      transition :fail_gateway, on: :ok, to: :complete
+      transition :fail_gateway, on: :error, to: :notify_failure
+      transition :notify_failure, on: :ok, to: :complete
+    end
+  end
+
+  defmodule JournalRetryWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual_retry do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :retry_gateway, JournalRetryWorkflow.RetryGateway, retry: [max_attempts: 2]
+      transition :retry_gateway, on: :ok, to: :complete
+    end
+  end
+
+  defmodule JournalSecretFailureWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual_secret_failure do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :leak_secret, JournalSecretFailureWorkflow.LeakSecret
+      transition :leak_secret, on: :ok, to: :complete
+    end
+  end
+
+  defmodule JournalConflictWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual_conflict do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :write_conflict, JournalConflictWorkflow.WriteConflict
+      transition :write_conflict, on: :ok, to: :complete
+    end
+  end
+
+  defmodule JournalDependencyWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual_dependency do
+        manual()
+
+        payload do
+          field :account_id, :string
+          field :invoice_id, :string
+        end
+      end
+
+      step :load_account, JournalDependencyWorkflow.LoadAccount
+      step :load_invoice, JournalDependencyWorkflow.LoadInvoice
+      step :send_email, JournalDependencyWorkflow.SendEmail, after: [:load_account, :load_invoice]
+    end
+  end
+
+  defmodule JournalDependencyFailureWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual_dependency_failure do
+        manual()
+
+        payload do
+          field :account_id, :string
+          field :invoice_id, :string
+        end
+      end
+
+      step :load_account, JournalDependencyFailureWorkflow.LoadAccount
+      step :load_invoice, JournalDependencyFailureWorkflow.LoadInvoice
+
+      step :send_email, JournalDependencyFailureWorkflow.SendEmail,
+        after: [:load_account, :load_invoice]
     end
   end
 
@@ -175,6 +312,200 @@ defmodule SquidMeshTest do
     def run(%{account_id: account_id}, _context) do
       {:ok, %{gateway_check: %{account_id: account_id, status: "healthy"}}}
     end
+  end
+
+  defmodule JournalFailureWorkflow.FailGateway do
+    use Jido.Action,
+      name: "fail_gateway",
+      description: "Fails payment gateway status checks",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl Jido.Action
+    def run(%{account_id: account_id}, _context) do
+      {:error,
+       %{
+         code: "gateway_timeout",
+         message: "gateway timeout",
+         retryable?: false,
+         account_id: account_id
+       }}
+    end
+  end
+
+  defmodule JournalErrorTransitionWorkflow.FailGateway do
+    use Jido.Action,
+      name: "fail_gateway_for_error_transition",
+      description: "Fails nonretryably so the workflow follows its error transition",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl Jido.Action
+    def run(%{account_id: account_id}, context) do
+      if hook = :persistent_term.get(:journal_error_transition_conflict_hook, nil) do
+        hook.(context)
+      end
+
+      {:error,
+       %{
+         code: "gateway_timeout",
+         message: "gateway timeout",
+         retryable?: false,
+         account_id: account_id
+       }}
+    end
+  end
+
+  defmodule JournalErrorTransitionWorkflow.NotifyFailure do
+    use Jido.Action,
+      name: "notify_failure_for_error_transition",
+      description: "Records that the error transition ran",
+      schema: []
+
+    @impl Jido.Action
+    def run(_params, _context) do
+      {:ok, %{failure_notification: %{channel: "email"}}}
+    end
+  end
+
+  defmodule JournalRetryWorkflow.RetryGateway do
+    use Jido.Action,
+      name: "retry_gateway",
+      description: "Fails retryably",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl Jido.Action
+    def run(%{account_id: account_id}, context) do
+      if hook = :persistent_term.get(:journal_retry_failure_conflict_hook, nil) do
+        hook.(context)
+      end
+
+      {:error,
+       %{
+         code: "gateway_timeout",
+         message: "gateway timeout",
+         retryable?: true,
+         account_id: account_id
+       }}
+    end
+  end
+
+  defmodule JournalSecretFailureWorkflow.LeakSecret do
+    use Jido.Action,
+      name: "leak_secret",
+      description: "Returns a secret-bearing error",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl Jido.Action
+    def run(_params, _context) do
+      {:error,
+       %{
+         code: "token=super-secret-token",
+         message: "token=super-secret-token",
+         retryable?: false,
+         validation_errors: %{authorization: "Bearer super-secret-token"}
+       }}
+    end
+  end
+
+  defmodule JournalConflictWorkflow.WriteConflict do
+    use Jido.Action,
+      name: "write_conflict",
+      description: "Runs a test hook before returning",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl Jido.Action
+    def run(%{account_id: account_id}, _context) do
+      if hook = :persistent_term.get(:journal_executor_conflict_hook, nil) do
+        hook.()
+      end
+
+      {:ok, %{conflict_probe: %{account_id: account_id, status: "written"}}}
+    end
+  end
+
+  defmodule JournalDependencyWorkflow.LoadAccount do
+    use Jido.Action,
+      name: "journal_load_account",
+      description: "Loads account for journal dependency workflow",
+      schema: [account_id: [type: :string, required: true]]
+
+    @impl Jido.Action
+    def run(%{account_id: account_id}, _context) do
+      {:ok, %{account: %{id: account_id}}}
+    end
+  end
+
+  defmodule JournalDependencyWorkflow.LoadInvoice do
+    use Jido.Action,
+      name: "journal_load_invoice",
+      description: "Loads invoice for journal dependency workflow",
+      schema: [invoice_id: [type: :string, required: true]]
+
+    @impl Jido.Action
+    def run(%{invoice_id: invoice_id}, _context) do
+      if hook = :persistent_term.get(:journal_dependency_invoice_hook, nil) do
+        hook.()
+      end
+
+      {:ok, %{invoice: %{id: invoice_id, status: "open"}}}
+    end
+  end
+
+  defmodule JournalDependencyWorkflow.SendEmail do
+    use Jido.Action,
+      name: "journal_send_dependency_email",
+      description: "Sends dependency email",
+      schema: [
+        account: [type: :map, required: true],
+        invoice: [type: :map, required: true]
+      ]
+
+    @impl Jido.Action
+    def run(%{account: account, invoice: invoice}, _context) do
+      {:ok,
+       %{
+         delivery: %{
+           account_id: account.id,
+           invoice_id: invoice.id,
+           channel: "email"
+         }
+       }}
+    end
+  end
+
+  defmodule JournalDependencyFailureWorkflow.LoadAccount do
+    use Jido.Action,
+      name: "journal_dependency_fail_account",
+      description: "Fails account loading for journal dependency workflow",
+      schema: [account_id: [type: :string, required: true]]
+
+    @impl Jido.Action
+    def run(%{account_id: account_id}, _context) do
+      {:error,
+       %{
+         code: "account_unavailable",
+         message: "account unavailable",
+         retryable?: false,
+         account_id: account_id
+       }}
+    end
+  end
+
+  defmodule JournalDependencyFailureWorkflow.LoadInvoice do
+    defdelegate run(params, context), to: JournalDependencyWorkflow.LoadInvoice
+  end
+
+  defmodule JournalDependencyFailureWorkflow.SendEmail do
+    defdelegate run(params, context), to: JournalDependencyWorkflow.SendEmail
   end
 
   defmodule ReorderedWorkflow.LoadInvoice do
@@ -1710,7 +2041,7 @@ defmodule SquidMeshTest do
       assert {:ok, dispatch_entries} =
                Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
 
-      assert Enum.map(dispatch_entries, & &1.type) == [:attempt_scheduled]
+      assert Enum.map(dispatch_entries, & &1.type) == [:run_queued, :attempt_scheduled]
       assert [%{runnable_key: ^runnable_key, step: "check_gateway"}] = snapshot.visible_attempts
 
       assert {:ok, run_index_projection} =
@@ -1770,6 +2101,18 @@ defmodule SquidMeshTest do
                )
     end
 
+    test "start_run/3 redacts invalid runtime values" do
+      assert {:error, reason} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: %{claim_token: "super-secret-token"}
+               )
+
+      assert reason == {:invalid_option, {:runtime, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+    end
+
     test "journal runtime start rejects malformed public options" do
       assert {:error, {:invalid_option, {:journal_storage, String}}} =
                SquidMesh.start_run(
@@ -1795,7 +2138,7 @@ defmodule SquidMeshTest do
                  journal_storage: {String, path: "/tmp/squid_mesh_storage", token: "redacted"}
                )
 
-      assert {:error, {:invalid_option, {:queue, "../dispatch"}}} =
+      assert {:error, {:invalid_option, {:queue, :invalid}}} =
                SquidMesh.start_run(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
@@ -1804,7 +2147,7 @@ defmodule SquidMeshTest do
                  queue: "../dispatch"
                )
 
-      assert {:error, {:invalid_option, {:run_id, "not-a-uuid"}}} =
+      assert {:error, {:invalid_option, {:run_id, :invalid}}} =
                SquidMesh.start_run(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
@@ -1812,6 +2155,18 @@ defmodule SquidMeshTest do
                  journal_storage: @read_model_storage,
                  run_id: "not-a-uuid"
                )
+
+      assert {:error, reason} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 now: %{claim_token: "super-secret-token"}
+               )
+
+      assert reason == {:invalid_option, {:now, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
     end
 
     test "journal runtime start reports committed run id after post-append failures" do
@@ -1893,13 +2248,67 @@ defmodule SquidMeshTest do
                )
     end
 
-    test "journal runtime start repairs a partially appended run thread" do
+    test "journal runtime start rejects duplicate run ids with conflicting definition fingerprints" do
       run_id = Ecto.UUID.generate()
 
       append_read_model_run_entries([
         read_model_entry!(:run_started, %{
           run_id: run_id,
           workflow: Atom.to_string(PaymentRecoveryWorkflow),
+          definition_fingerprint: "stale-definition",
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [journal_start_runnable(run_id)],
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      assert {:error, :conflict} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert {:error, :not_found} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+    end
+
+    test "journal runtime start rejects built-in steps before persisting runnables" do
+      run_id = Ecto.UUID.generate()
+
+      assert {:error, {:unsupported_journal_step, :wait_for_approval, :pause}} =
+               SquidMesh.start_run(
+                 PauseWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert {:error, :not_found} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert {:error, :not_found} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+    end
+
+    test "journal runtime start repairs a partially appended run thread" do
+      run_id = Ecto.UUID.generate()
+      assert {:ok, definition} = Definition.load(PaymentRecoveryWorkflow)
+
+      append_read_model_run_entries([
+        read_model_entry!(:run_started, %{
+          run_id: run_id,
+          workflow: Atom.to_string(PaymentRecoveryWorkflow),
+          definition_fingerprint: Definition.fingerprint(definition),
           occurred_at: @read_model_started_at
         }),
         read_model_entry!(:runnables_planned, %{
@@ -1926,7 +2335,7 @@ defmodule SquidMeshTest do
       assert {:ok, dispatch_entries} =
                Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
 
-      assert Enum.map(dispatch_entries, & &1.type) == [:attempt_scheduled]
+      assert Enum.map(dispatch_entries, & &1.type) == [:run_queued, :attempt_scheduled]
 
       assert {:ok, run_index_projection} =
                Journal.rebuild_run_index_projection(
@@ -1976,6 +2385,1557 @@ defmodule SquidMeshTest do
       assert scheduled_run_ids == Enum.sort(started_run_ids)
     end
 
+    test "execute_next/1 runs and applies one visible journal attempt without writing legacy runtime tables" do
+      legacy_counts_before = legacy_runtime_counts()
+
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = executed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert executed_snapshot.run_id == started_snapshot.run_id
+      assert executed_snapshot.reason == :terminal
+      assert executed_snapshot.status == :completed
+      assert executed_snapshot.terminal? == true
+      assert executed_snapshot.terminal_status == :completed
+      assert executed_snapshot.visible_attempts == []
+      assert executed_snapshot.pending_results == []
+      assert executed_snapshot.applied_runnable_keys == started_snapshot.planned_runnable_keys
+
+      assert [
+               %{
+                 status: :completed,
+                 step: "check_gateway",
+                 result: %{gateway_check: %{account_id: "acct_123", status: "healthy"}},
+                 applied?: true
+               }
+             ] = executed_snapshot.attempts
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :run_terminal
+             ]
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.map(dispatch_entries, & &1.type) == [
+               :run_queued,
+               :attempt_scheduled,
+               :attempt_claimed,
+               :attempt_completed
+             ]
+
+      assert legacy_runtime_counts() == legacy_counts_before
+    end
+
+    test "execute_next/1 plans and schedules the successor step after a journal completion" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_456"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = progressed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert progressed_snapshot.run_id == started_snapshot.run_id
+      assert progressed_snapshot.status == :running
+      assert progressed_snapshot.reason == :attempt_visible
+
+      assert [%{step: "send_email", status: :available, input: successor_input}] =
+               progressed_snapshot.visible_attempts
+
+      assert successor_input == %{
+               account_id: "acct_123",
+               invoice_id: "inv_456",
+               account: %{id: "acct_123"},
+               invoice: %{id: "inv_456", status: "open"}
+             }
+
+      assert {:ok, %Snapshot{} = completed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_2",
+                 claim_id: "claim_2",
+                 claim_token: "token_2",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert completed_snapshot.status == :completed
+      assert completed_snapshot.reason == :terminal
+      assert completed_snapshot.terminal? == true
+
+      assert Enum.map(completed_snapshot.attempts, & &1.step) == [
+               "load_invoice",
+               "send_email"
+             ]
+    end
+
+    test "execute_next/1 advances dependency workflows after prerequisites complete" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalDependencyWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_456"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert Enum.map(started_snapshot.visible_attempts, & &1.step) == [
+               "load_account",
+               "load_invoice"
+             ]
+
+      assert {:ok, %Snapshot{} = after_account} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert after_account.status == :running
+      assert Enum.map(after_account.visible_attempts, & &1.step) == ["load_invoice"]
+
+      assert {:ok, %Snapshot{} = after_invoice} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_2",
+                 claim_id: "claim_2",
+                 claim_token: "token_2",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert after_invoice.status == :running
+      assert [%{step: "send_email", input: send_email_input}] = after_invoice.visible_attempts
+
+      assert send_email_input == %{
+               account: %{id: "acct_123"},
+               invoice: %{id: "inv_456", status: "open"}
+             }
+
+      assert {:ok, %Snapshot{} = completed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_3",
+                 claim_id: "claim_3",
+                 claim_token: "token_3",
+                 now: DateTime.add(@read_model_visible_at, 2, :second)
+               )
+
+      assert completed_snapshot.status == :completed
+      assert completed_snapshot.reason == :terminal
+
+      assert Enum.map(completed_snapshot.attempts, & &1.step) == [
+               "load_account",
+               "load_invoice",
+               "send_email"
+             ]
+    end
+
+    test "execute_next/1 recomputes dependency progress after concurrent root append conflicts" do
+      on_exit(fn -> :persistent_term.erase(:journal_dependency_invoice_hook) end)
+
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalDependencyWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_456"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, dispatch_agent} =
+               DispatchAgent.rebuild(@read_model_storage, @read_model_queue)
+
+      assert {:ok, %{attempt: account_attempt}} =
+               DispatchAgent.claim_next(@read_model_storage, dispatch_agent, "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert account_attempt.step == "load_account"
+
+      :persistent_term.put(:journal_dependency_invoice_hook, fn ->
+        account_result = %{account: %{id: "acct_123"}}
+
+        assert {:ok, latest_dispatch_agent} =
+                 DispatchAgent.rebuild(@read_model_storage, @read_model_queue)
+
+        assert {:ok, %{}} =
+                 DispatchAgent.complete(
+                   @read_model_storage,
+                   latest_dispatch_agent,
+                   account_attempt.runnable_key,
+                   "claim_1",
+                   "token_1",
+                   account_result,
+                   now: DateTime.add(@read_model_visible_at, 1, :millisecond)
+                 )
+
+        append_read_model_run_entries([
+          read_model_entry!(:runnable_applied, %{
+            run_id: started_snapshot.run_id,
+            runnable_key: account_attempt.runnable_key,
+            result: account_result,
+            occurred_at: DateTime.add(@read_model_visible_at, 1, :millisecond)
+          })
+        ])
+      end)
+
+      assert {:ok, %Snapshot{} = after_invoice} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_2",
+                 claim_id: "claim_2",
+                 claim_token: "token_2",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert after_invoice.status == :running
+      assert [%{step: "send_email", input: send_email_input}] = after_invoice.visible_attempts
+
+      assert send_email_input == %{
+               account: %{id: "acct_123"},
+               invoice: %{id: "inv_456", status: "open"}
+             }
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :runnable_applied,
+               :runnables_planned
+             ]
+    end
+
+    test "execute_next/1 terminally fails dependency workflows after nonretryable root failure" do
+      assert {:ok, %Snapshot{}} =
+               SquidMesh.start_run(
+                 JournalDependencyFailureWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_456"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert snapshot.status == :failed
+      assert snapshot.reason == :terminal
+      assert snapshot.terminal? == true
+      assert snapshot.visible_attempts == []
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, snapshot.run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :run_terminal
+             ]
+    end
+
+    test "execute_next/1 returns none after the visible journal attempt is already applied" do
+      assert {:ok, %Snapshot{}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, :none} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_2",
+                 claim_id: "claim_2",
+                 claim_token: "token_2",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.map(dispatch_entries, & &1.type) == [
+               :run_queued,
+               :attempt_scheduled,
+               :attempt_claimed,
+               :attempt_completed
+             ]
+    end
+
+    test "execute_next/1 recovers a completed attempt that crashed before run progression" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, dispatch_agent} =
+               DispatchAgent.rebuild(@read_model_storage, @read_model_queue)
+
+      assert {:ok, %{agent: claimed_agent, attempt: attempt}} =
+               DispatchAgent.claim_next(@read_model_storage, dispatch_agent, "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %{}} =
+               DispatchAgent.complete(
+                 @read_model_storage,
+                 claimed_agent,
+                 attempt.runnable_key,
+                 "claim_1",
+                 "token_1",
+                 %{gateway_check: %{account_id: "acct_123", status: "healthy"}},
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %Snapshot{reason: :completed_result_pending_apply}} =
+               SquidMesh.inspect_run(started_snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %Snapshot{} = recovered_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_2",
+                 claim_id: "claim_2",
+                 claim_token: "token_2",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert recovered_snapshot.status == :completed
+      assert recovered_snapshot.reason == :terminal
+      assert recovered_snapshot.applied_runnable_keys == started_snapshot.planned_runnable_keys
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :run_terminal
+             ]
+    end
+
+    test "execute_next/1 does not apply completed attempts after the run became terminal" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, dispatch_agent} =
+               DispatchAgent.rebuild(@read_model_storage, @read_model_queue)
+
+      assert {:ok, %{agent: claimed_agent, attempt: attempt}} =
+               DispatchAgent.claim_next(@read_model_storage, dispatch_agent, "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %{}} =
+               DispatchAgent.complete(
+                 @read_model_storage,
+                 claimed_agent,
+                 attempt.runnable_key,
+                 "claim_1",
+                 "token_1",
+                 %{gateway_check: %{account_id: "acct_123", status: "healthy"}},
+                 now: @read_model_visible_at
+               )
+
+      append_read_model_run_entries([
+        read_model_entry!(:run_terminal, %{
+          run_id: started_snapshot.run_id,
+          status: :cancelled,
+          occurred_at: DateTime.add(@read_model_visible_at, 1, :second)
+        })
+      ])
+
+      assert {:ok, :none} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_2",
+                 claim_id: "claim_2",
+                 claim_token: "token_2",
+                 now: DateTime.add(@read_model_visible_at, 2, :second)
+               )
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :run_terminal
+             ]
+    end
+
+    test "execute_next/1 recovers a failed attempt that crashed before run progression" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalFailureWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, dispatch_agent} =
+               DispatchAgent.rebuild(@read_model_storage, @read_model_queue)
+
+      assert {:ok, %{agent: claimed_agent, attempt: attempt}} =
+               DispatchAgent.claim_next(@read_model_storage, dispatch_agent, "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %{}} =
+               DispatchAgent.fail(
+                 @read_model_storage,
+                 claimed_agent,
+                 attempt.runnable_key,
+                 "claim_1",
+                 "token_1",
+                 %{code: "gateway_timeout", message: "gateway timeout", retryable?: false},
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %Snapshot{reason: :waiting_for_dispatch}} =
+               SquidMesh.inspect_run(started_snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %Snapshot{} = recovered_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_2",
+                 claim_id: "claim_2",
+                 claim_token: "token_2",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert recovered_snapshot.status == :failed
+      assert recovered_snapshot.reason == :terminal
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :run_terminal
+             ]
+    end
+
+    test "execute_next/1 recovers dispatch scheduling after run progression was committed" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_456"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, dispatch_agent} =
+               DispatchAgent.rebuild(@read_model_storage, @read_model_queue)
+
+      assert {:ok, %{agent: claimed_agent, attempt: attempt}} =
+               DispatchAgent.claim_next(@read_model_storage, dispatch_agent, "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      result = %{
+        account: %{id: "acct_123"},
+        invoice: %{id: "inv_456", status: "open"}
+      }
+
+      assert {:ok, %{}} =
+               DispatchAgent.complete(
+                 @read_model_storage,
+                 claimed_agent,
+                 attempt.runnable_key,
+                 "claim_1",
+                 "token_1",
+                 result,
+                 now: @read_model_visible_at
+               )
+
+      successor_runnable = %{
+        run_id: started_snapshot.run_id,
+        runnable_key: "#{started_snapshot.run_id}:send_email:1",
+        idempotency_key: "#{started_snapshot.run_id}:send_email:1",
+        attempt_number: 1,
+        queue: @read_model_queue,
+        step: "send_email",
+        input: result,
+        visible_at: @read_model_visible_at
+      }
+
+      append_read_model_run_entries([
+        read_model_entry!(:runnable_applied, %{
+          run_id: started_snapshot.run_id,
+          runnable_key: attempt.runnable_key,
+          result: result,
+          occurred_at: @read_model_visible_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: started_snapshot.run_id,
+          runnables: [successor_runnable],
+          occurred_at: @read_model_visible_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{reason: :planned_dispatch_pending_schedule}} =
+               SquidMesh.inspect_run(started_snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %Snapshot{} = recovered_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_2",
+                 claim_id: "claim_2",
+                 claim_token: "token_2",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert recovered_snapshot.reason == :attempt_visible
+      assert Enum.map(recovered_snapshot.visible_attempts, & &1.step) == ["send_email"]
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.count(dispatch_entries, &(&1.type == :attempt_scheduled)) == 2
+    end
+
+    test "execute_next/1 recovers initial dispatch scheduling from a queued run marker" do
+      run_id = Ecto.UUID.generate()
+      runnable = journal_start_runnable(run_id)
+      assert {:ok, definition} = Definition.load(PaymentRecoveryWorkflow)
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:run_queued, %{
+          run_id: run_id,
+          queue: @read_model_queue,
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      append_read_model_run_entries([
+        read_model_entry!(:run_started, %{
+          run_id: run_id,
+          workflow: Definition.serialize_workflow(PaymentRecoveryWorkflow),
+          definition_fingerprint: Definition.fingerprint(definition),
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [runnable],
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{reason: :planned_dispatch_pending_schedule}} =
+               SquidMesh.inspect_run(run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %Snapshot{} = recovered_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert recovered_snapshot.reason == :attempt_visible
+
+      assert [%{runnable_key: runnable_key, step: "check_gateway", status: :available}] =
+               recovered_snapshot.visible_attempts
+
+      assert runnable_key == runnable.runnable_key
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.map(dispatch_entries, & &1.type) == [:run_queued, :attempt_scheduled]
+    end
+
+    test "execute_next/1 ignores queued run markers for runs planned on another queue" do
+      run_id = Ecto.UUID.generate()
+
+      assert {:ok, %Snapshot{run_id: ^run_id}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: "default",
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert {:error, :conflict} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: "other",
+                 now: DateTime.add(@read_model_started_at, 1, :second),
+                 run_id: run_id
+               )
+
+      assert {:ok, :none} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: "other",
+                 owner_id: "worker_1",
+                 now: @read_model_visible_at
+               )
+    end
+
+    test "execute_next/1 does not repeatedly recover failed attempts after an error transition is planned" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalErrorTransitionWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, dispatch_agent} =
+               DispatchAgent.rebuild(@read_model_storage, @read_model_queue)
+
+      assert {:ok, %{agent: claimed_agent, attempt: attempt}} =
+               DispatchAgent.claim_next(@read_model_storage, dispatch_agent, "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %{}} =
+               DispatchAgent.fail(
+                 @read_model_storage,
+                 claimed_agent,
+                 attempt.runnable_key,
+                 "claim_1",
+                 "token_1",
+                 %{code: "gateway_timeout", message: "gateway timeout", retryable?: false},
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %Snapshot{reason: :attempt_visible} = recovered_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_2",
+                 claim_id: "claim_2",
+                 claim_token: "token_2",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert Enum.map(recovered_snapshot.visible_attempts, & &1.step) == ["notify_failure"]
+
+      assert {:ok, %Snapshot{} = completed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_3",
+                 claim_id: "claim_3",
+                 claim_token: "token_3",
+                 now: DateTime.add(@read_model_visible_at, 2, :second)
+               )
+
+      assert completed_snapshot.status == :completed
+      assert completed_snapshot.reason == :terminal
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :runnables_planned,
+               :runnable_applied,
+               :run_terminal
+             ]
+    end
+
+    test "execute_next/1 does not duplicate error transition progression after a run-thread conflict" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalErrorTransitionWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      notify_runnable = %{
+        run_id: started_snapshot.run_id,
+        runnable_key: "#{started_snapshot.run_id}:notify_failure:1",
+        idempotency_key: "#{started_snapshot.run_id}:notify_failure:1",
+        attempt_number: 1,
+        queue: @read_model_queue,
+        step: "notify_failure",
+        input: %{},
+        visible_at: @read_model_visible_at
+      }
+
+      failed_runnable_key = "#{started_snapshot.run_id}:fail_gateway:1"
+      parent = self()
+
+      :persistent_term.put(:journal_error_transition_conflict_hook, fn %{run_id: run_id} ->
+        assert run_id == started_snapshot.run_id
+        send(parent, :error_transition_conflict_hook_called)
+
+        append_read_model_run_entries([
+          read_model_entry!(:runnable_applied, %{
+            run_id: run_id,
+            runnable_key: failed_runnable_key,
+            result: %{},
+            occurred_at: @read_model_visible_at
+          }),
+          read_model_entry!(:runnables_planned, %{
+            run_id: run_id,
+            runnables: [notify_runnable],
+            occurred_at: @read_model_visible_at
+          })
+        ])
+      end)
+
+      try do
+        assert {:ok, %Snapshot{} = snapshot} =
+                 execute_journal_next(
+                   runtime: :journal,
+                   journal_storage: @read_model_storage,
+                   queue: @read_model_queue,
+                   owner_id: "worker_1",
+                   claim_id: "claim_1",
+                   claim_token: "token_1",
+                   now: @read_model_visible_at
+                 )
+
+        assert_receive :error_transition_conflict_hook_called
+        assert Enum.map(snapshot.visible_attempts, & &1.step) == ["notify_failure"]
+      after
+        :persistent_term.erase(:journal_error_transition_conflict_hook)
+      end
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+
+      assert Enum.count(run_entries, &(&1.type == :runnable_applied)) == 1
+
+      notify_plan_count =
+        Enum.count(run_entries, fn
+          %{type: :runnables_planned, data: %{runnables: [%{runnable_key: key}]}} ->
+            key == notify_runnable.runnable_key
+
+          _entry ->
+            false
+        end)
+
+      assert notify_plan_count == 1
+    end
+
+    test "execute_next/1 fails an incompatible claimed attempt durably" do
+      run_id = Ecto.UUID.generate()
+      runnable_key = "#{run_id}:missing_gateway:1"
+      assert {:ok, definition} = Definition.load(PaymentRecoveryWorkflow)
+
+      append_read_model_run_entries([
+        read_model_entry!(:run_started, %{
+          run_id: run_id,
+          workflow: Atom.to_string(PaymentRecoveryWorkflow),
+          definition_fingerprint: Definition.fingerprint(definition),
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [
+            %{
+              run_id: run_id,
+              runnable_key: runnable_key,
+              idempotency_key: runnable_key,
+              attempt_number: 1,
+              queue: @read_model_queue,
+              step: "missing_gateway",
+              input: %{account_id: "acct_123"},
+              visible_at: @read_model_started_at
+            }
+          ],
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:attempt_scheduled, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          idempotency_key: runnable_key,
+          attempt_number: 1,
+          queue: @read_model_queue,
+          step: "missing_gateway",
+          input: %{account_id: "acct_123"},
+          visible_at: @read_model_started_at,
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert snapshot.status == :failed
+      assert snapshot.reason == :terminal
+
+      assert [
+               %{
+                 status: :failed,
+                 step: "missing_gateway",
+                 error: %{
+                   message: "journal attempt is incompatible with the current workflow definition"
+                 }
+               }
+             ] = snapshot.attempts
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert Enum.map(run_entries, & &1.type) == [:run_started, :runnables_planned, :run_terminal]
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.map(dispatch_entries, & &1.type) == [
+               :attempt_scheduled,
+               :attempt_claimed,
+               :attempt_failed
+             ]
+    end
+
+    test "execute_next/1 rejects missing workflow definition fingerprints before executing" do
+      run_id = Ecto.UUID.generate()
+      runnable_key = "#{run_id}:check_gateway:1"
+
+      append_read_model_run_entries([
+        read_model_entry!(:run_started, %{
+          run_id: run_id,
+          workflow: Atom.to_string(PaymentRecoveryWorkflow),
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [journal_start_runnable(run_id)],
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:attempt_scheduled, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          idempotency_key: runnable_key,
+          attempt_number: 1,
+          queue: @read_model_queue,
+          step: "check_gateway",
+          input: %{account_id: "acct_123"},
+          visible_at: @read_model_started_at,
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert snapshot.status == :failed
+
+      assert [%{status: :failed, error: %{code: "incompatible_workflow_definition"}}] =
+               snapshot.attempts
+    end
+
+    test "execute_next/1 rejects stale workflow definition fingerprints before executing" do
+      run_id = Ecto.UUID.generate()
+      runnable_key = "#{run_id}:check_gateway:1"
+
+      append_read_model_run_entries([
+        read_model_entry!(:run_started, %{
+          run_id: run_id,
+          workflow: Atom.to_string(PaymentRecoveryWorkflow),
+          definition_fingerprint: "stale-definition",
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [journal_start_runnable(run_id)],
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:attempt_scheduled, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          idempotency_key: runnable_key,
+          attempt_number: 1,
+          queue: @read_model_queue,
+          step: "check_gateway",
+          input: %{account_id: "acct_123"},
+          visible_at: @read_model_started_at,
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert snapshot.status == :failed
+
+      assert [%{status: :failed, error: %{code: "incompatible_workflow_definition"}}] =
+               snapshot.attempts
+    end
+
+    test "execute_next/1 terminally fails stale completed attempts during recovery" do
+      run_id = Ecto.UUID.generate()
+      runnable_key = "#{run_id}:check_gateway:1"
+
+      append_read_model_run_entries([
+        read_model_entry!(:run_started, %{
+          run_id: run_id,
+          workflow: Atom.to_string(PaymentRecoveryWorkflow),
+          definition_fingerprint: "stale-definition",
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [journal_start_runnable(run_id)],
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:attempt_scheduled, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          idempotency_key: runnable_key,
+          attempt_number: 1,
+          queue: @read_model_queue,
+          step: "check_gateway",
+          input: %{account_id: "acct_123"},
+          visible_at: @read_model_started_at,
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:attempt_claimed, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          claim_id: "claim_1",
+          claim_token_hash: "token_hash_1",
+          owner_id: "worker_1",
+          queue: @read_model_queue,
+          lease_until: DateTime.add(@read_model_visible_at, 300, :second),
+          occurred_at: @read_model_visible_at
+        }),
+        read_model_entry!(:attempt_completed, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          claim_id: "claim_1",
+          claim_token_hash: "token_hash_1",
+          queue: @read_model_queue,
+          result: %{gateway_check: %{account_id: "acct_123", status: "healthy"}},
+          occurred_at: @read_model_visible_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_2",
+                 claim_id: "claim_2",
+                 claim_token: "token_2",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert snapshot.status == :failed
+      assert snapshot.reason == :terminal
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert Enum.map(run_entries, & &1.type) == [:run_started, :runnables_planned, :run_terminal]
+    end
+
+    test "execute_next/1 uses completion time for lease fencing" do
+      assert {:ok, %Snapshot{}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:error, :expired_claim} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 lease_for: 1,
+                 now: @read_model_visible_at,
+                 finished_at: DateTime.add(@read_model_visible_at, 2, :second)
+               )
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.map(dispatch_entries, & &1.type) == [
+               :run_queued,
+               :attempt_scheduled,
+               :attempt_claimed
+             ]
+    end
+
+    test "execute_next/1 retries terminal append after unrelated same-queue writes" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalConflictWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      :persistent_term.put(:journal_executor_conflict_hook, fn ->
+        assert {:ok, %Snapshot{}} =
+                 SquidMesh.start_run(
+                   PaymentRecoveryWorkflow,
+                   %{account_id: "acct_456"},
+                   runtime: :journal,
+                   journal_storage: @read_model_storage,
+                   queue: @read_model_queue,
+                   now: DateTime.add(@read_model_started_at, 1, :second),
+                   run_id: Ecto.UUID.generate()
+                 )
+      end)
+
+      try do
+        assert {:ok, %Snapshot{} = snapshot} =
+                 execute_journal_next(
+                   runtime: :journal,
+                   journal_storage: @read_model_storage,
+                   queue: @read_model_queue,
+                   owner_id: "worker_1",
+                   claim_id: "claim_1",
+                   claim_token: "token_1",
+                   now: @read_model_visible_at
+                 )
+
+        assert snapshot.run_id == started_snapshot.run_id
+        assert snapshot.status == :completed
+        assert snapshot.reason == :terminal
+      after
+        :persistent_term.erase(:journal_executor_conflict_hook)
+      end
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.map(dispatch_entries, & &1.type) == [
+               :run_queued,
+               :attempt_scheduled,
+               :attempt_claimed,
+               :run_queued,
+               :attempt_scheduled,
+               :attempt_completed
+             ]
+    end
+
+    test "execute_next/1 records durable failed-attempt facts" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalFailureWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = executed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert executed_snapshot.run_id == started_snapshot.run_id
+      assert executed_snapshot.reason == :terminal
+      assert executed_snapshot.status == :failed
+      assert executed_snapshot.terminal? == true
+      assert executed_snapshot.terminal_status == :failed
+      assert executed_snapshot.applied_runnable_keys == []
+
+      assert [
+               %{
+                 status: :failed,
+                 step: "fail_gateway",
+                 error: %{
+                   code: "gateway_timeout",
+                   message: "gateway timeout",
+                   retryable?: false
+                 }
+               }
+             ] = executed_snapshot.attempts
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :run_terminal
+             ]
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.map(dispatch_entries, & &1.type) == [
+               :run_queued,
+               :attempt_scheduled,
+               :attempt_claimed,
+               :attempt_failed
+             ]
+    end
+
+    test "execute_next/1 schedules retry attempts through the journal dispatch projection" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalRetryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert snapshot.run_id == started_snapshot.run_id
+      assert snapshot.status == :running
+      assert snapshot.reason == :attempt_visible
+      assert snapshot.terminal? == false
+
+      assert [
+               %{status: :failed, step: "retry_gateway", error: %{retryable?: true}},
+               %{status: :retry_scheduled, step: "retry_gateway", attempt_number: 2}
+             ] = snapshot.attempts
+
+      assert [%{status: :retry_scheduled, attempt_number: 2}] = snapshot.visible_attempts
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.map(dispatch_entries, & &1.type) == [
+               :run_queued,
+               :attempt_scheduled,
+               :attempt_claimed,
+               :attempt_failed
+             ]
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnables_planned
+             ]
+
+      assert {:ok, %Snapshot{} = exhausted_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_2",
+                 claim_id: "claim_2",
+                 claim_token: "token_2",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert exhausted_snapshot.status == :failed
+      assert exhausted_snapshot.reason == :terminal
+
+      assert Enum.map(exhausted_snapshot.attempts, &{&1.status, &1.attempt_number}) == [
+               {:failed, 1},
+               {:failed, 2}
+             ]
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.map(dispatch_entries, & &1.type) == [
+               :run_queued,
+               :attempt_scheduled,
+               :attempt_claimed,
+               :attempt_failed,
+               :attempt_claimed,
+               :attempt_failed
+             ]
+    end
+
+    test "execute_next/1 does not duplicate retry progression after a run-thread conflict" do
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalRetryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      retry_runnable = %{
+        run_id: started_snapshot.run_id,
+        runnable_key: "#{started_snapshot.run_id}:retry_gateway:2",
+        idempotency_key: "#{started_snapshot.run_id}:retry_gateway:2",
+        attempt_number: 2,
+        queue: @read_model_queue,
+        step: "retry_gateway",
+        input: %{account_id: "acct_123"},
+        visible_at: @read_model_visible_at
+      }
+
+      parent = self()
+
+      :persistent_term.put(:journal_retry_failure_conflict_hook, fn %{run_id: run_id} ->
+        assert run_id == started_snapshot.run_id
+        send(parent, :retry_failure_conflict_hook_called)
+
+        append_read_model_run_entries([
+          read_model_entry!(:runnables_planned, %{
+            run_id: run_id,
+            runnables: [retry_runnable],
+            occurred_at: @read_model_visible_at
+          })
+        ])
+      end)
+
+      try do
+        assert {:ok, %Snapshot{} = snapshot} =
+                 execute_journal_next(
+                   runtime: :journal,
+                   journal_storage: @read_model_storage,
+                   queue: @read_model_queue,
+                   owner_id: "worker_1",
+                   claim_id: "claim_1",
+                   claim_token: "token_1",
+                   now: @read_model_visible_at
+                 )
+
+        assert_receive :retry_failure_conflict_hook_called
+        assert [%{status: :retry_scheduled, attempt_number: 2}] = snapshot.visible_attempts
+      after
+        :persistent_term.erase(:journal_retry_failure_conflict_hook)
+      end
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+
+      retry_plan_count =
+        Enum.count(run_entries, fn
+          %{type: :runnables_planned, data: %{runnables: [%{runnable_key: key}]}} ->
+            key == retry_runnable.runnable_key
+
+          _entry ->
+            false
+        end)
+
+      assert retry_plan_count == 1
+    end
+
+    test "execute_next/1 redacts secret-bearing action errors before persistence" do
+      assert {:ok, %Snapshot{}} =
+               SquidMesh.start_run(
+                 JournalSecretFailureWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      {snapshot, log} =
+        with_log(fn ->
+          assert {:ok, %Snapshot{} = snapshot} =
+                   execute_journal_next(
+                     runtime: :journal,
+                     journal_storage: @read_model_storage,
+                     queue: @read_model_queue,
+                     owner_id: "worker_1",
+                     claim_id: "claim_1",
+                     claim_token: "token_1",
+                     now: @read_model_visible_at
+                   )
+
+          snapshot
+        end)
+
+      assert [%{error: error}] = snapshot.attempts
+
+      assert error == %{
+               code: "step_error",
+               message: "step execution failed",
+               retryable?: false
+             }
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      failed_entry = Enum.find(dispatch_entries, &(&1.type == :attempt_failed))
+
+      refute log =~ "super-secret-token"
+      refute inspect(failed_entry.data.error) =~ "super-secret-token"
+      refute inspect(snapshot) =~ "super-secret-token"
+    end
+
+    test "execute_next/1 rejects malformed option lists without leaking claim tokens" do
+      assert {:error, reason} =
+               execute_journal_next([{:claim_token, "super-secret-token"}, :not_a_pair])
+
+      assert reason == {:invalid_option, {:opts, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+    end
+
+    test "execute_next/1 rejects non-list options without leaking claim tokens" do
+      assert {:error, reason} = execute_journal_next(%{claim_token: "super-secret-token"})
+
+      assert reason == {:invalid_option, {:opts, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+    end
+
+    test "public execute_next/1 rejects internal executor controls" do
+      for option <- [:claim_id, :claim_token, :finished_at] do
+        assert {:error, {:invalid_option, {:option, ^option}}} =
+                 SquidMesh.execute_next(
+                   Keyword.put(
+                     [
+                       runtime: :journal,
+                       journal_storage: @read_model_storage
+                     ],
+                     option,
+                     "internal"
+                   )
+                 )
+      end
+    end
+
+    test "execute_next/1 redacts invalid option values" do
+      secret_value = %{claim_token: "super-secret-token"}
+
+      assert {:error, reason} =
+               execute_journal_next(runtime: :journal, finished_at: secret_value)
+
+      assert reason == {:invalid_option, {:finished_at, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+
+      assert {:error, reason} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 now: secret_value
+               )
+
+      assert reason == {:invalid_option, {:now, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+
+      assert {:error, reason} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: secret_value
+               )
+
+      assert reason == {:invalid_option, {:queue, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+
+      assert {:error, reason} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 owner_id: secret_value
+               )
+
+      assert reason == {:invalid_option, {:owner_id, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+    end
+
     test "explain_run/2 can read from the read model" do
       append_read_model_run_entries([
         read_model_run_started(),
@@ -2020,29 +3980,68 @@ defmodule SquidMeshTest do
     end
 
     test "returns a structured error for unsupported read models" do
-      assert {:error, {:invalid_option, {:read_model, :unknown}}} =
+      assert {:error, {:invalid_option, {:read_model, :invalid}}} =
                SquidMesh.inspect_run(@read_model_run_id, read_model: :unknown)
 
-      assert {:error, {:invalid_option, {:read_model, :unknown}}} =
+      assert {:error, {:invalid_option, {:read_model, :invalid}}} =
                SquidMesh.explain_run(@read_model_run_id, read_model: :unknown)
     end
 
+    test "read model APIs redact invalid read_model values" do
+      assert {:error, reason} =
+               SquidMesh.inspect_run(@read_model_run_id,
+                 read_model: %{claim_token: "super-secret-token"}
+               )
+
+      assert reason == {:invalid_option, {:read_model, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+
+      assert {:error, reason} =
+               SquidMesh.explain_run(@read_model_run_id,
+                 read_model: %{claim_token: "super-secret-token"}
+               )
+
+      assert reason == {:invalid_option, {:read_model, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+    end
+
     test "returns a structured error for malformed option lists" do
-      assert {:error, {:invalid_option, {:opts, [:bad]}}} =
+      assert {:error, {:invalid_option, {:opts, :invalid}}} =
                SquidMesh.inspect_run(@read_model_run_id, [:bad])
 
-      assert {:error, {:invalid_option, {:opts, [:bad]}}} =
+      assert {:error, {:invalid_option, {:opts, :invalid}}} =
                SquidMesh.explain_run(@read_model_run_id, [:bad])
     end
 
+    test "read model APIs reject malformed options without leaking claim tokens" do
+      assert {:error, reason} =
+               SquidMesh.inspect_run(@read_model_run_id, %{
+                 read_model: :read_model,
+                 claim_token: "super-secret-token"
+               })
+
+      assert reason == {:invalid_option, {:opts, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+
+      assert {:error, reason} =
+               SquidMesh.explain_run(@read_model_run_id, [
+                 {:read_model, :read_model},
+                 {:claim_token, "super-secret-token"},
+                 :not_a_pair
+               ])
+
+      assert reason == {:invalid_option, {:opts, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+    end
+
     test "read model rejects malformed run ids without raising" do
-      assert {:error, {:invalid_option, {:run_id, 123}}} =
+      assert {:error, {:invalid_option, {:run_id, :invalid}}} =
                SquidMesh.inspect_run(123,
                  read_model: :read_model,
                  journal_storage: @read_model_storage
                )
 
-      assert {:error, {:invalid_option, {:run_id, 123}}} =
+      assert {:error, {:invalid_option, {:run_id, :invalid}}} =
                SquidMesh.explain_run(123,
                  read_model: :read_model,
                  journal_storage: @read_model_storage
@@ -2050,18 +4049,51 @@ defmodule SquidMeshTest do
     end
 
     test "read model rejects storage-unsafe run ids and queues" do
-      assert {:error, {:invalid_option, {:run_id, "../run"}}} =
+      assert {:error, {:invalid_option, {:run_id, :invalid}}} =
                SquidMesh.inspect_run("../run",
                  read_model: :read_model,
                  journal_storage: @read_model_storage
                )
 
-      assert {:error, {:invalid_option, {:queue, "../dispatch"}}} =
+      assert {:error, {:invalid_option, {:queue, :invalid}}} =
                SquidMesh.explain_run(@read_model_run_id,
                  read_model: :read_model,
                  journal_storage: @read_model_storage,
                  queue: "../dispatch"
                )
+    end
+
+    test "read model redacts invalid option values" do
+      secret_value = %{claim_token: "super-secret-token"}
+
+      assert {:error, reason} =
+               SquidMesh.inspect_run(@read_model_run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 now: secret_value
+               )
+
+      assert reason == {:invalid_option, {:now, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+
+      assert {:error, reason} =
+               SquidMesh.explain_run(secret_value,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage
+               )
+
+      assert reason == {:invalid_option, {:run_id, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+
+      assert {:error, reason} =
+               SquidMesh.explain_run(@read_model_run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: secret_value
+               )
+
+      assert reason == {:invalid_option, {:queue, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
     end
   end
 
