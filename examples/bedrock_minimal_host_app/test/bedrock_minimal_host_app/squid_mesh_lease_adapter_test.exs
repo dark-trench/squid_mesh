@@ -1,11 +1,11 @@
-defmodule BedrockMinimalHostApp.SquidMeshLeaseExecutorTest do
+defmodule BedrockMinimalHostApp.SquidMeshLeaseAdapterTest do
   use ExUnit.Case, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
   alias BedrockMinimalHostApp.Jobs.SquidMeshPayload
   alias BedrockMinimalHostApp.JobQueue
   alias BedrockMinimalHostApp.Repo
-  alias BedrockMinimalHostApp.SquidMeshLeaseExecutor
+  alias BedrockMinimalHostApp.SquidMeshLeaseAdapter
   alias BedrockMinimalHostApp.WorkflowRuns
   alias BedrockMinimalHostApp.Workflows.DailyDigest
   alias SquidMesh.Executor.Payload
@@ -35,7 +35,7 @@ defmodule BedrockMinimalHostApp.SquidMeshLeaseExecutorTest do
              )
 
     assert {:ok, [claim]} =
-             SquidMeshLeaseExecutor.claim(%{}, queue, "worker_a",
+             SquidMeshLeaseAdapter.claim(%{}, queue, "worker_a",
                lease_duration_ms: 1_000,
                now: now
              )
@@ -46,13 +46,13 @@ defmodule BedrockMinimalHostApp.SquidMeshLeaseExecutorTest do
     assert claim.payload == %{"kind" => "step", "run_id" => "run_123", "step" => "charge_card"}
 
     assert {:ok, []} =
-             SquidMeshLeaseExecutor.claim(%{}, queue, "worker_b",
+             SquidMeshLeaseAdapter.claim(%{}, queue, "worker_b",
                lease_duration_ms: 1_000,
                now: now + 500
              )
 
     assert {:ok, heartbeated_claim} =
-             SquidMeshLeaseExecutor.heartbeat(%{}, claim,
+             SquidMeshLeaseAdapter.heartbeat(%{}, claim,
                lease_duration_ms: 5_000,
                now: now + 500
              )
@@ -60,8 +60,8 @@ defmodule BedrockMinimalHostApp.SquidMeshLeaseExecutorTest do
     assert heartbeated_claim.lease_until == now + 5_500
     assert heartbeated_claim.payload == claim.payload
 
-    assert :ok = SquidMeshLeaseExecutor.complete(%{}, heartbeated_claim, [])
-    assert {:ok, []} = SquidMeshLeaseExecutor.claim(%{}, queue, "worker_c", now: now + 5_500)
+    assert :ok = SquidMeshLeaseAdapter.complete(%{}, heartbeated_claim, [])
+    assert {:ok, []} = SquidMeshLeaseAdapter.claim(%{}, queue, "worker_c", now: now + 5_500)
     assert %{pending_count: 0, processing_count: 0} = JobQueue.stats(queue)
   end
 
@@ -77,18 +77,18 @@ defmodule BedrockMinimalHostApp.SquidMeshLeaseExecutorTest do
                now: now
              )
 
-    assert {:ok, [claim]} = SquidMeshLeaseExecutor.claim(%{}, queue, "worker_a", now: now)
+    assert {:ok, [claim]} = SquidMeshLeaseAdapter.claim(%{}, queue, "worker_a", now: now)
 
     assert {:ok, :requeued} =
-             SquidMeshLeaseExecutor.fail(%{}, claim, %{message: "gateway timeout"},
+             SquidMeshLeaseAdapter.fail(%{}, claim, %{message: "gateway timeout"},
                base_delay: 1_000,
                now: now
              )
 
-    assert {:ok, []} = SquidMeshLeaseExecutor.claim(%{}, queue, "worker_b", now: now + 999)
+    assert {:ok, []} = SquidMeshLeaseAdapter.claim(%{}, queue, "worker_b", now: now + 999)
 
     assert {:ok, [retry_claim]} =
-             SquidMeshLeaseExecutor.claim(%{}, queue, "worker_b", now: now + 1_000)
+             SquidMeshLeaseAdapter.claim(%{}, queue, "worker_b", now: now + 1_000)
 
     assert retry_claim.payload == %{
              "kind" => "step",
@@ -97,7 +97,7 @@ defmodule BedrockMinimalHostApp.SquidMeshLeaseExecutorTest do
            }
 
     assert {:ok, :dead_lettered} =
-             SquidMeshLeaseExecutor.fail(%{}, retry_claim, %{message: "still failing"},
+             SquidMeshLeaseAdapter.fail(%{}, retry_claim, %{message: "still failing"},
                base_delay: 1_000,
                now: now + 1_000
              )
@@ -114,10 +114,10 @@ defmodule BedrockMinimalHostApp.SquidMeshLeaseExecutorTest do
       )
 
     assert {:ok, _item_id} = JobQueue.enqueue(queue, "squid_mesh:payload", payload)
-    assert {:ok, [claim]} = SquidMeshLeaseExecutor.claim(%{}, queue, "worker_a", [])
+    assert {:ok, [claim]} = SquidMeshLeaseAdapter.claim(%{}, queue, "worker_a", [])
 
     assert :ok = SquidMeshPayload.perform(claim.payload, %{})
-    assert :ok = SquidMeshLeaseExecutor.complete(%{}, claim, [])
+    assert :ok = SquidMeshLeaseAdapter.complete(%{}, claim, [])
 
     assert {:ok, [run]} = WorkflowRuns.list_daily_digest_runs()
     assert run.status == :completed
@@ -140,23 +140,23 @@ defmodule BedrockMinimalHostApp.SquidMeshLeaseExecutorTest do
     Application.put_env(:bedrock_minimal_host_app, SquidMeshPayload, max_journal_attempts: 1)
 
     assert {:ok, _item_id} = JobQueue.enqueue(queue, "squid_mesh:payload", payload, now: now)
-    assert {:ok, [claim]} = SquidMeshLeaseExecutor.claim(%{}, queue, "worker_a", now: now)
+    assert {:ok, [claim]} = SquidMeshLeaseAdapter.claim(%{}, queue, "worker_a", now: now)
 
     assert {:error, :journal_drain_limit_exceeded} = SquidMeshPayload.perform(claim.payload, %{})
 
     assert {:ok, :requeued} =
-             SquidMeshLeaseExecutor.fail(%{}, claim, %{message: "drain limit"},
+             SquidMeshLeaseAdapter.fail(%{}, claim, %{message: "drain limit"},
                base_delay: 1,
                now: now
              )
 
     assert {:ok, [retry_claim]} =
-             SquidMeshLeaseExecutor.claim(%{}, queue, "worker_b", now: now + 1)
+             SquidMeshLeaseAdapter.claim(%{}, queue, "worker_b", now: now + 1)
 
     Application.put_env(:bedrock_minimal_host_app, SquidMeshPayload, max_journal_attempts: 50)
 
     assert :ok = SquidMeshPayload.perform(retry_claim.payload, %{})
-    assert :ok = SquidMeshLeaseExecutor.complete(%{}, retry_claim, [])
+    assert :ok = SquidMeshLeaseAdapter.complete(%{}, retry_claim, [])
 
     assert {:ok, [run]} = WorkflowRuns.list_daily_digest_runs()
     assert run.status == :completed

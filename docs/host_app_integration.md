@@ -274,9 +274,9 @@ keeps the storage and lease boundaries explicit:
 - `BedrockMinimalHostApp.Repo` stores Squid Mesh workflow and attempt state.
 - `BedrockMinimalHostApp.JobQueue` stores queue items, delayed visibility,
   leases, retries, and queue metadata.
-- `BedrockMinimalHostApp.SquidMeshExecutor` adapts cron activations to Bedrock
+- `BedrockMinimalHostApp.SquidMeshDeliveryAdapter` adapts cron activations to Bedrock
   Job Queue payloads.
-- `BedrockMinimalHostApp.SquidMeshLeaseExecutor` adapts Bedrock claims,
+- `BedrockMinimalHostApp.SquidMeshLeaseAdapter` adapts Bedrock claims,
   heartbeats, completion, and failure to `SquidMesh.Executor.Leases`.
 - `BedrockMinimalHostApp.Jobs.SquidMeshPayload` delivers cron payloads and then
   drains visible journal attempts while the Bedrock lease is held.
@@ -293,7 +293,7 @@ A host app using the same shape should:
 The example config shape is:
 
 ```elixir
-config :my_app, MyApp.SquidMeshExecutor,
+config :my_app, MyApp.SquidMeshDeliveryAdapter,
   queue_id: "tenant_a",
   topic: "squid_mesh:payload"
 
@@ -307,7 +307,7 @@ To verify the reference path locally:
 ```sh
 cd examples/bedrock_minimal_host_app
 mix setup
-MIX_ENV=test mix test test/bedrock_job_queue_stress_test.exs test/bedrock_minimal_host_app/squid_mesh_lease_executor_test.exs
+MIX_ENV=test mix test test/bedrock_job_queue_stress_test.exs test/bedrock_minimal_host_app/squid_mesh_lease_adapter_test.exs
 ```
 
 That test path covers Bedrock queue behavior plus the lease adapter contract.

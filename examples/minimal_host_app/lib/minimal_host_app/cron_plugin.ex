@@ -7,7 +7,7 @@ defmodule MinimalHostApp.CronPlugin do
 
   use Supervisor
 
-  alias MinimalHostApp.SquidMeshExecutor
+  alias MinimalHostApp.SquidMeshDeliveryAdapter
   alias MinimalHostApp.Workers.SquidMeshWorker
   alias SquidMesh.Executor.Payload
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
@@ -62,7 +62,7 @@ defmodule MinimalHostApp.CronPlugin do
 
     children =
       workflows
-      |> build_crontabs(SquidMeshExecutor.queue(), reboot_activation_id)
+      |> build_crontabs(SquidMeshDeliveryAdapter.queue(), reboot_activation_id)
       |> Enum.map(fn {timezone, crontab} ->
         opts = [conf: conf, crontab: crontab, timezone: timezone]
         Supervisor.child_spec({Oban.Plugins.Cron, opts}, id: {:cron, timezone})

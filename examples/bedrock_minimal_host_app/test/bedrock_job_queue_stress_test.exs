@@ -13,18 +13,22 @@ defmodule BedrockMinimalHostApp.BedrockJobQueueStressTest do
     queue_b = "tenant_b_#{System.unique_integer([:positive])}"
 
     delivery_config =
-      Application.get_env(:bedrock_minimal_host_app, BedrockMinimalHostApp.SquidMeshExecutor, [])
+      Application.get_env(
+        :bedrock_minimal_host_app,
+        BedrockMinimalHostApp.SquidMeshDeliveryAdapter,
+        []
+      )
 
     Application.put_env(
       :bedrock_minimal_host_app,
-      BedrockMinimalHostApp.SquidMeshExecutor,
+      BedrockMinimalHostApp.SquidMeshDeliveryAdapter,
       Keyword.put(delivery_config, :queue_id, queue_a)
     )
 
     on_exit(fn ->
       Application.put_env(
         :bedrock_minimal_host_app,
-        BedrockMinimalHostApp.SquidMeshExecutor,
+        BedrockMinimalHostApp.SquidMeshDeliveryAdapter,
         delivery_config
       )
     end)
@@ -131,7 +135,7 @@ defmodule BedrockMinimalHostApp.BedrockJobQueueStressTest do
       }
 
       assert {:ok, metadata} =
-               BedrockMinimalHostApp.SquidMeshExecutor.enqueue_cron(
+               BedrockMinimalHostApp.SquidMeshDeliveryAdapter.enqueue_cron(
                  %{},
                  DailyDigest,
                  :daily_digest,
@@ -141,7 +145,7 @@ defmodule BedrockMinimalHostApp.BedrockJobQueueStressTest do
                )
 
       assert %{
-               adapter: BedrockMinimalHostApp.SquidMeshExecutor,
+               adapter: BedrockMinimalHostApp.SquidMeshDeliveryAdapter,
                queue: ^queue_a,
                topic: "squid_mesh:payload",
                scheduled_at: scheduled_at

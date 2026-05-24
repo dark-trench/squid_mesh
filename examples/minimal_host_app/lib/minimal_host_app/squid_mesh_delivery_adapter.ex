@@ -1,4 +1,4 @@
-defmodule MinimalHostApp.SquidMeshExecutor do
+defmodule MinimalHostApp.SquidMeshDeliveryAdapter do
   @moduledoc """
   Oban-backed Squid Mesh delivery adapter owned by the host app.
   """

@@ -13,7 +13,7 @@ config :bedrock_minimal_host_app, BedrockMinimalHostApp.Repo,
   show_sensitive_data_on_connection_error: true,
   stacktrace: true
 
-config :bedrock_minimal_host_app, BedrockMinimalHostApp.SquidMeshExecutor,
+config :bedrock_minimal_host_app, BedrockMinimalHostApp.SquidMeshDeliveryAdapter,
   queue_id: "tenant_a",
   topic: "squid_mesh:payload"
 

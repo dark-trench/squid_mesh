@@ -461,14 +461,14 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
   test "the cron delivery adapter reports adapter metadata" do
     assert {:ok, metadata} =
-             MinimalHostApp.SquidMeshExecutor.enqueue_cron(
+             MinimalHostApp.SquidMeshDeliveryAdapter.enqueue_cron(
                %{},
                DailyDigest,
                :daily_digest,
                signal_id: "minimal-host-app:metadata-test"
              )
 
-    assert metadata.adapter == MinimalHostApp.SquidMeshExecutor
+    assert metadata.adapter == MinimalHostApp.SquidMeshDeliveryAdapter
     assert metadata.queue == :squid_mesh
     assert metadata.worker == "MinimalHostApp.Workers.SquidMeshWorker"
   end

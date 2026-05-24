@@ -224,7 +224,7 @@ Host-app scheduler example:
 
 ```elixir
 def handle_cron_tick do
-  MyApp.SquidMeshExecutor.enqueue_cron(
+  MyApp.SquidMeshDeliveryAdapter.enqueue_cron(
     SquidMesh.config!(),
     MyApp.Workflows.DailyStandup,
     :daily_standup,

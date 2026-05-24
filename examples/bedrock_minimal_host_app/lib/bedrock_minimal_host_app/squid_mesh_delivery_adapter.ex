@@ -1,4 +1,4 @@
-defmodule BedrockMinimalHostApp.SquidMeshExecutor do
+defmodule BedrockMinimalHostApp.SquidMeshDeliveryAdapter do
   @moduledoc """
   Bedrock-backed Squid Mesh delivery adapter owned by the host app.
   """
