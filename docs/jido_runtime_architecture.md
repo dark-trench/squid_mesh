@@ -147,7 +147,7 @@ flowchart LR
     Decide -- no --> Terminal[Append run_terminal]
 ```
 
-The current runtime uses two different kinds of durable state:
+The journal-backed runtime uses two different kinds of durable state:
 
 - journal entries: the source of truth for lifecycle facts
 - checkpoints: cached projections that speed up rebuilds
@@ -428,7 +428,7 @@ to Bedrock APIs.
 
 ## AI-Backed Steps
 
-In the current runtime, the workflow run is coordinated by a `WorkflowAgent`.
+In the journal-backed runtime, the workflow run is coordinated by a `WorkflowAgent`.
 That means Squid Mesh does not need a separate step kind just because a step
 implementation uses an LLM, calls tools, or delegates some local decision-making
 to Jido.
