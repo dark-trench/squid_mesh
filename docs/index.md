@@ -20,7 +20,7 @@ Add the dependency, install the migration, configure the repo and queue, and
 start a worker loop that drains journal attempts.
 
 - [Host app integration](host_app_integration.md)
-- [Compatibility matrix](compatibility.md)
+- [Supported baseline](compatibility.md)
 
 ### 3. Write Your First Workflow
 
@@ -108,7 +108,7 @@ guidance.
   conditions, dependencies, retries, cron, and examples
 - [Host app integration](host_app_integration.md) - install, config, worker
   loops, cron payloads, Bedrock setup, and Phoenix/OTP host shapes
-- [Compatibility matrix](compatibility.md) - supported toolchain and runtime
+- [Supported baseline](compatibility.md) - supported toolchain and runtime
   assumptions
 - [Positioning](positioning.md) - product lane and adjacent project comparison
 - [Production readiness](production_readiness.md) - current release bar

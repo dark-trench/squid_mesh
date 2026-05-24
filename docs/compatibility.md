@@ -1,6 +1,6 @@
-# Compatibility Matrix
+# Supported Baseline
 
-This matrix defines the currently supported baseline for Squid Mesh.
+This page defines the currently supported baseline for Squid Mesh.
 
 ## Supported Baseline
 

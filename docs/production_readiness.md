@@ -27,7 +27,7 @@ Why the warning still remains:
 
 Before removing the warning, the project should have:
 
-- a published compatibility matrix
+- a documented supported baseline for the current release line
 - a production operations guide
 - restart and deploy resilience verification
 - soak/load validation on the journal-backed runtime
