@@ -845,6 +845,36 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
     assert WorkflowAgent.pending_results(workflow_agent, dispatch_agent) == []
   end
 
+  test "projects applied runnable execution metadata" do
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, runnables_planned} =
+             DispatchProtocol.new_entry(:runnables_planned, %{
+               run_id: @run_id,
+               runnables: [%{runnable_key: @runnable_key, step: "charge_card"}],
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, runnable_applied} =
+             DispatchProtocol.new_entry(:runnable_applied, %{
+               run_id: @run_id,
+               runnable_key: @runnable_key,
+               result: %{},
+               execution_opts: [schedule_in: 2],
+               occurred_at: @completed_at
+             })
+
+    projection = Projection.rebuild([run_started, runnables_planned, runnable_applied])
+
+    assert Projection.applied_execution_opts(projection, @runnable_key) == [schedule_in: 2]
+    assert Projection.applied_at(projection, @runnable_key) == @completed_at
+  end
+
   test "records anomalies instead of raising for malformed persisted workflow entries" do
     malformed_entries = [
       workflow_entry(:run_started, %{}),

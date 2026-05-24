@@ -296,11 +296,31 @@ defmodule SquidMeshTest do
       end
 
       step :load_account, JournalDependencyWorkflow.LoadAccount
-      step :wait_for_settlement, :wait, duration: 250, after: [:load_account]
+      step :wait_for_settlement, :wait, duration: 2_000, after: [:load_account]
       step :load_invoice, JournalDependencyWorkflow.LoadInvoice
 
       step :send_email, JournalDependencyWorkflow.SendEmail,
         after: [:wait_for_settlement, :load_invoice]
+    end
+  end
+
+  defmodule JournalRootWaitWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual_root_wait do
+        manual()
+
+        payload do
+          field :invoice_id, :string
+        end
+      end
+
+      step :wait_for_settlement, :wait, duration: 2_000
+      step :z_load_invoice, JournalDependencyWorkflow.LoadInvoice
+
+      step :send_email, JournalRootWaitWorkflow.SendEmail,
+        after: [:wait_for_settlement, :z_load_invoice]
     end
   end
 
@@ -700,6 +720,20 @@ defmodule SquidMeshTest do
            channel: "email"
          }
        }}
+    end
+  end
+
+  defmodule JournalRootWaitWorkflow.SendEmail do
+    use Jido.Action,
+      name: "journal_send_root_wait_email",
+      description: "Sends dependency email after a root wait",
+      schema: [
+        invoice: [type: :map, required: true]
+      ]
+
+    @impl Jido.Action
+    def run(%{invoice: invoice}, _context) do
+      {:ok, %{delivery: %{invoice_id: invoice.id, channel: "email"}}}
     end
   end
 
@@ -2675,6 +2709,376 @@ defmodule SquidMeshTest do
       assert delayed_runnable.visible_at == delayed_at
     end
 
+    test "journal runtime executes dependency-mode wait steps by delaying dependent successors" do
+      run_id = Ecto.UUID.generate()
+      delayed_at = DateTime.add(@read_model_visible_at, 4, :second)
+
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalDependencyWaitWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_456"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert Enum.map(started_snapshot.visible_attempts, & &1.step) == [
+               "load_account",
+               "load_invoice"
+             ]
+
+      assert {:ok, %Snapshot{} = after_account} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "dependency-wait-account",
+                 claim_id: "claim_account",
+                 claim_token: "token_account",
+                 now: @read_model_visible_at
+               )
+
+      assert after_account.status == :running
+      assert Enum.map(after_account.visible_attempts, & &1.step) == ["load_invoice"]
+
+      assert {:ok, %Snapshot{} = after_invoice} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "dependency-wait-invoice",
+                 claim_id: "claim_invoice",
+                 claim_token: "token_invoice",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert after_invoice.status == :running
+      assert Enum.map(after_invoice.visible_attempts, & &1.step) == ["wait_for_settlement"]
+
+      assert {:ok, %Snapshot{} = delayed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "dependency-wait-wait",
+                 claim_id: "claim_wait",
+                 claim_token: "token_wait",
+                 now: DateTime.add(@read_model_visible_at, 2, :second),
+                 finished_at: DateTime.add(@read_model_visible_at, 2, :second)
+               )
+
+      assert delayed_snapshot.reason == :attempt_scheduled_for_later
+      assert delayed_snapshot.visible_attempts == []
+      assert delayed_snapshot.next_visible_at == delayed_at
+
+      assert {:ok, :none} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "dependency-wait-before-delay",
+                 now: DateTime.add(@read_model_visible_at, 3, :second)
+               )
+
+      assert {:ok, %Snapshot{} = completed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "dependency-wait-email",
+                 claim_id: "claim_email",
+                 claim_token: "token_email",
+                 now: delayed_at
+               )
+
+      assert completed_snapshot.status == :completed
+      assert completed_snapshot.reason == :terminal
+
+      assert Enum.map(completed_snapshot.attempts, & &1.step) == [
+               "load_account",
+               "load_invoice",
+               "wait_for_settlement",
+               "send_email"
+             ]
+
+      assert [%{step: "send_email", input: send_email_input}] =
+               Enum.filter(completed_snapshot.attempts, &(&1.step == "send_email"))
+
+      assert send_email_input == %{
+               account: %{id: "acct_123"},
+               invoice: %{id: "inv_456", status: "open"}
+             }
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert [delayed_runnable] =
+               run_entries
+               |> Enum.filter(&(&1.type == :runnables_planned))
+               |> Enum.flat_map(&Map.fetch!(&1.data, :runnables))
+               |> Enum.filter(&(&1.step == "send_email"))
+
+      assert delayed_runnable.visible_at == delayed_at
+    end
+
+    test "journal runtime recovers dependency wait successor delay after dispatch completion" do
+      run_id = Ecto.UUID.generate()
+      wait_finished_at = DateTime.add(@read_model_visible_at, 2, :second)
+      delayed_at = DateTime.add(wait_finished_at, 2, :second)
+      recovery_at = DateTime.add(wait_finished_at, 1, :second)
+
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalDependencyWaitWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_456"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert Enum.map(started_snapshot.visible_attempts, & &1.step) == [
+               "load_account",
+               "load_invoice"
+             ]
+
+      assert {:ok, %Snapshot{}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "dependency-wait-account",
+                 claim_id: "claim_account",
+                 claim_token: "token_account",
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %Snapshot{} = after_invoice} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "dependency-wait-invoice",
+                 claim_id: "claim_invoice",
+                 claim_token: "token_invoice",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert [%{runnable_key: runnable_key, step: "wait_for_settlement"}] =
+               after_invoice.visible_attempts
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:attempt_claimed, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          claim_id: "claim_wait",
+          claim_token_hash: claim_token_hash("token_wait"),
+          owner_id: "worker_1",
+          queue: @read_model_queue,
+          lease_until: DateTime.add(wait_finished_at, 30, :second),
+          occurred_at: wait_finished_at
+        }),
+        read_model_entry!(:attempt_completed, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          claim_id: "claim_wait",
+          claim_token_hash: claim_token_hash("token_wait"),
+          queue: @read_model_queue,
+          result: %{},
+          occurred_at: wait_finished_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = recovered_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "dependency-wait-recovery",
+                 now: recovery_at
+               )
+
+      assert recovered_snapshot.reason == :attempt_scheduled_for_later
+      assert recovered_snapshot.visible_attempts == []
+      assert recovered_snapshot.next_visible_at == delayed_at
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert [delayed_runnable] =
+               run_entries
+               |> Enum.filter(&(&1.type == :runnables_planned))
+               |> Enum.flat_map(&Map.fetch!(&1.data, :runnables))
+               |> Enum.filter(&(&1.step == "send_email"))
+
+      assert delayed_runnable.visible_at == delayed_at
+    end
+
+    test "journal runtime preserves recovered dependency wait delay until later prerequisites finish" do
+      run_id = Ecto.UUID.generate()
+      wait_finished_at = @read_model_visible_at
+      recovery_at = DateTime.add(wait_finished_at, 1, :second)
+      delayed_at = DateTime.add(wait_finished_at, 2, :second)
+
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalRootWaitWorkflow,
+                 %{invoice_id: "inv_456"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert [
+               %{runnable_key: runnable_key, step: "wait_for_settlement"},
+               %{step: "z_load_invoice"}
+             ] =
+               started_snapshot.visible_attempts
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:attempt_claimed, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          claim_id: "claim_wait",
+          claim_token_hash: claim_token_hash("token_wait"),
+          owner_id: "worker_1",
+          queue: @read_model_queue,
+          lease_until: DateTime.add(wait_finished_at, 30, :second),
+          occurred_at: wait_finished_at
+        }),
+        read_model_entry!(:attempt_completed, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          claim_id: "claim_wait",
+          claim_token_hash: claim_token_hash("token_wait"),
+          queue: @read_model_queue,
+          result: %{},
+          occurred_at: wait_finished_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = recovered_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "root-wait-recovery",
+                 now: recovery_at
+               )
+
+      assert recovered_snapshot.status == :running
+      assert Enum.map(recovered_snapshot.visible_attempts, & &1.step) == ["z_load_invoice"]
+
+      assert {:ok, %Snapshot{} = delayed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "root-wait-invoice",
+                 claim_id: "claim_invoice",
+                 claim_token: "token_invoice",
+                 now: recovery_at
+               )
+
+      assert delayed_snapshot.reason == :attempt_scheduled_for_later
+      assert delayed_snapshot.visible_attempts == []
+      assert delayed_snapshot.next_visible_at == delayed_at
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert [wait_applied] =
+               Enum.filter(
+                 run_entries,
+                 &(&1.type == :runnable_applied and &1.data.runnable_key == runnable_key)
+               )
+
+      assert wait_applied.data.applied_at == wait_finished_at
+      assert wait_applied.occurred_at == recovery_at
+    end
+
+    test "journal runtime preserves a completed dependency wait delay until later prerequisites finish" do
+      run_id = Ecto.UUID.generate()
+      delayed_at = DateTime.add(@read_model_visible_at, 2, :second)
+
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 JournalRootWaitWorkflow,
+                 %{invoice_id: "inv_456"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert Enum.map(started_snapshot.visible_attempts, & &1.step) == [
+               "wait_for_settlement",
+               "z_load_invoice"
+             ]
+
+      assert {:ok, %Snapshot{} = after_wait} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "root-wait-wait",
+                 claim_id: "claim_wait",
+                 claim_token: "token_wait",
+                 now: @read_model_visible_at,
+                 finished_at: @read_model_visible_at
+               )
+
+      assert after_wait.status == :running
+      assert Enum.map(after_wait.visible_attempts, & &1.step) == ["z_load_invoice"]
+
+      assert {:ok, %Snapshot{} = delayed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "root-wait-invoice",
+                 claim_id: "claim_invoice",
+                 claim_token: "token_invoice",
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert delayed_snapshot.reason == :attempt_scheduled_for_later
+      assert delayed_snapshot.visible_attempts == []
+      assert delayed_snapshot.next_visible_at == delayed_at
+
+      assert {:ok, %Snapshot{} = completed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "root-wait-email",
+                 claim_id: "claim_email",
+                 claim_token: "token_email",
+                 now: delayed_at
+               )
+
+      assert completed_snapshot.status == :completed
+
+      assert Enum.map(completed_snapshot.attempts, & &1.step) == [
+               "wait_for_settlement",
+               "z_load_invoice",
+               "send_email"
+             ]
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert [delayed_runnable] =
+               run_entries
+               |> Enum.filter(&(&1.type == :runnables_planned))
+               |> Enum.flat_map(&Map.fetch!(&1.data, :runnables))
+               |> Enum.filter(&(&1.step == "send_email"))
+
+      assert delayed_runnable.visible_at == delayed_at
+    end
+
     test "inspect_run_graph/2 identifies claimed journal attempts as the current node" do
       assert {:ok, %Snapshot{} = snapshot} =
                SquidMesh.start_run(
@@ -2968,12 +3372,6 @@ defmodule SquidMeshTest do
     test "journal runtime start rejects unsupported built-in steps before persisting runnables" do
       cases = [
         {PauseWorkflow, %{account_id: "acct_123"}, :wait_for_approval, :pause},
-        {
-          JournalDependencyWaitWorkflow,
-          %{account_id: "acct_123", invoice_id: "inv_456"},
-          :wait_for_settlement,
-          :wait
-        },
         {ApprovalWorkflow, %{account_id: "acct_123"}, :wait_for_review, :approval}
       ]
 

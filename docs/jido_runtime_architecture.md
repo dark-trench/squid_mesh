@@ -407,11 +407,11 @@ That path appends run and run-index facts to `Jido.Storage`, rebuilds the
 workflow and dispatch agents, schedules the initial dispatch attempts from the
 journal, and returns the projection-backed inspection snapshot. Journal
 execution currently supports normal action steps, immediate built-in `:log`
-steps, and transition-based built-in `:wait` successors. Dependency-mode
-`:wait` and manual built-ins (`:pause` and `:approval`) remain unsupported until
-their timing and intervention semantics are journal facts. The current
-table-backed start path remains the default until the remaining runtime cutover
-lands.
+steps, and built-in `:wait` steps in transition and dependency workflows, where
+waits delay downstream runnable visibility. Manual built-ins (`:pause` and
+`:approval`) remain unsupported until their intervention semantics are journal
+facts. The current table-backed start path remains the default until the
+remaining runtime cutover lands.
 
 | Feature | Issue | Runtime dependency |
 | --- | --- | --- |
