@@ -282,6 +282,28 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule JournalDependencyWaitWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual_dependency_wait do
+        manual()
+
+        payload do
+          field :account_id, :string
+          field :invoice_id, :string
+        end
+      end
+
+      step :load_account, JournalDependencyWorkflow.LoadAccount
+      step :wait_for_settlement, :wait, duration: 250, after: [:load_account]
+      step :load_invoice, JournalDependencyWorkflow.LoadInvoice
+
+      step :send_email, JournalDependencyWorkflow.SendEmail,
+        after: [:wait_for_settlement, :load_invoice]
+    end
+  end
+
   defmodule JournalDependencyFailureWorkflow do
     use SquidMesh.Workflow
 
@@ -892,7 +914,7 @@ defmodule SquidMeshTest do
         end
       end
 
-      step :wait_for_settlement, :wait, duration: 250
+      step :wait_for_settlement, :wait, duration: 2_000
       step :record_settlement, :log, message: "settlement recorded", level: :info
 
       transition :wait_for_settlement, on: :ok, to: :record_settlement
@@ -2495,6 +2517,164 @@ defmodule SquidMeshTest do
              ]
     end
 
+    test "journal runtime executes built-in wait steps by delaying the successor" do
+      run_id = Ecto.UUID.generate()
+      delayed_at = DateTime.add(@read_model_visible_at, 2, :second)
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 WaitWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert snapshot.run_id == run_id
+      assert [%{step: "wait_for_settlement", status: :available}] = snapshot.visible_attempts
+
+      assert {:ok, %Snapshot{} = delayed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-wait-test",
+                 now: @read_model_visible_at,
+                 finished_at: @read_model_visible_at
+               )
+
+      assert delayed_snapshot.run_id == run_id
+      assert delayed_snapshot.reason == :attempt_scheduled_for_later
+      assert delayed_snapshot.visible_attempts == []
+      assert delayed_snapshot.next_visible_at == delayed_at
+
+      assert {:ok, :none} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-wait-test",
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert [%{data: delayed_attempt}] =
+               Enum.filter(
+                 dispatch_entries,
+                 &(&1.type == :attempt_scheduled and &1.data.step == "record_settlement")
+               )
+
+      assert delayed_attempt.visible_at == delayed_at
+
+      refute Enum.any?(
+               dispatch_entries,
+               &(&1.type == :attempt_claimed and
+                   &1.data.runnable_key == delayed_attempt.runnable_key)
+             )
+
+      assert {:ok, %Snapshot{} = completed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-wait-test",
+                 now: delayed_at,
+                 finished_at: delayed_at
+               )
+
+      assert completed_snapshot.run_id == run_id
+      assert completed_snapshot.terminal?
+      assert completed_snapshot.terminal_status == :completed
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :runnables_planned,
+               :runnable_applied,
+               :run_terminal
+             ]
+
+      assert [_wait_runnable, delayed_runnable] =
+               run_entries
+               |> Enum.filter(&(&1.type == :runnables_planned))
+               |> Enum.flat_map(&Map.fetch!(&1.data, :runnables))
+
+      assert delayed_runnable.step == "record_settlement"
+      assert delayed_runnable.visible_at == delayed_at
+    end
+
+    test "journal runtime recovers built-in wait successor delay after dispatch completion" do
+      run_id = Ecto.UUID.generate()
+      delayed_at = DateTime.add(@read_model_visible_at, 2, :second)
+      recovery_at = DateTime.add(@read_model_visible_at, 1, :second)
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 WaitWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert [%{runnable_key: runnable_key}] = snapshot.visible_attempts
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:attempt_claimed, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          claim_id: "wait_claim",
+          claim_token_hash: claim_token_hash("wait_token"),
+          owner_id: "worker_1",
+          queue: @read_model_queue,
+          lease_until: DateTime.add(@read_model_visible_at, 30, :second),
+          occurred_at: @read_model_visible_at
+        }),
+        read_model_entry!(:attempt_completed, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          claim_id: "wait_claim",
+          claim_token_hash: claim_token_hash("wait_token"),
+          queue: @read_model_queue,
+          result: %{},
+          occurred_at: @read_model_visible_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = recovered_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-wait-recovery-test",
+                 now: recovery_at
+               )
+
+      assert recovered_snapshot.run_id == run_id
+      assert recovered_snapshot.reason == :attempt_scheduled_for_later
+      assert recovered_snapshot.visible_attempts == []
+      assert recovered_snapshot.next_visible_at == delayed_at
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert [_wait_runnable, delayed_runnable] =
+               run_entries
+               |> Enum.filter(&(&1.type == :runnables_planned))
+               |> Enum.flat_map(&Map.fetch!(&1.data, :runnables))
+
+      assert delayed_runnable.step == "record_settlement"
+      assert delayed_runnable.visible_at == delayed_at
+    end
+
     test "inspect_run_graph/2 identifies claimed journal attempts as the current node" do
       assert {:ok, %Snapshot{} = snapshot} =
                SquidMesh.start_run(
@@ -2787,18 +2967,23 @@ defmodule SquidMeshTest do
 
     test "journal runtime start rejects unsupported built-in steps before persisting runnables" do
       cases = [
-        {PauseWorkflow, :wait_for_approval, :pause},
-        {WaitWorkflow, :wait_for_settlement, :wait},
-        {ApprovalWorkflow, :wait_for_review, :approval}
+        {PauseWorkflow, %{account_id: "acct_123"}, :wait_for_approval, :pause},
+        {
+          JournalDependencyWaitWorkflow,
+          %{account_id: "acct_123", invoice_id: "inv_456"},
+          :wait_for_settlement,
+          :wait
+        },
+        {ApprovalWorkflow, %{account_id: "acct_123"}, :wait_for_review, :approval}
       ]
 
-      for {workflow, step_name, step_kind} <- cases do
+      for {workflow, payload, step_name, step_kind} <- cases do
         run_id = Ecto.UUID.generate()
 
         assert {:error, {:unsupported_journal_step, ^step_name, ^step_kind}} =
                  SquidMesh.start_run(
                    workflow,
-                   %{account_id: "acct_123"},
+                   payload,
                    runtime: :journal,
                    journal_storage: @read_model_storage,
                    queue: @read_model_queue,

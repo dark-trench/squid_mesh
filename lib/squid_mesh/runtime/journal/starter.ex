@@ -11,11 +11,13 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   This is an incremental cutover gate, not a long-term compatibility layer. The
   table-backed runtime remains in place only while the rest of execution,
   controls, and recovery move onto the journal-backed path. The journal runtime
-  can execute normal action steps and immediate built-in `:log` steps; delayed
-  and manual built-ins remain rejected until wakeup and intervention semantics
-  are represented in journal facts. Callers enter this path explicitly with
-  `runtime: :journal`, `journal_storage:`, and optional queue or clock
-  overrides. No Jido primitive is required in workflow authoring.
+  can execute normal action steps, immediate built-in `:log` steps, and
+  transition-based built-in `:wait` steps that delay successor visibility;
+  dependency-mode `:wait` and manual built-ins remain rejected until their
+  timing and intervention semantics are represented in journal facts. Callers
+  enter this path explicitly with `runtime: :journal`,
+  `journal_storage:`, and optional queue or clock overrides. No Jido primitive
+  is required in workflow authoring.
   """
 
   alias SquidMesh.ReadModel.Inspection
@@ -72,13 +74,18 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   defp trigger(definition, trigger_name), do: Definition.trigger(definition, trigger_name)
 
   defp reject_unsupported_built_ins(definition) do
-    case Enum.find(definition.steps, &unsupported_built_in_step?/1) do
+    case Enum.find(definition.steps, &unsupported_built_in_step?(definition, &1)) do
       %{name: step_name, module: kind} -> {:error, {:unsupported_journal_step, step_name, kind}}
       nil -> :ok
     end
   end
 
-  defp unsupported_built_in_step?(%{module: module}), do: module in [:wait, :pause, :approval]
+  defp unsupported_built_in_step?(definition, %{module: :wait}) do
+    Definition.dependency_mode?(definition)
+  end
+
+  defp unsupported_built_in_step?(_definition, %{module: module}),
+    do: module in [:pause, :approval]
 
   defp ensure_run_started(storage, workflow, definition, run_id, runnables, %DateTime{} = now) do
     expected_fingerprint = Definition.fingerprint(definition)
