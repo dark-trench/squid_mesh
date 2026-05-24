@@ -64,12 +64,86 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
 
   def resume(_run_id, _attrs, _opts), do: {:error, :invalid_run_id}
 
+  @doc """
+  Approves a journal-paused `:approval` step and schedules its success path.
+  """
+  @spec approve(String.t(), map(), keyword()) ::
+          {:ok, Inspection.Snapshot.t()} | {:error, control_error()}
+  def approve(run_id, attrs, opts \\ []), do: review(run_id, :approved, attrs, opts)
+
+  @doc """
+  Rejects a journal-paused `:approval` step and schedules its rejection path.
+  """
+  @spec reject(String.t(), map(), keyword()) ::
+          {:ok, Inspection.Snapshot.t()} | {:error, control_error()}
+  def reject(run_id, attrs, opts \\ []), do: review(run_id, :rejected, attrs, opts)
+
+  defp review(run_id, decision, attrs, opts)
+       when is_binary(run_id) and decision in [:approved, :rejected] and is_map(attrs) and
+              is_list(opts) do
+    with {:ok, run_id} <- run_id(run_id),
+         :ok <- validate_review(attrs),
+         {:ok, storage} <- journal_storage(opts),
+         {:ok, queue} <- queue(opts),
+         {:ok, now} <- now(opts),
+         {:ok, workflow_agent} <-
+           resolve_or_repair_review(
+             storage,
+             run_id,
+             queue,
+             decision,
+             attrs,
+             now,
+             @run_append_retries
+           ),
+         {:ok, dispatch_agent} <- DispatchAgent.rebuild(storage, queue),
+         {:ok, _schedule_update} <-
+           schedule_pending_dispatches(
+             storage,
+             workflow_agent,
+             dispatch_agent,
+             now,
+             @dispatch_append_retries
+           ) do
+      Inspection.snapshot(storage, run_id, queue: queue, now: now)
+    end
+  end
+
+  defp review(_run_id, _decision, _attrs, _opts), do: {:error, :invalid_run_id}
+
   defp resolve_or_repair(_storage, _run_id, _queue, _attrs, _now, 0), do: {:error, :conflict}
 
   defp resolve_or_repair(storage, run_id, queue, attrs, %DateTime{} = now, retries_left) do
     with {:ok, workflow_agent} <- rebuild_workflow_agent(storage, run_id),
          {:ok, resolution} <- resolution_target(storage, workflow_agent) do
       append_resolution(storage, run_id, queue, attrs, now, retries_left, resolution)
+    end
+  end
+
+  defp resolve_or_repair_review(_storage, _run_id, _queue, _decision, _attrs, _now, 0),
+    do: {:error, :conflict}
+
+  defp resolve_or_repair_review(
+         storage,
+         run_id,
+         queue,
+         decision,
+         attrs,
+         %DateTime{} = now,
+         retries_left
+       ) do
+    with {:ok, workflow_agent} <- rebuild_workflow_agent(storage, run_id),
+         {:ok, resolution} <- review_resolution_target(storage, workflow_agent, decision) do
+      append_review_resolution(
+        storage,
+        run_id,
+        queue,
+        decision,
+        attrs,
+        now,
+        retries_left,
+        resolution
+      )
     end
   end
 
@@ -84,6 +158,28 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
 
       {:error, {:invalid_transition, status, :running}} when status != :paused ->
         if resumed_pause_recorded?(storage, workflow_agent.state.run_id) do
+          {:ok, {:repair, workflow_agent}}
+        else
+          {:error, {:invalid_transition, status, :running}}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp review_resolution_target(
+         storage,
+         %Agent{agent_module: WorkflowAgent, state: %{projection: %Projection{} = projection}} =
+           workflow_agent,
+         decision
+       ) do
+    case active_approval_state(projection) do
+      {:ok, manual_state} ->
+        {:ok, {:append, workflow_agent, manual_state}}
+
+      {:error, {:invalid_transition, status, :running}} when status != :paused ->
+        if manual_resolution_recorded?(storage, workflow_agent.state.run_id, decision) do
           {:ok, {:repair, workflow_agent}}
         else
           {:error, {:invalid_transition, status, :running}}
@@ -114,6 +210,55 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
 
         {:error, :conflict} ->
           resolve_or_repair(storage, run_id, queue, attrs, now, retries_left - 1)
+
+        {:error, _reason} = error ->
+          error
+      end
+    end
+  end
+
+  defp append_review_resolution(
+         _storage,
+         _run_id,
+         _queue,
+         _decision,
+         _attrs,
+         _now,
+         _retries_left,
+         {
+           :repair,
+           workflow_agent
+         }
+       ) do
+    {:ok, workflow_agent}
+  end
+
+  defp append_review_resolution(
+         storage,
+         run_id,
+         queue,
+         decision,
+         attrs,
+         %DateTime{} = now,
+         retries_left,
+         {:append, workflow_agent, manual_state}
+       ) do
+    with {:ok, entries} <-
+           review_resolution_entries(
+             workflow_agent,
+             storage,
+             queue,
+             decision,
+             attrs,
+             now,
+             manual_state
+           ) do
+      case Journal.append_entries(storage, entries, expected_rev: workflow_agent.state.thread_rev) do
+        {:ok, _thread} ->
+          WorkflowAgent.rebuild(storage, run_id)
+
+        {:error, :conflict} ->
+          resolve_or_repair_review(storage, run_id, queue, decision, attrs, now, retries_left - 1)
 
         {:error, _reason} = error ->
           error
@@ -159,9 +304,61 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
     end
   end
 
+  defp review_resolution_entries(
+         %Agent{agent_module: WorkflowAgent, state: %{projection: %Projection{} = projection}} =
+           workflow_agent,
+         storage,
+         queue,
+         decision,
+         attrs,
+         %DateTime{} = now,
+         manual_state
+       ) do
+    with {:ok, _workflow, definition, step_name} <-
+           resolved_approval_definition(storage, workflow_agent, manual_state),
+         {:ok, result, target} <-
+           review_result_and_target(definition, step_name, manual_state, decision, attrs, now),
+         {:ok, progression_entries} <-
+           resolution_progression_entries(
+             workflow_agent,
+             definition,
+             target,
+             result,
+             manual_input(manual_state, projection),
+             queue,
+             now
+           ) do
+      {:ok,
+       [
+         manual_step_resolved_entry!(
+           workflow_agent.state.run_id,
+           step_name,
+           decision,
+           result,
+           ManualAction.build(decision, attrs, now),
+           now
+         )
+         | progression_entries
+       ]}
+    end
+  end
+
   defp active_pause_state(%Projection{} = projection) do
     case Projection.manual_state(projection) do
       %{kind: "pause"} = manual_state ->
+        {:ok, manual_state}
+
+      %{step: step, kind: kind} ->
+        {:error, {:unsupported_journal_manual_step, step, kind}}
+
+      nil ->
+        {:error, {:invalid_transition, Projection.status(projection), :running}}
+    end
+  end
+
+  defp active_approval_state(%Projection{} = projection) do
+    case Projection.manual_state(projection) do
+      %{kind: "approval"} = manual_state ->
         {:ok, manual_state}
 
       %{step: step, kind: kind} ->
@@ -177,6 +374,19 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
          :ok <- validate_definition_fingerprint(storage, workflow_agent.state.run_id, definition),
          step_name when is_atom(step_name) <- Definition.deserialize_step(definition, step),
          {:ok, %{module: :pause}} <- Definition.step(definition, step_name) do
+      {:ok, workflow, definition, step_name}
+    else
+      step_name when is_binary(step_name) -> {:error, {:unknown_step, step_name}}
+      {:ok, _other_step} -> {:error, {:invalid_step, step}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp resolved_approval_definition(storage, workflow_agent, %{step: step}) do
+    with {:ok, workflow, definition} <- Definition.load_serialized(workflow_agent.state.workflow),
+         :ok <- validate_definition_fingerprint(storage, workflow_agent.state.run_id, definition),
+         step_name when is_atom(step_name) <- Definition.deserialize_step(definition, step),
+         {:ok, %{module: :approval}} <- Definition.step(definition, step_name) do
       {:ok, workflow, definition, step_name}
     else
       step_name when is_binary(step_name) -> {:error, {:unknown_step, step_name}}
@@ -222,6 +432,102 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
           _missing -> {:ok, %{}}
         end
     end
+  end
+
+  defp review_result_and_target(
+         definition,
+         step_name,
+         %{metadata: metadata},
+         decision,
+         attrs,
+         now
+       )
+       when is_map(metadata) and decision in [:approved, :rejected] do
+    with {:ok, output_key} <- review_output_key(definition, step_name, metadata),
+         {:ok, target} <- review_target(definition, step_name, metadata, decision) do
+      {:ok, map_review_output(attrs, decision, output_key, now), target}
+    end
+  end
+
+  defp review_output_key(definition, step_name, metadata) do
+    case Map.get(metadata, :output_key) || Map.get(metadata, "output_key") do
+      nil ->
+        Definition.step_output_mapping(definition, step_name)
+
+      output_key when is_binary(output_key) ->
+        {:ok, deserialize_output_key(output_key)}
+
+      output_key when is_atom(output_key) ->
+        {:ok, output_key}
+
+      _invalid ->
+        {:error, {:invalid_resume_metadata, step_name}}
+    end
+  end
+
+  defp review_target(definition, step_name, metadata, decision) do
+    target_key = decision_metadata_target_key(decision)
+    target = Map.get(metadata, target_key) || Map.get(metadata, Atom.to_string(target_key))
+
+    resolve_review_target(definition, step_name, decision, target)
+  end
+
+  defp resolve_review_target(definition, step_name, decision, nil) do
+    with {:ok, targets} <- Definition.approval_transition_targets(definition, step_name) do
+      {:ok, Map.fetch!(targets, decision_target_key(decision))}
+    end
+  end
+
+  defp resolve_review_target(_definition, _step_name, _decision, "__complete__"),
+    do: {:ok, :complete}
+
+  defp resolve_review_target(definition, _step_name, _decision, target) when is_binary(target) do
+    case Definition.deserialize_step(definition, target) do
+      target_step when is_atom(target_step) -> {:ok, target_step}
+      _unknown -> {:error, {:unknown_step, target}}
+    end
+  end
+
+  defp resolve_review_target(_definition, _step_name, _decision, target) when is_atom(target) do
+    {:ok, target}
+  end
+
+  defp resolve_review_target(_definition, step_name, _decision, _target) do
+    {:error, {:invalid_resume_metadata, step_name}}
+  end
+
+  defp decision_metadata_target_key(:approved), do: :ok_target
+  defp decision_metadata_target_key(:rejected), do: :error_target
+
+  defp decision_target_key(:approved), do: :ok
+  defp decision_target_key(:rejected), do: :error
+
+  defp map_review_output(attrs, decision, output_key, %DateTime{} = now) do
+    review_output =
+      %{
+        decision: serialize_decision(decision),
+        actor: Map.fetch!(attrs, :actor),
+        decided_at: DateTime.to_iso8601(now)
+      }
+      |> maybe_put(:comment, Map.get(attrs, :comment))
+      |> maybe_put(:metadata, Map.get(attrs, :metadata))
+
+    case output_key do
+      nil ->
+        review_output
+
+      mapped_key ->
+        %{mapped_key => review_output}
+    end
+  end
+
+  defp serialize_decision(:approved), do: "approved"
+  defp serialize_decision(:rejected), do: "rejected"
+
+  defp deserialize_output_key(output_key) do
+    String.to_existing_atom(output_key)
+  rescue
+    ArgumentError -> output_key
   end
 
   defp resolution_progression_entries(
@@ -303,6 +609,13 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
     end
   end
 
+  defp validate_review(attrs) do
+    case ManualAction.validate(attrs, require_actor: true) do
+      :ok -> :ok
+      {:error, {:invalid_manual_action, details}} -> {:error, {:invalid_review, details}}
+    end
+  end
+
   defp rebuild_workflow_agent(storage, run_id) do
     case WorkflowAgent.rebuild(storage, run_id) do
       {:ok, _workflow_agent} = ok -> ok
@@ -312,10 +625,16 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
   end
 
   defp resumed_pause_recorded?(storage, run_id) do
+    manual_resolution_recorded?(storage, run_id, :resumed)
+  end
+
+  defp manual_resolution_recorded?(storage, run_id, action) when is_atom(action) do
+    serialized_action = Atom.to_string(action)
+
     case Journal.load_entries(storage, {:run, run_id}) do
       {:ok, entries} ->
         Enum.any?(entries, fn
-          %{type: :manual_step_resolved, data: %{action: "resumed"}} -> true
+          %{type: :manual_step_resolved, data: %{action: ^serialized_action}} -> true
           _entry -> false
         end)
 
@@ -323,6 +642,9 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
         false
     end
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp validate_definition_fingerprint(storage, run_id, definition) do
     case persisted_definition_fingerprint(storage, run_id) do

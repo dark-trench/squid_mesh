@@ -176,10 +176,10 @@ kind, timestamp, and persisted metadata. `manual_step_resolved` records that the
 same boundary was completed by an operator action such as resume, approve, or
 reject.
 
-The journal runtime appends `manual_step_paused` for built-in `:pause` steps and
-`manual_step_resolved` when `unblock_run/3` resumes that pause with
-`runtime: :journal`. Approval and rejection controls still belong to the
-table-backed runtime until approval decisions are represented as journal facts.
+The journal runtime appends `manual_step_paused` for built-in `:pause` and
+`:approval` steps. `manual_step_resolved` is appended when `unblock_run/3`,
+`approve_run/3`, or `reject_run/3` resolves that manual boundary with
+`runtime: :journal`.
 
 The workflow projection exposes only the current manual state. Duplicate pause
 facts are idempotent when they match. A second active manual boundary, a stale
