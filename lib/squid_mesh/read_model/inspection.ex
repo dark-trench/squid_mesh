@@ -112,6 +112,9 @@ defmodule SquidMesh.ReadModel.Inspection do
     %Snapshot{
       run_id: run_id,
       workflow: workflow,
+      trigger: workflow_projection.trigger,
+      input: workflow_projection.input,
+      replayed_from_run_id: workflow_projection.replayed_from_run_id,
       queue: queue,
       status: WorkflowAgent.status(workflow_agent),
       reason:

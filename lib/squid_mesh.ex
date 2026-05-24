@@ -19,6 +19,7 @@ defmodule SquidMesh do
   alias SquidMesh.Runtime.Journal.Executor
   alias SquidMesh.Runtime.Journal.ManualControl
   alias SquidMesh.Runtime.Journal.Options
+  alias SquidMesh.Runtime.Journal.Replay
   alias SquidMesh.Runtime.Journal.Starter
   alias SquidMesh.Runtime.Reviewer
   alias SquidMesh.Runtime.Unblocker
@@ -457,12 +458,13 @@ defmodule SquidMesh do
   operator has reviewed the side effect and accepted re-execution.
   """
   @spec replay_run(Ecto.UUID.t(), keyword()) ::
-          {:ok, Run.t()}
+          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
              | Runs.Store.replay_error()
+             | Replay.replay_error()
              | unsupported_runtime_error()}
           | {:error, {:dispatch_failed, term()}}
   def replay_run(run_id, overrides \\ []) do
@@ -481,6 +483,15 @@ defmodule SquidMesh do
       {:error, {:invalid_run, _changeset} = reason} ->
         {:error, reason}
 
+      {:error, {:invalid_option, _details} = reason} ->
+        {:error, reason}
+
+      {:error, {:incompatible_workflow_definition, _operation} = reason} ->
+        {:error, reason}
+
+      {:error, {:invalid_replay_source, _details} = reason} ->
+        {:error, reason}
+
       {:error, {:unsupported_runtime, _details} = reason} ->
         {:error, reason}
 
@@ -492,8 +503,8 @@ defmodule SquidMesh do
     end
   end
 
-  defp replay_run_with_runtime(:journal, _run_id, _replay_opts, _config_overrides) do
-    unsupported_journal_runtime(:replay_run)
+  defp replay_run_with_runtime(:journal, run_id, replay_opts, config_overrides) do
+    Replay.replay(run_id, replay_opts, journal_control_options(config_overrides))
   end
 
   defp replay_run_with_runtime(:runtime_tables, run_id, replay_opts, config_overrides) do

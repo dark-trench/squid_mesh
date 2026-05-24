@@ -50,6 +50,9 @@ defmodule SquidMesh.ReadModel.Inspection.Snapshot do
   @type t :: %__MODULE__{
           run_id: String.t(),
           workflow: String.t() | nil,
+          trigger: String.t() | nil,
+          input: map() | nil,
+          replayed_from_run_id: String.t() | nil,
           queue: String.t(),
           status: atom(),
           reason: reason(),
@@ -84,6 +87,9 @@ defmodule SquidMesh.ReadModel.Inspection.Snapshot do
   defstruct [
     :run_id,
     :workflow,
+    :trigger,
+    :input,
+    :replayed_from_run_id,
     :queue,
     :status,
     :reason,

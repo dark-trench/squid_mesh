@@ -299,6 +299,39 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     )
   end
 
+  test "replays a dependency workflow through inferred Ecto journal defaults" do
+    queue = "minimal-host-app-default-journal-replay-#{System.unique_integer([:positive])}"
+
+    with_squid_mesh_env(
+      [
+        repo: Repo,
+        queue: queue
+      ],
+      fn ->
+        attrs = %{
+          account_id: "acct_default_journal_replay",
+          invoice_id: "inv_default_journal_replay",
+          attempt_id: "attempt_default_journal_replay"
+        }
+
+        assert {:ok, %Snapshot{} = started_run} =
+                 WorkflowRuns.start_dependency_recovery(attrs)
+
+        assert {:ok, %Snapshot{status: :completed} = completed_run} =
+                 drain_default_journal_run(started_run.run_id, queue, 10)
+
+        assert {:ok, %Snapshot{} = replayed_run} = WorkflowRuns.replay_run(completed_run.run_id)
+
+        assert replayed_run.run_id != completed_run.run_id
+        assert replayed_run.replayed_from_run_id == completed_run.run_id
+        assert replayed_run.queue == queue
+        assert replayed_run.input == attrs
+        assert replayed_run.status == :running
+        assert replayed_run.visible_attempts != []
+      end
+    )
+  end
+
   test "commits local repo transaction groups through the host boundary" do
     assert {:ok, run} =
              WorkflowRuns.start_local_ledger_checkout(%{
@@ -538,6 +571,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              journal_executor: journal_executor,
              journal_recovery: journal_recovery,
              journal_cancellation: journal_cancellation,
+             journal_replay: journal_replay,
              daily_digest: daily_digest
            } =
              Smoke.run_all!()
@@ -569,6 +603,9 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert journal_cancellation.status == :cancelled
     assert journal_cancellation.visible_attempts == []
+
+    assert journal_replay.status == :completed
+    assert journal_replay.replayed_from_run_id
 
     assert daily_digest.status == :completed
     assert daily_digest.trigger == :daily_digest
@@ -615,6 +652,14 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert run.status == :cancelled
     assert run.terminal?
     assert run.visible_attempts == []
+  end
+
+  test "runs the journal replay smoke path" do
+    assert %SquidMesh.ReadModel.Inspection.Snapshot{} = run = Smoke.run_journal_replay!()
+
+    assert run.status == :completed
+    assert run.replayed_from_run_id
+    assert run.applied_runnable_keys == run.planned_runnable_keys
   end
 
   test "runs the cancellation smoke path" do

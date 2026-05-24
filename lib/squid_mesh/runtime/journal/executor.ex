@@ -690,7 +690,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          %{storage: storage, queue: queue, now: now},
          workflow_agent,
          %ActionAttempt{} = attempt,
-         _definition,
+         definition,
          step_name,
          _error,
          retry_opts
@@ -703,24 +703,27 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       retry_visible_at = Keyword.fetch!(retry_opts, :retry_visible_at)
       attempt_number = attempt.attempt_number + 1
 
-      retry_runnable = %{
-        run_id: attempt.run_id,
-        runnable_key: retry_runnable_key,
-        idempotency_key: retry_runnable_key,
-        attempt_number: attempt_number,
-        queue: queue,
-        step: Definition.serialize_step(step_name),
-        input: attempt.input || %{},
-        visible_at: retry_visible_at
-      }
+      with {:ok, recovery} <- replay_recovery_policy(definition, step_name) do
+        retry_runnable = %{
+          run_id: attempt.run_id,
+          runnable_key: retry_runnable_key,
+          idempotency_key: retry_runnable_key,
+          attempt_number: attempt_number,
+          queue: queue,
+          step: Definition.serialize_step(step_name),
+          input: attempt.input || %{},
+          recovery: recovery,
+          visible_at: retry_visible_at
+        }
 
-      append_failure_run_entries(
-        storage,
-        workflow_agent,
-        attempt,
-        [runnables_planned_entry!(attempt.run_id, [retry_runnable], now)],
-        @run_append_retries
-      )
+        append_failure_run_entries(
+          storage,
+          workflow_agent,
+          attempt,
+          [runnables_planned_entry!(attempt.run_id, [retry_runnable], now)],
+          @run_append_retries
+        )
+      end
     end
   end
 
@@ -942,27 +945,45 @@ defmodule SquidMesh.Runtime.Journal.Executor do
 
     result =
       Enum.reduce_while(next_steps, {:ok, []}, fn next_step, {:ok, acc} ->
-        case successor_input(context, definition, next_step) do
-          {:ok, input} ->
-            visible_at =
-              dependency_successor_visible_at(
-                workflow_agent,
-                definition,
-                next_step,
-                base_visible_at
-              )
-
-            runnable = journal_runnable(attempt.run_id, queue, next_step, input, 1, visible_at)
-            {:cont, {:ok, [runnable | acc]}}
-
-          {:error, _reason} = error ->
-            {:halt, error}
+        case dependency_success_runnable(
+               workflow_agent,
+               attempt,
+               context,
+               definition,
+               next_step,
+               queue,
+               base_visible_at
+             ) do
+          {:ok, runnable} -> {:cont, {:ok, [runnable | acc]}}
+          {:error, _reason} = error -> {:halt, error}
         end
       end)
 
     case result do
       {:ok, runnables} -> {:ok, Enum.reverse(runnables)}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp dependency_success_runnable(
+         workflow_agent,
+         attempt,
+         context,
+         definition,
+         next_step,
+         queue,
+         %DateTime{} = base_visible_at
+       ) do
+    with {:ok, input} <- successor_input(context, definition, next_step) do
+      visible_at =
+        dependency_successor_visible_at(
+          workflow_agent,
+          definition,
+          next_step,
+          base_visible_at
+        )
+
+      journal_runnable(definition, attempt.run_id, queue, next_step, input, 1, visible_at)
     end
   end
 
@@ -1081,7 +1102,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
 
     case input do
       {:ok, input} ->
-        {:ok, journal_runnable(attempt.run_id, queue, next_step, input, 1, now)}
+        journal_runnable(definition, attempt.run_id, queue, next_step, input, 1, now)
 
       {:error, _reason} = error ->
         error
@@ -1402,24 +1423,48 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     entry
   end
 
-  defp journal_runnable(run_id, queue, step_name, input, attempt_number, %DateTime{} = now) do
+  defp journal_runnable(
+         definition,
+         run_id,
+         queue,
+         step_name,
+         input,
+         attempt_number,
+         %DateTime{} = now
+       ) do
     step = Definition.serialize_step(step_name)
     runnable_key = runnable_key(run_id, step_name, attempt_number)
 
-    %{
-      run_id: run_id,
-      runnable_key: runnable_key,
-      idempotency_key: runnable_key,
-      attempt_number: attempt_number,
-      queue: queue,
-      step: step,
-      input: input,
-      visible_at: now
-    }
+    with {:ok, recovery} <- replay_recovery_policy(definition, step_name) do
+      {:ok,
+       %{
+         run_id: run_id,
+         runnable_key: runnable_key,
+         idempotency_key: runnable_key,
+         attempt_number: attempt_number,
+         queue: queue,
+         step: step,
+         input: input,
+         recovery: recovery,
+         visible_at: now
+       }}
+    end
   end
 
   defp runnable_key(run_id, step_name, attempt_number) do
     "#{run_id}:#{Definition.serialize_step(step_name)}:#{attempt_number}"
+  end
+
+  defp replay_recovery_policy(definition, step_name) do
+    with {:ok, recovery} <- Definition.step_recovery_policy(definition, step_name) do
+      {:ok,
+       %{
+         "irreversible?" => recovery.irreversible?,
+         "compensatable?" => recovery.compensatable?,
+         "replay" => Atom.to_string(recovery.replay),
+         "recovery" => Atom.to_string(recovery.recovery)
+       }}
+    end
   end
 
   defp recover_pending_progressions(storage, dispatch_agent, queue, %DateTime{} = now) do

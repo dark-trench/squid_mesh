@@ -1263,8 +1263,8 @@ defmodule SquidMeshTest do
                SquidMesh.cancel_run(Ecto.UUID.generate(), repo: Repo)
     end
 
-    test "replay_run/2 returns an explicit unsupported runtime error" do
-      assert {:error, {:unsupported_runtime, {:journal, :replay_run}}} =
+    test "replay_run/2 returns not found through the journal default" do
+      assert {:error, :not_found} =
                SquidMesh.replay_run(Ecto.UUID.generate(), repo: Repo)
     end
 
@@ -3106,6 +3106,411 @@ defmodule SquidMeshTest do
 
       assert {:error, {:invalid_transition, :completed, :cancelling}} =
                SquidMesh.cancel_run(started.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+    end
+
+    test "replay_run/2 creates a fresh journal run from source input" do
+      assert {:ok, %Snapshot{} = source} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_replay"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = replay} =
+               SquidMesh.replay_run(source.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_started_at, 1, :second)
+               )
+
+      assert replay.run_id != source.run_id
+      assert replay.replayed_from_run_id == source.run_id
+      assert replay.workflow == source.workflow
+      assert replay.status == :running
+      assert replay.input == %{account_id: "acct_replay"}
+
+      assert [%{step: "check_gateway", input: %{account_id: "acct_replay"}}] =
+               replay.visible_attempts
+    end
+
+    test "replay_run/2 blocks unsafe journal replays unless explicitly allowed" do
+      assert {:ok, %Snapshot{} = source} =
+               SquidMesh.start_run(
+                 IrreversibleWorkflow,
+                 %{account_id: "acct_replay_unsafe"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{status: :running}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %Snapshot{status: :completed}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert {:error, {:unsafe_replay, %{steps: [%{step: :capture_payment}]}}} =
+               SquidMesh.replay_run(source.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:ok, %Snapshot{} = replay} =
+               SquidMesh.replay_run(source.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 allow_irreversible: true,
+                 now: DateTime.add(@read_model_started_at, 2, :second)
+               )
+
+      assert replay.replayed_from_run_id == source.run_id
+      assert [%{step: "load_account"}] = replay.visible_attempts
+    end
+
+    test "replay_run/2 uses persisted journal recovery policy when checking replay safety" do
+      run_id = Ecto.UUID.generate()
+      runnable_key = "#{run_id}:check_gateway:1"
+      {:ok, definition} = Definition.load(PaymentRecoveryWorkflow)
+
+      unsafe_runnable =
+        Map.merge(
+          journal_start_runnable(run_id),
+          %{
+            runnable_key: runnable_key,
+            idempotency_key: runnable_key,
+            recovery: %{
+              "irreversible?" => false,
+              "compensatable?" => false,
+              "replay" => "manual_review_required",
+              "recovery" => "manual_intervention"
+            }
+          }
+        )
+
+      entries = [
+        read_model_entry!(:run_started, %{
+          run_id: run_id,
+          workflow: Atom.to_string(PaymentRecoveryWorkflow),
+          trigger: "gateway_recovery",
+          input: %{account_id: "acct_persisted_recovery"},
+          definition_fingerprint: Definition.fingerprint(definition),
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [unsafe_runnable],
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnable_applied, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          result: %{gateway: "ok"},
+          occurred_at: @read_model_visible_at
+        })
+      ]
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, entries)
+
+      assert {:error, {:unsafe_replay, %{steps: [%{step: :check_gateway}]}}} =
+               SquidMesh.replay_run(run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+    end
+
+    test "replay_run/2 treats completed dispatch attempts as unsafe before run progression" do
+      assert {:ok, %Snapshot{} = source} =
+               SquidMesh.start_run(
+                 IrreversibleWorkflow,
+                 %{account_id: "acct_replay_crash_window"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [_load_account] = source.visible_attempts
+
+      runnable_key = "#{source.run_id}:capture_payment:1"
+
+      unsafe_runnable = %{
+        run_id: source.run_id,
+        runnable_key: runnable_key,
+        idempotency_key: runnable_key,
+        attempt_number: 1,
+        queue: @read_model_queue,
+        step: "capture_payment",
+        input: %{account_id: "acct_replay_crash_window"},
+        recovery: %{
+          "irreversible?" => true,
+          "compensatable?" => false,
+          "replay" => "manual_review_required",
+          "recovery" => "manual_intervention"
+        },
+        visible_at: @read_model_visible_at
+      }
+
+      claim_id = Ecto.UUID.generate()
+      claim_token = "journal-replay-crash-window-token"
+
+      run_entries = [
+        read_model_entry!(:runnables_planned, %{
+          run_id: source.run_id,
+          runnables: [unsafe_runnable],
+          occurred_at: @read_model_visible_at
+        })
+      ]
+
+      dispatch_entries = [
+        read_model_entry!(
+          :attempt_scheduled,
+          Map.put(unsafe_runnable, :occurred_at, @read_model_visible_at)
+        ),
+        read_model_entry!(:attempt_claimed, %{
+          run_id: source.run_id,
+          runnable_key: runnable_key,
+          claim_id: claim_id,
+          claim_token_hash: claim_token_hash(claim_token),
+          owner_id: "journal-replay-crash-window",
+          queue: @read_model_queue,
+          lease_until: DateTime.add(@read_model_visible_at, 30, :second),
+          occurred_at: @read_model_visible_at
+        }),
+        read_model_entry!(:attempt_completed, %{
+          run_id: source.run_id,
+          runnable_key: runnable_key,
+          claim_id: claim_id,
+          claim_token_hash: claim_token_hash(claim_token),
+          queue: @read_model_queue,
+          result: %{account: %{id: "acct_replay_crash_window"}},
+          occurred_at: DateTime.add(@read_model_visible_at, 1, :second)
+        })
+      ]
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, run_entries)
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, dispatch_entries)
+
+      assert {:error, {:unsafe_replay, %{steps: [%{step: :capture_payment}]}}} =
+               SquidMesh.replay_run(source.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+    end
+
+    test "execute_next/1 persists recovery policy on retry runnables" do
+      assert {:ok, %Snapshot{} = source} =
+               SquidMesh.start_run(
+                 JournalRetryWorkflow,
+                 %{account_id: "acct_retry_replay"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = retry_scheduled} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert %{status: :retry_scheduled, runnable_key: retry_runnable_key} =
+               Enum.find(retry_scheduled.attempts, &(&1.attempt_number == 2))
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, source.run_id})
+
+      retry_runnable =
+        Enum.find_value(run_entries, fn
+          %{type: :runnables_planned, data: %{runnables: runnables}} ->
+            Enum.find(runnables, &(Map.get(&1, :runnable_key) == retry_runnable_key))
+
+          _entry ->
+            nil
+        end)
+
+      assert retry_runnable.recovery == %{
+               "irreversible?" => false,
+               "compensatable?" => true,
+               "replay" => "allowed",
+               "recovery" => "automatic"
+             }
+    end
+
+    test "replay_run/2 rejects completed journal runnables without persisted recovery policy" do
+      run_id = Ecto.UUID.generate()
+      runnable_key = "#{run_id}:check_gateway:1"
+      {:ok, definition} = Definition.load(PaymentRecoveryWorkflow)
+
+      entries = [
+        read_model_entry!(:run_started, %{
+          run_id: run_id,
+          workflow: Atom.to_string(PaymentRecoveryWorkflow),
+          trigger: "gateway_recovery",
+          input: %{account_id: "acct_missing_recovery"},
+          definition_fingerprint: Definition.fingerprint(definition),
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [journal_start_runnable(run_id)],
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnable_applied, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          result: %{gateway: "ok"},
+          occurred_at: @read_model_visible_at
+        })
+      ]
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, entries)
+
+      assert {:error, {:invalid_replay_source, {:missing_recovery, "check_gateway"}}} =
+               SquidMesh.replay_run(run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 allow_irreversible: true,
+                 queue: @read_model_queue
+               )
+    end
+
+    test "replay_run/2 returns structured errors for malformed source workflow" do
+      run_id = Ecto.UUID.generate()
+
+      assert {:ok, run_started} =
+               DispatchProtocol.new_entry(:run_started, %{
+                 run_id: run_id,
+                 workflow: 123,
+                 trigger: "gateway_recovery",
+                 input: %{account_id: "acct_malformed_workflow"},
+                 definition_fingerprint: "irrelevant",
+                 occurred_at: @read_model_started_at
+               })
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [run_started])
+
+      assert {:error, {:invalid_replay_source, :workflow}} =
+               SquidMesh.replay_run(run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+    end
+
+    test "replay_run/2 returns structured errors for invalid source triggers" do
+      run_id = Ecto.UUID.generate()
+      {:ok, definition} = Definition.load(PaymentRecoveryWorkflow)
+
+      assert {:ok, run_started} =
+               DispatchProtocol.new_entry(:run_started, %{
+                 run_id: run_id,
+                 workflow: Atom.to_string(PaymentRecoveryWorkflow),
+                 trigger: "renamed_trigger",
+                 input: %{account_id: "acct_invalid_trigger"},
+                 definition_fingerprint: Definition.fingerprint(definition),
+                 occurred_at: @read_model_started_at
+               })
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [run_started])
+
+      assert {:error, {:invalid_replay_source, :trigger}} =
+               SquidMesh.replay_run(run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+    end
+
+    test "replay_run/2 returns structured errors for missing source input" do
+      run_id = Ecto.UUID.generate()
+      {:ok, definition} = Definition.load(PaymentRecoveryWorkflow)
+
+      assert {:ok, run_started} =
+               DispatchProtocol.new_entry(:run_started, %{
+                 run_id: run_id,
+                 workflow: Atom.to_string(PaymentRecoveryWorkflow),
+                 trigger: "gateway_recovery",
+                 definition_fingerprint: Definition.fingerprint(definition),
+                 occurred_at: @read_model_started_at
+               })
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [run_started])
+
+      assert {:error, {:invalid_replay_source, :missing_input}} =
+               SquidMesh.replay_run(run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+    end
+
+    test "replay_run/2 returns structured journal errors for missing and malformed run ids" do
+      assert {:error, :not_found} =
+               SquidMesh.replay_run(Ecto.UUID.generate(),
+                 runtime: :journal,
+                 journal_storage: @read_model_storage
+               )
+
+      assert {:error, :invalid_run_id} =
+               SquidMesh.replay_run("not-a-uuid",
+                 runtime: :journal,
+                 journal_storage: @read_model_storage
+               )
+    end
+
+    test "replay_run/2 rejects journal runs with stale workflow definitions" do
+      run_id = Ecto.UUID.generate()
+
+      assert {:ok, run_started} =
+               DispatchProtocol.new_entry(:run_started, %{
+                 run_id: run_id,
+                 workflow: Atom.to_string(PaymentRecoveryWorkflow),
+                 trigger: "gateway_recovery",
+                 input: %{account_id: "acct_stale_definition"},
+                 definition_fingerprint: "stale-definition",
+                 occurred_at: @read_model_started_at
+               })
+
+      assert {:ok, runnables_planned} =
+               DispatchProtocol.new_entry(:runnables_planned, %{
+                 run_id: run_id,
+                 runnables: [journal_start_runnable(run_id)],
+                 occurred_at: @read_model_started_at
+               })
+
+      assert {:ok, _thread} =
+               Journal.append_entries(@read_model_storage, [run_started, runnables_planned])
+
+      assert {:error, {:incompatible_workflow_definition, :replay}} =
+               SquidMesh.replay_run(run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue

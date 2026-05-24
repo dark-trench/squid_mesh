@@ -1,0 +1,235 @@
+defmodule SquidMesh.Runtime.Journal.Replay do
+  @moduledoc """
+  Journal-backed workflow replay.
+
+  Replay rebuilds the source run from its durable run thread, checks completed
+  steps against the recovery policy persisted with each runnable, then starts a
+  fresh journal run through the normal journal starter. The replayed run stores
+  the source run id as lineage metadata on its `:run_started` fact.
+  """
+
+  alias Jido.Agent
+  alias SquidMesh.ReadModel.Inspection
+  alias SquidMesh.Runtime.DispatchAgent
+  alias SquidMesh.Runtime.Journal.Options
+  alias SquidMesh.Runtime.Journal.Starter
+  alias SquidMesh.Runtime.WorkflowAgent
+  alias SquidMesh.Runtime.WorkflowAgent.Projection
+  alias SquidMesh.Workflow.Definition
+
+  @type replay_error ::
+          :not_found
+          | :invalid_run_id
+          | {:invalid_option, term()}
+          | {:incompatible_workflow_definition, :replay}
+          | {:invalid_replay_source,
+             :workflow | :trigger | :missing_input | {:missing_recovery, term()}}
+          | {:unsafe_replay, map()}
+          | Starter.start_error()
+
+  @doc """
+  Starts a new journal run from a prior journal run.
+  """
+  @spec replay(String.t(), keyword(), keyword()) ::
+          {:ok, Inspection.Snapshot.t()} | {:error, replay_error()}
+  def replay(run_id, replay_opts \\ [], config_opts \\ [])
+
+  def replay(run_id, replay_opts, config_opts)
+      when is_binary(run_id) and is_list(replay_opts) and is_list(config_opts) do
+    with {:ok, run_id} <- run_id(run_id),
+         {:ok, storage} <- journal_storage(config_opts),
+         {:ok, queue} <- queue(config_opts),
+         {:ok, source_agent} <- source_agent(storage, run_id),
+         {:ok, completed_dispatch_keys} <- completed_dispatch_keys(storage, source_agent, queue),
+         {:ok, workflow, definition} <- source_workflow(source_agent),
+         :ok <- validate_definition_fingerprint(source_agent, definition),
+         :ok <-
+           ensure_replay_allowed(source_agent, definition, replay_opts, completed_dispatch_keys),
+         {:ok, trigger} <- source_trigger(source_agent, definition),
+         {:ok, input} <- source_input(source_agent) do
+      Starter.start_run(
+        workflow,
+        trigger,
+        input,
+        Keyword.put(config_opts, :replayed_from_run_id, run_id)
+      )
+    end
+  end
+
+  def replay(_run_id, _replay_opts, _config_opts), do: {:error, :invalid_run_id}
+
+  defp source_agent(storage, run_id) do
+    case WorkflowAgent.rebuild(storage, run_id) do
+      {:ok, _agent} = ok -> ok
+      {:error, :not_found} -> {:error, :not_found}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp source_workflow(%Agent{state: %{projection: %Projection{workflow: workflow}}})
+       when is_binary(workflow) do
+    case Definition.load_serialized(workflow) do
+      {:ok, _workflow, _definition} = ok -> ok
+      {:error, {:invalid_workflow, _workflow}} -> {:error, {:invalid_replay_source, :workflow}}
+    end
+  end
+
+  defp source_workflow(%Agent{}) do
+    {:error, {:invalid_replay_source, :workflow}}
+  end
+
+  defp ensure_replay_allowed(%Agent{} = source_agent, definition, opts, completed_dispatch_keys) do
+    with {:ok, completed_steps} <- completed_steps(source_agent, completed_dispatch_keys) do
+      if Keyword.get(opts, :allow_irreversible) == true do
+        :ok
+      else
+        validate_safe_replay(definition, completed_steps)
+      end
+    end
+  end
+
+  defp validate_safe_replay(definition, completed_steps) do
+    unsafe_steps = Definition.unsafe_replay_steps(definition, completed_steps)
+
+    case unsafe_steps do
+      [] ->
+        :ok
+
+      steps ->
+        {:error,
+         {:unsafe_replay,
+          %{
+            message:
+              "replay requires explicit approval after irreversible or non-compensatable steps",
+            steps: steps
+          }}}
+    end
+  end
+
+  defp validate_definition_fingerprint(
+         %Agent{state: %{projection: %Projection{definition_fingerprint: fingerprint}}},
+         definition
+       ) do
+    if fingerprint == Definition.fingerprint(definition) do
+      :ok
+    else
+      {:error, {:incompatible_workflow_definition, :replay}}
+    end
+  end
+
+  defp completed_steps(
+         %Agent{state: %{projection: %Projection{} = projection}},
+         completed_dispatch_keys
+       ) do
+    completed_keys = MapSet.union(projection.applied_runnable_keys, completed_dispatch_keys)
+
+    result =
+      projection.planned_runnables
+      |> Map.values()
+      |> Enum.reduce_while({:ok, []}, &put_completed_step(&1, &2, completed_keys))
+
+    case result do
+      {:ok, completed_steps} -> {:ok, Enum.reverse(completed_steps)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp put_completed_step(runnable, {:ok, completed_steps}, completed_keys) do
+    if MapSet.member?(completed_keys, runnable_value(runnable, :runnable_key)) do
+      put_completed_runnable(runnable, completed_steps)
+    else
+      {:cont, {:ok, completed_steps}}
+    end
+  end
+
+  defp put_completed_runnable(runnable, completed_steps) do
+    case runnable_value(runnable, :recovery) do
+      recovery when is_map(recovery) ->
+        step = runnable_value(runnable, :step)
+        {:cont, {:ok, [{step, recovery} | completed_steps]}}
+
+      _missing_recovery ->
+        {:halt,
+         {:error, {:invalid_replay_source, {:missing_recovery, runnable_value(runnable, :step)}}}}
+    end
+  end
+
+  defp source_trigger(
+         %Agent{state: %{projection: %Projection{trigger: trigger}}},
+         definition
+       ) do
+    trigger = Definition.deserialize_trigger(definition, trigger)
+
+    case trigger do
+      trigger when is_atom(trigger) -> {:ok, trigger}
+      _missing_or_invalid -> {:error, {:invalid_replay_source, :trigger}}
+    end
+  end
+
+  defp source_input(%Agent{state: %{projection: %Projection{input: input}}}) when is_map(input) do
+    {:ok, input}
+  end
+
+  defp source_input(%Agent{}) do
+    {:error, {:invalid_replay_source, :missing_input}}
+  end
+
+  defp run_id(run_id) do
+    case Ecto.UUID.cast(run_id) do
+      {:ok, uuid} -> {:ok, uuid}
+      :error -> {:error, :invalid_run_id}
+    end
+  end
+
+  defp completed_dispatch_keys(storage, %Agent{state: %{run_id: run_id}} = source_agent, queue) do
+    queues =
+      source_agent
+      |> planned_queues()
+      |> MapSet.put(queue)
+
+    Enum.reduce_while(queues, {:ok, MapSet.new()}, fn queue, {:ok, keys} ->
+      case DispatchAgent.rebuild(storage, queue) do
+        {:ok, dispatch_agent} ->
+          dispatch_keys =
+            dispatch_agent
+            |> DispatchAgent.completed_results()
+            |> Enum.filter(&(&1.run_id == run_id))
+            |> Enum.map(& &1.runnable_key)
+            |> MapSet.new()
+
+          {:cont, {:ok, MapSet.union(keys, dispatch_keys)}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  defp planned_queues(%Agent{state: %{projection: %Projection{} = projection}}) do
+    projection.planned_runnables
+    |> Map.values()
+    |> Enum.map(&runnable_value(&1, :queue))
+    |> Enum.reduce(MapSet.new(), fn queue, queues ->
+      case Options.queue(queue) do
+        {:ok, queue} -> MapSet.put(queues, queue)
+        {:error, _reason} -> queues
+      end
+    end)
+  end
+
+  defp journal_storage(opts) do
+    opts
+    |> Keyword.get(:journal_storage)
+    |> Options.storage()
+  end
+
+  defp queue(opts) do
+    opts
+    |> Keyword.get(:queue, "default")
+    |> Options.queue()
+  end
+
+  defp runnable_value(runnable, key) when is_map(runnable) and is_atom(key) do
+    Map.get(runnable, key) || Map.get(runnable, Atom.to_string(key))
+  end
+end
