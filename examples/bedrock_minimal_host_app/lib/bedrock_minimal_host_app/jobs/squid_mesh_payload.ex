@@ -10,8 +10,6 @@ defmodule BedrockMinimalHostApp.Jobs.SquidMeshPayload do
 
   @impl true
   def perform(args, _meta) when is_map(args) do
-    # Delivery is Bedrock-backed here, but execution intentionally re-enters the
-    # normal Squid Mesh runtime so this stays an executor spike, not a runtime fork.
-    SquidMesh.Runtime.Runner.perform(args, executor: BedrockMinimalHostApp.SquidMeshExecutor)
+    SquidMesh.Runtime.Runner.perform(args)
   end
 end

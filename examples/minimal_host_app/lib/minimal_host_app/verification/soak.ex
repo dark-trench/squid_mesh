@@ -44,7 +44,7 @@ defmodule MinimalHostApp.Verification.Soak do
     end
   end
 
-  @spec run_success_batch!() :: {[SquidMesh.Run.t()], pid()}
+  @spec run_success_batch!() :: {[SquidMesh.ReadModel.Inspection.Snapshot.t()], pid()}
   defp run_success_batch! do
     {gateway_pid, port} =
       RuntimeHarness.start_gateway_server(
@@ -75,7 +75,7 @@ defmodule MinimalHostApp.Verification.Soak do
     completed_runs =
       Enum.map(runs, fn run ->
         {:ok, completed_run} =
-          RuntimeHarness.await_terminal_run(run.id, attempts: @terminal_poll_attempts)
+          RuntimeHarness.await_terminal_run(run.run_id, attempts: @terminal_poll_attempts)
 
         unless completed_run.status == :completed do
           raise "expected successful soak run to complete"
@@ -87,19 +87,21 @@ defmodule MinimalHostApp.Verification.Soak do
     {completed_runs, gateway_pid}
   end
 
-  @spec run_replays!([SquidMesh.Run.t()]) :: [SquidMesh.Run.t()]
+  @spec run_replays!([SquidMesh.ReadModel.Inspection.Snapshot.t()]) :: [
+          SquidMesh.ReadModel.Inspection.Snapshot.t()
+        ]
   defp run_replays!(successful_runs) do
     successful_runs
     |> Enum.take(2)
     |> Enum.map(fn run ->
-      {:ok, replay_run} = WorkflowRuns.replay_run(run.id)
+      {:ok, replay_run} = WorkflowRuns.replay_run(run.run_id)
       :ok = RuntimeHarness.wait_for_execution()
 
       {:ok, completed_replay} =
-        RuntimeHarness.await_terminal_run(replay_run.id, attempts: @terminal_poll_attempts)
+        RuntimeHarness.await_terminal_run(replay_run.run_id, attempts: @terminal_poll_attempts)
 
       unless completed_replay.status == :completed and
-               completed_replay.replayed_from_run_id == run.id do
+               completed_replay.replayed_from_run_id == run.run_id do
         raise "expected replayed soak run to complete"
       end
 
@@ -107,7 +109,7 @@ defmodule MinimalHostApp.Verification.Soak do
     end)
   end
 
-  @spec run_retry_batch!() :: [SquidMesh.Run.t()]
+  @spec run_retry_batch!() :: [SquidMesh.ReadModel.Inspection.Snapshot.t()]
   defp run_retry_batch! do
     1..@retry_run_count
     |> Enum.map(fn index ->
@@ -115,16 +117,15 @@ defmodule MinimalHostApp.Verification.Soak do
     end)
   end
 
-  @spec run_retry_scenario!(String.t()) :: SquidMesh.Run.t()
+  @spec run_retry_scenario!(String.t()) :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   defp run_retry_scenario!(attempt_id) do
     {:ok, run} = WorkflowRuns.start_retry_verification(%{attempt_id: attempt_id})
 
-    %{success: 1} = RuntimeHarness.drain_available_jobs(1)
-    Process.sleep(1_100)
-    :ok = RuntimeHarness.perform_scheduled_step!(run.id, "exercise_retry")
+    :ok = RuntimeHarness.perform_scheduled_step!(run.run_id, "exercise_retry")
+    :ok = RuntimeHarness.perform_scheduled_step!(run.run_id, "exercise_retry")
 
     {:ok, completed_run} =
-      RuntimeHarness.await_terminal_run(run.id, attempts: @terminal_poll_attempts)
+      RuntimeHarness.await_terminal_run(run.run_id, attempts: @terminal_poll_attempts)
 
     unless completed_run.status == :completed do
       raise "expected retry soak run to complete"
@@ -133,22 +134,22 @@ defmodule MinimalHostApp.Verification.Soak do
     completed_run
   end
 
-  @spec run_cancellation_batch!() :: [SquidMesh.Run.t()]
+  @spec run_cancellation_batch!() :: [SquidMesh.ReadModel.Inspection.Snapshot.t()]
   defp run_cancellation_batch! do
     1..@cancellation_run_count
     |> Enum.map(fn index ->
       {:ok, run} = WorkflowRuns.start_cancellable_wait(%{account_id: "acct_soak_cancel_#{index}"})
-      :ok = RuntimeHarness.wait_for_execution()
-      {:ok, cancelling_run} = WorkflowRuns.cancel_run(run.id)
+      :ok = RuntimeHarness.perform_scheduled_step!(run.run_id, "wait_for_cancellation")
+      {:ok, cancelling_run} = WorkflowRuns.cancel_run(run.run_id)
 
       unless cancelling_run.status == :cancelling do
         raise "expected cancellation soak run to enter cancelling"
       end
 
-      :ok = RuntimeHarness.perform_scheduled_step!(run.id, "record_delivery")
+      :ok = RuntimeHarness.perform_scheduled_step!(run.run_id, "record_delivery")
 
       {:ok, cancelled_run} =
-        RuntimeHarness.await_terminal_run(run.id, attempts: @terminal_poll_attempts)
+        RuntimeHarness.await_terminal_run(run.run_id, attempts: @terminal_poll_attempts)
 
       unless cancelled_run.status == :cancelled do
         raise "expected cancellation soak run to converge to cancelled"

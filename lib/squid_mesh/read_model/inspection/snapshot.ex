@@ -3,9 +3,8 @@ defmodule SquidMesh.ReadModel.Inspection.Snapshot do
   Projection-backed inspection snapshot for one Jido-native workflow run.
 
   This struct is a compact read model built from the workflow and dispatch
-  durable journals. It is intentionally separate from the current
-  table-backed `SquidMesh.Run` struct so the Jido-native runtime can grow its
-  inspection surface without changing the stable public API prematurely.
+  durable journals so callers can inspect a stable public shape without parsing
+  raw journal entries.
 
   Terminal runs keep both `terminal?` and `terminal_status` so operator-facing
   surfaces can suppress recovery actions while still distinguishing completed,

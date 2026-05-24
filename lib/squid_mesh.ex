@@ -10,31 +10,22 @@ defmodule SquidMesh do
   alias SquidMesh.Config
   alias SquidMesh.ReadModel.Inspection
   alias SquidMesh.ReadModel.Listing
-  alias SquidMesh.Run
-  alias SquidMesh.Runs
-  alias SquidMesh.Runs.Explanation
   alias SquidMesh.Runs.GraphInspection
-  alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.Journal.Cancellation
   alias SquidMesh.Runtime.Journal.Executor
   alias SquidMesh.Runtime.Journal.ManualControl
   alias SquidMesh.Runtime.Journal.Options
   alias SquidMesh.Runtime.Journal.Replay
   alias SquidMesh.Runtime.Journal.Starter
-  alias SquidMesh.Runtime.Reviewer
   alias SquidMesh.Runtime.ScheduleIdentity
-  alias SquidMesh.Runtime.Unblocker
 
-  @read_models [:runtime_tables, :read_model]
-  @runtimes [:runtime_tables, :journal]
-  @projection_read_options [:journal_storage, :queue, :now]
+  @read_models [:read_model]
+  @runtimes [:journal]
   @projection_snapshot_options [:queue, :now]
   @projection_list_options [:queue, :now]
   @journal_start_options [:runtime, :journal_storage, :queue, :now, :run_id]
   @journal_control_options [:runtime, :journal_storage, :queue, :now]
   @journal_execute_options [:runtime, :journal_storage, :queue, :owner_id, :lease_for, :now]
-  @journal_only_start_options [:journal_storage, :queue, :now, :run_id]
-  @journal_only_control_options [:journal_storage, :queue, :now]
 
   @typedoc """
   Structured validation errors returned by the public read-model APIs.
@@ -57,8 +48,7 @@ defmodule SquidMesh do
            | {:queue, term()}
            | {:now, term()}
            | {:run_id, term()}
-           | {:schedule_idempotency_key, term()}
-           | {:runtime_tables, [atom()]}}
+           | {:schedule_idempotency_key, term()}}
 
   @doc """
   Loads Squid Mesh configuration from the application environment with optional
@@ -77,32 +67,30 @@ defmodule SquidMesh do
   Starts a new workflow run with the given payload through the workflow's
   default trigger.
 
-  The selected runtime comes from host configuration unless overridden. The
-  table-backed runtime returns `SquidMesh.Run`; the Jido journal runtime returns
-  a projection-backed `SquidMesh.ReadModel.Inspection.Snapshot` and does not
-  write legacy runtime tables for the covered start flow.
+  The Jido journal runtime returns a projection-backed
+  `SquidMesh.ReadModel.Inspection.Snapshot`.
   """
   @spec start_run(module(), map()) ::
-          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error, Config.config_error()}
           | {:error, start_option_error()}
-          | {:error, Runs.Store.create_error()}
+          | {:error, Starter.start_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, payload) when is_map(payload) do
     start_run(workflow, payload, [])
   end
 
   @spec start_run(module(), map(), keyword()) ::
-          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error, Config.config_error()}
           | {:error, {:invalid_option, atom()}}
           | {:error, start_option_error()}
-          | {:error, Runs.Store.create_error()}
+          | {:error, Starter.start_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, payload, overrides) when is_map(payload) and is_list(overrides) do
     with :ok <- reject_public_start_options(overrides),
-         {:ok, runtime} <- runtime(overrides) do
-      start_default_run_with_runtime(runtime, workflow, payload, overrides)
+         {:ok, :journal} <- runtime(overrides) do
+      start_default_run_with_runtime(:journal, workflow, payload, overrides)
     end
   end
 
@@ -114,10 +102,10 @@ defmodule SquidMesh do
   Starts a new workflow run through a named trigger with the given payload.
   """
   @spec start_run(module(), atom(), map()) ::
-          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error, Config.config_error()}
           | {:error, start_option_error()}
-          | {:error, Runs.Store.create_error()}
+          | {:error, Starter.start_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, trigger_name, payload)
       when is_atom(trigger_name) and is_map(payload) do
@@ -139,37 +127,35 @@ defmodule SquidMesh do
   `:approval` boundaries.
   """
   @spec start_run(module(), atom(), map(), keyword()) ::
-          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error, Config.config_error()}
           | {:error, {:invalid_option, atom()}}
           | {:error, start_option_error()}
-          | {:error, Runs.Store.create_error()}
+          | {:error, Starter.start_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, trigger_name, payload, overrides)
       when is_atom(trigger_name) and is_map(payload) and is_list(overrides) do
     with :ok <- reject_public_start_options(overrides),
-         {:ok, runtime} <- runtime(overrides) do
-      start_triggered_run_with_runtime(runtime, workflow, trigger_name, payload, overrides)
+         {:ok, :journal} <- runtime(overrides) do
+      start_triggered_run_with_runtime(:journal, workflow, trigger_name, payload, overrides)
     end
   end
 
   @doc false
   @spec start_run_with_initial_context(module(), atom(), map(), map(), keyword()) ::
-          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
-          | {:ok,
-             {:duplicate_schedule_start, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:ok, {:duplicate_schedule_start, SquidMesh.ReadModel.Inspection.Snapshot.t()}}
           | {:error, Config.config_error()}
           | {:error, start_option_error()}
           | {:error, Starter.start_error()}
-          | {:error, Runs.Store.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run_with_initial_context(workflow, trigger_name, payload, initial_context, overrides)
       when is_atom(trigger_name) and is_map(payload) and is_map(initial_context) and
              is_list(overrides) do
     with :ok <- reject_public_start_options(overrides),
-         {:ok, runtime} <- runtime(overrides) do
+         {:ok, :journal} <- runtime(overrides) do
       start_initial_context_run_with_runtime(
-        runtime,
+        :journal,
         workflow,
         trigger_name,
         payload,
@@ -185,11 +171,10 @@ defmodule SquidMesh do
   Fetches one workflow run by id.
 
   The selected read model comes from host configuration unless overridden. The
-  runtime-table read model returns `SquidMesh.Run`; the Jido-native read model
-  rebuilds a projection-backed snapshot from durable journal entries.
+  read model rebuilds a projection-backed snapshot from durable journal entries.
   """
   @spec inspect_run(String.t(), keyword()) ::
-          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
@@ -197,11 +182,8 @@ defmodule SquidMesh do
              | Config.config_error()
              | Inspection.snapshot_error()}
   def inspect_run(run_id, overrides \\ []) do
-    with {:ok, read_model} <- read_model(overrides) do
-      case read_model do
-        :runtime_tables -> inspect_runtime_table_run(run_id, overrides)
-        :read_model -> inspect_projected_run(run_id, overrides)
-      end
+    with {:ok, :read_model} <- read_model(overrides) do
+      inspect_projected_run(run_id, overrides)
     end
   end
 
@@ -221,9 +203,9 @@ defmodule SquidMesh do
              | Config.config_error()
              | Inspection.snapshot_error()}
   def inspect_run_graph(run_id, overrides \\ []) do
-    with {:ok, read_model} <- read_model(overrides),
-         {:ok, inspection} <- inspect_graph_source(run_id, read_model, overrides) do
-      {:ok, graph_inspection(inspection, read_model, overrides)}
+    with {:ok, :read_model} <- read_model(overrides),
+         {:ok, inspection} <- inspect_graph_source(run_id, :read_model, overrides) do
+      {:ok, graph_inspection(inspection, :read_model, overrides)}
     end
   end
 
@@ -236,11 +218,10 @@ defmodule SquidMesh do
   the run's current state.
 
   The selected read model comes from host configuration unless overridden. The
-  runtime-table read model returns `SquidMesh.Runs.Explanation`; the Jido-native
   read model derives diagnostics from durable journal projections.
   """
   @spec explain_run(String.t(), keyword()) ::
-          {:ok, Explanation.t() | SquidMesh.ReadModel.Explanation.Diagnostic.t()}
+          {:ok, SquidMesh.ReadModel.Explanation.Diagnostic.t()}
           | {:error,
              :not_found
              | :invalid_run_id
@@ -248,11 +229,8 @@ defmodule SquidMesh do
              | Config.config_error()
              | SquidMesh.ReadModel.Explanation.explanation_error()}
   def explain_run(run_id, overrides \\ []) do
-    with {:ok, read_model} <- read_model(overrides) do
-      case read_model do
-        :runtime_tables -> explain_runtime_table_run(run_id, overrides)
-        :read_model -> explain_projected_run(run_id, overrides)
-      end
+    with {:ok, :read_model} <- read_model(overrides) do
+      explain_projected_run(run_id, overrides)
     end
   end
 
@@ -269,11 +247,8 @@ defmodule SquidMesh do
 
   def execute_next(overrides) when is_list(overrides) do
     with :ok <- public_execute_options(overrides),
-         {:ok, runtime} <- runtime(overrides) do
-      case runtime do
-        :journal -> Executor.execute_next(journal_execute_options(overrides))
-        :runtime_tables -> {:error, {:invalid_option, {:runtime, :invalid}}}
-      end
+         {:ok, :journal} <- runtime(overrides) do
+      Executor.execute_next(journal_execute_options(overrides))
     end
   end
 
@@ -303,12 +278,12 @@ defmodule SquidMesh do
   `inspect_run/2` or `inspect_run_graph/2` with a run id when callers need
   detailed runtime state for one run.
   """
-  @spec list_runs(Runs.Store.list_filters(), keyword()) ::
-          {:ok, [Run.t() | Listing.Summary.t()]}
+  @spec list_runs([Listing.list_filter()], keyword()) ::
+          {:ok, [Listing.Summary.t()]}
           | {:error, Config.config_error() | Listing.list_error()}
   def list_runs(filters \\ [], overrides \\ []) do
-    with {:ok, runtime} <- runtime(overrides) do
-      list_runs_with_runtime(runtime, filters, overrides)
+    with {:ok, :journal} <- runtime(overrides) do
+      list_runs_with_runtime(:journal, filters, overrides)
     end
   end
 
@@ -316,16 +291,15 @@ defmodule SquidMesh do
   Requests cancellation for an eligible workflow run.
   """
   @spec cancel_run(Ecto.UUID.t(), keyword()) ::
-          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
-             | Runs.Store.transition_error()
              | Cancellation.cancel_error()}
   def cancel_run(run_id, overrides \\ []) do
-    with {:ok, runtime} <- runtime(overrides) do
-      cancel_run_with_runtime(runtime, run_id, overrides)
+    with {:ok, :journal} <- runtime(overrides) do
+      cancel_run_with_runtime(:journal, run_id, overrides)
     end
   end
 
@@ -336,12 +310,11 @@ defmodule SquidMesh do
   journal pause boundary using the inferred Ecto journal storage.
   """
   @spec unblock_run(Ecto.UUID.t()) ::
-          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
-             | Runs.Store.transition_error()
              | term()}
   def unblock_run(run_id), do: unblock_run(run_id, %{}, [])
 
@@ -355,24 +328,22 @@ defmodule SquidMesh do
   dispatches successor work.
   """
   @spec unblock_run(Ecto.UUID.t(), keyword()) ::
-          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
-             | Runs.Store.transition_error()
              | term()}
   def unblock_run(run_id, overrides) when is_list(overrides) do
     unblock_run(run_id, %{}, overrides)
   end
 
   @spec unblock_run(Ecto.UUID.t(), map()) ::
-          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
-             | Runs.Store.transition_error()
              | term()}
   def unblock_run(run_id, attrs) when is_map(attrs) do
     unblock_run(run_id, attrs, [])
@@ -386,19 +357,15 @@ defmodule SquidMesh do
   `journal_storage:` only when overriding the inferred Ecto storage boundary.
   """
   @spec unblock_run(Ecto.UUID.t(), map(), keyword()) ::
-          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
-             | Runs.Store.transition_error()
              | term()}
   def unblock_run(run_id, attrs, overrides) when is_map(attrs) and is_list(overrides) do
-    with {:ok, runtime} <- runtime(overrides) do
-      case runtime do
-        :runtime_tables -> unblock_runtime_table_run(run_id, attrs, overrides)
-        :journal -> ManualControl.resume(run_id, attrs, journal_control_options(overrides))
-      end
+    with {:ok, :journal} <- runtime(overrides) do
+      ManualControl.resume(run_id, attrs, journal_control_options(overrides))
     end
   end
 
@@ -410,19 +377,15 @@ defmodule SquidMesh do
   overriding the inferred Ecto storage boundary.
   """
   @spec approve_run(Ecto.UUID.t(), map(), keyword()) ::
-          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
-             | Runs.Store.transition_error()
              | term()}
   def approve_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
-    with {:ok, runtime} <- runtime(overrides) do
-      case runtime do
-        :runtime_tables -> review_runtime_table_run(run_id, :approved, attrs, overrides)
-        :journal -> ManualControl.approve(run_id, attrs, journal_control_options(overrides))
-      end
+    with {:ok, :journal} <- runtime(overrides) do
+      ManualControl.approve(run_id, attrs, journal_control_options(overrides))
     end
   end
 
@@ -434,19 +397,15 @@ defmodule SquidMesh do
   overriding the inferred Ecto storage boundary.
   """
   @spec reject_run(Ecto.UUID.t(), map(), keyword()) ::
-          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
-             | Runs.Store.transition_error()
              | term()}
   def reject_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
-    with {:ok, runtime} <- runtime(overrides) do
-      case runtime do
-        :runtime_tables -> review_runtime_table_run(run_id, :rejected, attrs, overrides)
-        :journal -> ManualControl.reject(run_id, attrs, journal_control_options(overrides))
-      end
+    with {:ok, :journal} <- runtime(overrides) do
+      ManualControl.reject(run_id, attrs, journal_control_options(overrides))
     end
   end
 
@@ -458,19 +417,18 @@ defmodule SquidMesh do
   operator has reviewed the side effect and accepted re-execution.
   """
   @spec replay_run(Ecto.UUID.t(), keyword()) ::
-          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
-             | Runs.Store.replay_error()
              | Replay.replay_error()}
           | {:error, {:dispatch_failed, term()}}
   def replay_run(run_id, overrides \\ []) do
     {replay_opts, config_overrides} = Keyword.split(overrides, [:allow_irreversible])
 
-    with {:ok, runtime} <- runtime(config_overrides),
-         {:ok, run} <- replay_run_with_runtime(runtime, run_id, replay_opts, config_overrides) do
+    with {:ok, :journal} <- runtime(config_overrides),
+         {:ok, run} <- replay_run_with_runtime(:journal, run_id, replay_opts, config_overrides) do
       {:ok, run}
     else
       {:error, reason} = error when reason in [:not_found, :invalid_run_id] ->
@@ -503,85 +461,12 @@ defmodule SquidMesh do
     Replay.replay(run_id, replay_opts, journal_control_options(config_overrides))
   end
 
-  defp replay_run_with_runtime(:runtime_tables, run_id, replay_opts, config_overrides) do
-    with {:ok, config} <- Config.load(config_overrides),
-         {:ok, run} <-
-           Runs.Store.replay_and_dispatch_run(
-             config.repo,
-             run_id,
-             fn run ->
-               Dispatcher.dispatch_run(config, run)
-             end,
-             replay_opts
-           ) do
-      SquidMesh.Observability.emit_run_replayed(run)
-      {:ok, run}
-    end
-  end
-
-  defp normalize_start_error(reason) when is_tuple(reason) and elem(reason, 0) == :invalid_run,
-    do: {:error, reason}
-
-  defp normalize_start_error(reason) when reason in [:not_found], do: {:error, reason}
-  defp normalize_start_error(%_struct{} = reason), do: {:error, {:dispatch_failed, reason}}
-  defp normalize_start_error(reason) when is_tuple(reason), do: {:error, reason}
-  defp normalize_start_error(reason), do: {:error, {:dispatch_failed, reason}}
-
-  defp start_default_run(config, workflow, payload) do
-    config.repo
-    |> Runs.Store.create_and_dispatch_run(workflow, payload, fn run ->
-      Dispatcher.dispatch_run(config, run)
-    end)
-    |> normalize_created_run()
-  end
-
-  defp start_default_run_with_runtime(:runtime_tables, workflow, payload, overrides) do
-    with :ok <- reject_journal_start_options_for_runtime_tables(overrides),
-         {:ok, config} <- Config.load(runtime_table_start_options(overrides)) do
-      start_default_run(config, workflow, payload)
-    end
-  end
-
   defp start_default_run_with_runtime(:journal, workflow, payload, overrides) do
     Starter.start_run(workflow, nil, payload, journal_start_options(overrides))
   end
 
-  defp start_triggered_run(config, workflow, trigger_name, payload) do
-    config.repo
-    |> Runs.Store.create_and_dispatch_run(workflow, trigger_name, payload, fn run ->
-      Dispatcher.dispatch_run(config, run)
-    end)
-    |> normalize_created_run()
-  end
-
-  defp start_triggered_run_with_runtime(
-         :runtime_tables,
-         workflow,
-         trigger_name,
-         payload,
-         overrides
-       ) do
-    with :ok <- reject_journal_start_options_for_runtime_tables(overrides),
-         {:ok, config} <- Config.load(runtime_table_start_options(overrides)) do
-      start_triggered_run(config, workflow, trigger_name, payload)
-    end
-  end
-
   defp start_triggered_run_with_runtime(:journal, workflow, trigger_name, payload, overrides) do
     Starter.start_run(workflow, trigger_name, payload, journal_start_options(overrides))
-  end
-
-  defp start_initial_context_run_with_runtime(
-         :runtime_tables,
-         workflow,
-         trigger_name,
-         payload,
-         initial_context,
-         overrides
-       ) do
-    with {:ok, config} <- Config.load(overrides) do
-      start_initial_context_run(config, workflow, trigger_name, payload, initial_context)
-    end
   end
 
   defp start_initial_context_run_with_runtime(
@@ -603,79 +488,15 @@ defmodule SquidMesh do
     end
   end
 
-  defp list_runs_with_runtime(:runtime_tables, filters, overrides) do
-    with {:ok, config} <- Config.load(overrides) do
-      Runs.Store.list_runs(config.repo, filters)
-    end
-  end
-
   defp list_runs_with_runtime(:journal, filters, overrides) do
     with {:ok, storage} <- journal_storage(overrides) do
       Listing.list(storage, filters, journal_list_options(overrides))
     end
   end
 
-  defp cancel_run_with_runtime(:runtime_tables, run_id, overrides) do
-    with {:ok, config} <- Config.load(overrides) do
-      Runs.Store.cancel_run(config.repo, run_id)
-    end
-  end
-
   defp cancel_run_with_runtime(:journal, run_id, overrides) do
     Cancellation.cancel(run_id, journal_control_options(overrides))
   end
-
-  defp unblock_runtime_table_run(run_id, attrs, overrides) do
-    with :ok <- reject_journal_control_options_for_runtime_tables(overrides),
-         {:ok, config} <- Config.load(runtime_table_control_options(overrides)),
-         {:ok, run} <- Runs.Store.get_run(config.repo, run_id),
-         :ok <- Unblocker.unblock(config, run, attrs) do
-      Runs.Store.get_run(config.repo, run_id)
-    end
-  end
-
-  defp review_runtime_table_run(run_id, decision, attrs, overrides)
-       when decision in [:approved, :rejected] do
-    with :ok <- reject_journal_control_options_for_runtime_tables(overrides),
-         {:ok, config} <- Config.load(runtime_table_control_options(overrides)),
-         {:ok, run} <- Runs.Store.get_run(config.repo, run_id),
-         :ok <- Reviewer.review(config, run, decision, attrs) do
-      Runs.Store.get_run(config.repo, run_id)
-    end
-  end
-
-  defp normalize_created_run({:ok, %Run{} = run}) do
-    SquidMesh.Observability.emit_run_created(run)
-    {:ok, run}
-  end
-
-  defp normalize_created_run({:error, reason}), do: normalize_start_error(reason)
-
-  defp start_initial_context_run(config, workflow, trigger_name, payload, initial_context) do
-    config.repo
-    |> Runs.Store.create_and_dispatch_run(
-      workflow,
-      trigger_name,
-      payload,
-      fn run -> Dispatcher.dispatch_run(config, run) end,
-      initial_context: initial_context
-    )
-    |> normalize_initial_context_run(config)
-  end
-
-  defp normalize_initial_context_run({:ok, %Run{} = run}, _config) do
-    SquidMesh.Observability.emit_run_created(run)
-    {:ok, run}
-  end
-
-  defp normalize_initial_context_run({:error, {:duplicate_schedule_start, identity}}, config) do
-    case Runs.Store.get_run_by_schedule_idempotency(config.repo, identity) do
-      {:ok, run} -> {:ok, {:duplicate_schedule_start, run}}
-      {:error, reason} -> normalize_start_error(reason)
-    end
-  end
-
-  defp normalize_initial_context_run({:error, reason}, _config), do: normalize_start_error(reason)
 
   defp journal_initial_context_start_options(workflow, trigger_name, initial_context, overrides) do
     opts =
@@ -751,23 +572,6 @@ defmodule SquidMesh do
     end
   end
 
-  defp inspect_runtime_table_run(run_id, overrides) do
-    {inspect_opts, _config_overrides} =
-      overrides
-      |> runtime_table_read_options()
-      |> Keyword.split([:include_history])
-
-    with {:ok, config} <- Config.load(runtime_table_read_options(overrides)) do
-      Runs.Store.get_run(config.repo, run_id, inspect_opts)
-    end
-  end
-
-  defp explain_runtime_table_run(run_id, overrides) do
-    with {:ok, config} <- Config.load(runtime_table_read_options(overrides)) do
-      Explanation.explain(config, run_id)
-    end
-  end
-
   defp inspect_projected_run(run_id, overrides) when is_binary(run_id) do
     with {:ok, storage} <- journal_storage(overrides) do
       Inspection.snapshot(storage, run_id, projected_snapshot_options(overrides))
@@ -778,16 +582,8 @@ defmodule SquidMesh do
     {:error, {:invalid_option, {:run_id, :invalid}}}
   end
 
-  defp inspect_graph_source(run_id, :runtime_tables, overrides) do
-    inspect_runtime_table_run(run_id, Keyword.put(overrides, :include_history, true))
-  end
-
   defp inspect_graph_source(run_id, :read_model, overrides) do
     inspect_projected_run(run_id, overrides)
-  end
-
-  defp graph_inspection(%Run{} = run, read_model, overrides) do
-    GraphInspection.from_run(run, graph_inspection_options(read_model, overrides))
   end
 
   defp graph_inspection(%Inspection.Snapshot{} = snapshot, read_model, overrides) do
@@ -893,18 +689,6 @@ defmodule SquidMesh do
     configured_journal_options(overrides, @projection_snapshot_options)
   end
 
-  defp runtime_table_read_options(overrides) do
-    Keyword.drop(overrides, [:read_model | @projection_read_options])
-  end
-
-  defp runtime_table_start_options(overrides) do
-    overrides
-  end
-
-  defp runtime_table_control_options(overrides) do
-    overrides
-  end
-
   defp journal_start_options(overrides) do
     configured_journal_options(overrides, @journal_start_options)
   end
@@ -953,29 +737,10 @@ defmodule SquidMesh do
   defp config_routing_overrides(overrides) do
     Keyword.take(overrides, [
       :repo,
-      :executor,
       :stale_step_timeout,
       :runtime,
       :read_model,
       :journal_storage
     ])
-  end
-
-  defp reject_journal_start_options_for_runtime_tables(overrides) do
-    journal_options = Keyword.keys(Keyword.take(overrides, @journal_only_start_options))
-
-    case journal_options do
-      [] -> :ok
-      options -> {:error, {:invalid_option, {:runtime_tables, options}}}
-    end
-  end
-
-  defp reject_journal_control_options_for_runtime_tables(overrides) do
-    journal_options = Keyword.keys(Keyword.take(overrides, @journal_only_control_options))
-
-    case journal_options do
-      [] -> :ok
-      options -> {:error, {:invalid_option, {:runtime_tables, options}}}
-    end
   end
 end

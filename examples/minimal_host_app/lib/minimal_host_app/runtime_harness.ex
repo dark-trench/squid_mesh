@@ -8,11 +8,8 @@ defmodule MinimalHostApp.RuntimeHarness do
   """
 
   alias Ecto.Adapters.Postgres
-  import Ecto.Query, only: [from: 2]
 
   alias MinimalHostApp.WorkflowRuns
-  alias MinimalHostApp.Repo
-  alias Oban.Job
 
   @default_poll_attempts 40
   @default_poll_interval_ms 50
@@ -47,7 +44,7 @@ defmodule MinimalHostApp.RuntimeHarness do
   end
 
   @spec await_terminal_run(Ecto.UUID.t(), keyword()) ::
-          {:ok, SquidMesh.Run.t()} | {:error, :timeout | term()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()} | {:error, :timeout | term()}
   def await_terminal_run(run_id, opts \\ []) when is_binary(run_id) do
     attempts = Keyword.get(opts, :attempts, @default_poll_attempts)
     interval_ms = Keyword.get(opts, :interval_ms, @default_poll_interval_ms)
@@ -106,8 +103,8 @@ defmodule MinimalHostApp.RuntimeHarness do
     attempts = Keyword.get(opts, :attempts, @default_poll_attempts)
     interval_ms = Keyword.get(opts, :interval_ms, @default_poll_interval_ms)
 
-    case await_scheduled_step_job(run_id, step, attempts, interval_ms) do
-      {:ok, %Job{} = job} -> MinimalHostApp.Workers.SquidMeshWorker.perform(job)
+    case await_and_execute_scheduled_step(run_id, step, attempts, interval_ms) do
+      :ok -> :ok
       {:error, reason} -> raise "expected scheduled job for #{step}: #{inspect(reason)}"
     end
   end
@@ -126,7 +123,13 @@ defmodule MinimalHostApp.RuntimeHarness do
       {:ok, run} when run.status in [:completed, :failed, :cancelled] ->
         {:ok, run}
 
-      {:ok, _run} ->
+      {:ok, run} ->
+        _result =
+          SquidMesh.execute_next(
+            owner_id: "minimal-host-app-runtime-harness",
+            now: next_runtime_tick(run)
+          )
+
         Process.sleep(interval_ms)
         do_await_terminal_run(run_id, attempts_remaining - 1, interval_ms)
 
@@ -135,19 +138,34 @@ defmodule MinimalHostApp.RuntimeHarness do
     end
   end
 
-  @spec await_scheduled_step_job(Ecto.UUID.t(), String.t(), non_neg_integer(), non_neg_integer()) ::
-          {:ok, Job.t()} | {:error, :timeout}
-  defp await_scheduled_step_job(_run_id, _step, 0, _interval_ms), do: {:error, :timeout}
+  @spec await_and_execute_scheduled_step(
+          Ecto.UUID.t(),
+          String.t(),
+          non_neg_integer(),
+          non_neg_integer()
+        ) :: :ok | {:error, :timeout}
+  defp await_and_execute_scheduled_step(_run_id, _step, 0, _interval_ms), do: {:error, :timeout}
 
-  defp await_scheduled_step_job(run_id, step, attempts_remaining, interval_ms)
+  defp await_and_execute_scheduled_step(run_id, step, attempts_remaining, interval_ms)
        when attempts_remaining > 0 do
-    case scheduled_step_job(run_id, step) do
-      %Job{} = job ->
-        {:ok, job}
+    case WorkflowRuns.inspect_run(run_id) do
+      {:ok, %{scheduled_attempts: scheduled_attempts, visible_attempts: visible_attempts} = run} ->
+        if Enum.any?(scheduled_attempts ++ visible_attempts, &(Map.get(&1, :step) == step)) do
+          _result =
+            SquidMesh.execute_next(
+              owner_id: "minimal-host-app-runtime-harness",
+              now: next_runtime_tick(run)
+            )
 
-      nil ->
+          :ok
+        else
+          Process.sleep(interval_ms)
+          await_and_execute_scheduled_step(run_id, step, attempts_remaining - 1, interval_ms)
+        end
+
+      _other ->
         Process.sleep(interval_ms)
-        await_scheduled_step_job(run_id, step, attempts_remaining - 1, interval_ms)
+        await_and_execute_scheduled_step(run_id, step, attempts_remaining - 1, interval_ms)
     end
   end
 
@@ -158,6 +176,9 @@ defmodule MinimalHostApp.RuntimeHarness do
       :error -> false
     end
   end
+
+  defp next_runtime_tick(%{next_visible_at: %DateTime{} = next_visible_at}), do: next_visible_at
+  defp next_runtime_tick(_run), do: DateTime.utc_now(:microsecond)
 
   @spec ensure_repo_started() :: :ok
   defp ensure_repo_started do
@@ -220,19 +241,24 @@ defmodule MinimalHostApp.RuntimeHarness do
 
   @spec serve_gateway(port(), gateway_responder(), pos_integer(), pos_integer()) :: :ok
   defp serve_gateway(socket, responder, attempt, max_requests) when attempt <= max_requests do
-    {:ok, client} = :gen_tcp.accept(socket)
-    {:ok, _request} = :gen_tcp.recv(client, 0)
+    case :gen_tcp.accept(socket) do
+      {:ok, client} ->
+        {:ok, _request} = :gen_tcp.recv(client, 0)
 
-    response = responder.(attempt)
+        response = responder.(attempt)
 
-    :ok = :gen_tcp.send(client, response)
-    :ok = :gen_tcp.close(client)
+        :ok = :gen_tcp.send(client, response)
+        :ok = :gen_tcp.close(client)
 
-    if attempt < max_requests do
-      serve_gateway(socket, responder, attempt + 1, max_requests)
-    else
-      :gen_tcp.close(socket)
-      :ok
+        if attempt < max_requests do
+          serve_gateway(socket, responder, attempt + 1, max_requests)
+        else
+          :gen_tcp.close(socket)
+          :ok
+        end
+
+      {:error, :closed} ->
+        :ok
     end
   end
 
@@ -280,20 +306,5 @@ defmodule MinimalHostApp.RuntimeHarness do
           config
       end
     end)
-  end
-
-  @spec scheduled_step_job(Ecto.UUID.t(), String.t()) :: Job.t() | nil
-  defp scheduled_step_job(run_id, step) do
-    Repo.one(
-      from(job in Job,
-        where:
-          job.worker == "MinimalHostApp.Workers.SquidMeshWorker" and
-            job.state == "scheduled" and
-            fragment("?->>'run_id' = ?", job.args, ^run_id) and
-            fragment("?->>'step' = ?", job.args, ^step),
-        order_by: [desc: job.inserted_at],
-        limit: 1
-      )
-    )
   end
 end

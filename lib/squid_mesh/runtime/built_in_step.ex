@@ -8,8 +8,6 @@ defmodule SquidMesh.Runtime.BuiltInStep do
 
   require Logger
 
-  alias SquidMesh.Run
-
   @type built_in_step_error ::
           {:unknown_built_in_step, SquidMesh.Workflow.Definition.built_in_step_kind()}
   @type execution_result :: {:ok, map(), keyword()} | {:error, built_in_step_error()}
@@ -31,21 +29,4 @@ defmodule SquidMesh.Runtime.BuiltInStep do
 
     {:ok, %{}, []}
   end
-
-  @doc false
-  @spec execute(SquidMesh.Workflow.Definition.built_in_step_kind(), keyword(), map(), Run.t()) ::
-          execution_result()
-  def execute(:wait, opts, _input, _run), do: execute_wait(opts)
-
-  def execute(:log, opts, _input, _run), do: execute_log(opts)
-
-  def execute(:pause, _opts, _input, _run) do
-    {:ok, %{}, [pause: true]}
-  end
-
-  def execute(:approval, _opts, _input, _run) do
-    {:ok, %{}, [pause: true]}
-  end
-
-  def execute(kind, _opts, _input, _run), do: {:error, {:unknown_built_in_step, kind}}
 end

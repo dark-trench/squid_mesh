@@ -57,15 +57,14 @@ defmodule Mix.Tasks.SquidMesh.Install do
 
           config :squid_mesh,
             repo: YourApp.Repo,
-            executor: YourApp.SquidMeshExecutor
+            runtime: :journal,
+            read_model: :read_model
 
-          config :your_app, YourApp.SquidMeshExecutor,
-            queue: :squid_mesh
+      3. Start your chosen executor and have workers call
+         `SquidMesh.execute_next(owner_id: "your-worker-id")` when capacity is
+         available. Bedrock is the recommended executor for distributed hosts.
 
-      3. Implement `YourApp.SquidMeshExecutor` with `@behaviour SquidMesh.Executor`
-      4. Have your queued job call `SquidMesh.Runtime.Runner.perform(payload)`
-
-    See docs/host_app_integration.md for a copy-paste executor skeleton.
+    See docs/host_app_integration.md for a copy-paste host setup.
     """)
   end
 

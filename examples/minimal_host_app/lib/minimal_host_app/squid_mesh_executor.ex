@@ -9,44 +9,6 @@ defmodule MinimalHostApp.SquidMeshExecutor do
   alias SquidMesh.Executor.Payload
 
   @impl true
-  def enqueue_step(_config, run, step, opts) do
-    changeset =
-      run
-      |> Payload.step(step)
-      |> SquidMeshWorker.new(job_opts(opts))
-
-    oban_name()
-    |> Oban.insert(changeset)
-    |> normalize_insert_result()
-  end
-
-  @impl true
-  def enqueue_steps(_config, run, steps, opts) do
-    changesets =
-      Enum.map(steps, fn step ->
-        run
-        |> Payload.step(step)
-        |> SquidMeshWorker.new(job_opts(opts))
-      end)
-
-    oban_name()
-    |> Oban.insert_all(changesets)
-    |> normalize_insert_all_result()
-  end
-
-  @impl true
-  def enqueue_compensation(_config, run, opts) do
-    changeset =
-      run
-      |> Payload.compensation()
-      |> SquidMeshWorker.new(job_opts(opts))
-
-    oban_name()
-    |> Oban.insert(changeset)
-    |> normalize_insert_result()
-  end
-
-  @impl true
   def enqueue_cron(_config, workflow, trigger, opts) do
     changeset =
       workflow
@@ -87,15 +49,6 @@ defmodule MinimalHostApp.SquidMeshExecutor do
   defp normalize_insert_result({:ok, job}), do: {:ok, metadata(job)}
   defp normalize_insert_result({:error, reason}), do: {:error, reason}
   defp normalize_insert_result(other), do: {:error, {:unexpected_insert_result, other}}
-
-  defp normalize_insert_all_result({:ok, jobs}) when is_list(jobs),
-    do: {:ok, Enum.map(jobs, &metadata/1)}
-
-  defp normalize_insert_all_result(jobs) when is_list(jobs),
-    do: {:ok, Enum.map(jobs, &metadata/1)}
-
-  defp normalize_insert_all_result({:error, reason}), do: {:error, reason}
-  defp normalize_insert_all_result(other), do: {:error, {:unexpected_insert_all_result, other}}
 
   defp metadata(%Oban.Job{} = job) do
     %{

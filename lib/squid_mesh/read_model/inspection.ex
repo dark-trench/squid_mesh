@@ -194,9 +194,19 @@ defmodule SquidMesh.ReadModel.Inspection do
   defp applied_result_context(%WorkflowAgent.Projection{} = projection) do
     projection
     |> WorkflowAgent.Projection.applied_results()
-    |> Map.values()
+    |> Enum.sort_by(fn {runnable_key, _result} ->
+      {applied_result_sort_value(projection, runnable_key), runnable_key}
+    end)
+    |> Enum.map(fn {_runnable_key, result} -> result end)
     |> Enum.filter(&is_map/1)
     |> Enum.reduce(%{}, &Map.merge(&2, &1))
+  end
+
+  defp applied_result_sort_value(%WorkflowAgent.Projection{} = projection, runnable_key) do
+    case WorkflowAgent.Projection.applied_at(projection, runnable_key) do
+      %DateTime{} = applied_at -> DateTime.to_unix(applied_at, :microsecond)
+      _missing -> -1
+    end
   end
 
   defp idle_snapshot_reason(workflow_projection, scheduled_attempts, attempts) do

@@ -115,6 +115,39 @@ defmodule SquidMesh.Runtime.Journal.Storage.EctoTest do
              @storage_adapter.load_thread(@thread_id, repo: Repo)
   end
 
+  test "reloads persisted entries that contain atom metadata not loaded by the current VM" do
+    now = DateTime.utc_now(:microsecond)
+    insert_thread!(rev: 1, now: now)
+
+    unknown_atom_name = unknown_atom_name()
+
+    entry =
+      :attempt_scheduled
+      |> entry(%{run_id: @run_id})
+      |> Map.put(:refs, %{squid_mesh_thread: {:dispatch, "default"}})
+
+    encoded_entry =
+      entry
+      |> :erlang.term_to_binary()
+      |> String.replace("squid_mesh_thread", unknown_atom_name)
+
+    Repo.insert_all(JournalEntry, [
+      %{
+        id: Ecto.UUID.generate(),
+        thread_id: @thread_id,
+        seq: 0,
+        entry: encoded_entry,
+        inserted_at: now,
+        updated_at: now
+      }
+    ])
+
+    assert {:ok, %{entries: [%Entry{kind: :attempt_scheduled, refs: refs}]}} =
+             @storage_adapter.load_thread(@thread_id, repo: Repo)
+
+    assert Map.has_key?(refs, String.to_existing_atom(unknown_atom_name))
+  end
+
   test "fails closed when thread rev diverges from persisted entries" do
     now = DateTime.utc_now(:microsecond)
     insert_thread!(rev: 2, now: now)
@@ -228,5 +261,11 @@ defmodule SquidMesh.Runtime.Journal.Storage.EctoTest do
         updated_at: now
       }
     ])
+  end
+
+  defp unknown_atom_name do
+    unique = Integer.to_string(System.unique_integer([:positive]), 36)
+
+    "zz_" <> String.pad_trailing(unique, 14, "x")
   end
 end

@@ -357,7 +357,11 @@ defmodule SquidMesh.Runtime.Journal.Storage.Ecto do
   end
 
   defp decode_term(binary) when is_binary(binary) do
-    {:ok, :erlang.binary_to_term(binary, [:safe])}
+    # Persisted Jido entries may contain atom keys from workflow definitions and
+    # internal metadata that are not loaded yet after a VM restart. This adapter
+    # decodes only rows from the configured journal tables and validates the
+    # expected entry/checkpoint shape at the boundary after decoding.
+    {:ok, :erlang.binary_to_term(binary)}
   rescue
     error -> {:error, {error.__struct__, Exception.message(error)}}
   end

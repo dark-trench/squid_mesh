@@ -124,23 +124,6 @@ defmodule BedrockMinimalHostApp.BedrockJobQueueStressTest do
       assert %{pending_count: 0, processing_count: 0} = JobQueue.stats(queue_a)
     end
 
-    test "maps Squid Mesh executor payloads into Bedrock jobs", %{queue_a: queue_a} do
-      run = %SquidMesh.Run{id: "run_123", workflow: __MODULE__, current_step: :charge_card}
-
-      assert {:ok, metadata} =
-               BedrockMinimalHostApp.SquidMeshExecutor.enqueue_step(%{}, run, :charge_card, [])
-
-      assert %{
-               executor: BedrockMinimalHostApp.SquidMeshExecutor,
-               queue: ^queue_a,
-               topic: "squid_mesh:payload",
-               item_id: item_id
-             } = metadata
-
-      assert is_binary(item_id)
-      assert [%{topic: "squid_mesh:payload"}] = peek_visible(queue_a)
-    end
-
     test "maps Squid Mesh cron payloads into delayed Bedrock jobs", %{queue_a: queue_a} do
       intended_window = %{
         "start_at" => "2026-05-22T00:00:00Z",
@@ -194,7 +177,7 @@ defmodule BedrockMinimalHostApp.BedrockJobQueueStressTest do
     end
   end
 
-  defp peek_visible(queue_id, opts \\ []) do
+  defp peek_visible(queue_id, opts) do
     transact!(fn -> Bedrock.JobQueue.Store.peek(BedrockRepo, root(), queue_id, opts) end)
   end
 

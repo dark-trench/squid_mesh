@@ -20,6 +20,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   alias SquidMesh.Runtime.StepInput
   alias SquidMesh.Runtime.WorkflowAgent
   alias SquidMesh.Runtime.WorkflowAgent.Projection
+  alias SquidMesh.Step
   alias SquidMesh.Workflow.Definition
 
   @dispatch_append_retries 25
@@ -165,7 +166,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
         finished_at = lifecycle_time(opts, claim_now)
         runtime = %{storage: storage, queue: queue, now: finished_at}
 
-        case run_step(step, attempt.input, context) do
+        case run_step(storage, step, attempt.input, context) do
           {:ok, output, execution_opts} ->
             complete_attempt(runtime, claim, definition, step_name, output, execution_opts)
 
@@ -1876,6 +1877,52 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   end
 
   @spec run_step(map(), map(), map()) :: {:ok, map(), keyword()} | {:error, term()}
+  defp run_step(
+         %{adapter: SquidMesh.Runtime.Journal.Storage.Ecto, opts: opts},
+         %{opts: step_opts} = step,
+         input,
+         context
+       )
+       when is_list(step_opts) do
+    case Keyword.get(step_opts, :transaction) do
+      :repo -> run_repo_transaction_step(Keyword.fetch!(opts, :repo), step, input, context)
+      _other -> run_step(step, input, context)
+    end
+  end
+
+  defp run_step(_storage, step, input, context) do
+    run_step(step, input, context)
+  end
+
+  defp run_repo_transaction_step(repo, step, input, context) do
+    case repo.transaction(fn ->
+           run_or_rollback_transactional_step(repo, step, input, context)
+         end) do
+      {:ok, result} -> result
+      {:error, {:squid_mesh_step_error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp run_or_rollback_transactional_step(repo, step, input, context) do
+    case run_transactional_step(step, input, context) do
+      {:ok, _output, _execution_opts} = result -> result
+      {:error, reason} -> repo.rollback({:squid_mesh_step_error, reason})
+    end
+  end
+
+  defp run_transactional_step(%{module: module}, input, context) when is_atom(module) do
+    if Step.native_step?(module) do
+      run_native_step(module, input, context)
+    else
+      {:error,
+       %{
+         message: "repo transaction steps must use a native Squid Mesh step",
+         retryable?: false
+       }}
+    end
+  end
+
   defp run_step(%{module: :wait, opts: opts}, _input, _context) when is_list(opts) do
     BuiltInStep.execute_wait(opts)
   end
@@ -1921,6 +1968,10 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       {:error, reason} -> {:error, reason}
       other -> unexpected_exec_result(other)
     end
+  end
+
+  defp run_native_step(module, input, context) when is_map(context) do
+    Step.Action.run(%{step: module, input: input}, context)
   end
 
   defp unexpected_exec_result(result) do

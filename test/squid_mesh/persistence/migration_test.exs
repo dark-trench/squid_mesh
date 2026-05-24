@@ -30,9 +30,9 @@ defmodule SquidMesh.Persistence.MigrationTest do
 
     assert [_version] = run_migrations_without_module_conflict_warning(migrations_path, :up)
 
-    assert table_exists?("squid_mesh_runs")
-    assert table_exists?("squid_mesh_step_runs")
-    assert table_exists?("squid_mesh_step_attempts")
+    refute table_exists?("squid_mesh_runs")
+    refute table_exists?("squid_mesh_step_runs")
+    refute table_exists?("squid_mesh_step_attempts")
     assert table_exists?("squid_mesh_journal_threads")
     assert table_exists?("squid_mesh_journal_entries")
     assert table_exists?("squid_mesh_journal_checkpoints")

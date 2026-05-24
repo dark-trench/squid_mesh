@@ -37,17 +37,18 @@ defmodule Mix.Tasks.SquidMesh.InstallTest do
 
     migration_body = File.read!(Path.join([tmp_dir, "priv/repo/migrations", migration]))
 
-    assert migration_body =~ "create table(:squid_mesh_runs"
-    assert migration_body =~ "add :trigger, :string, null: false"
-    assert migration_body =~ "squid_mesh_runs_schedule_idempotency_index"
-    assert migration_body =~ "create table(:squid_mesh_step_runs"
-    assert migration_body =~ "add :recovery, :map"
-    assert migration_body =~ "add :resume, :map"
-    assert migration_body =~ "add :manual, :map"
-    assert migration_body =~ "create table(:squid_mesh_step_attempts"
+    refute migration_body =~ "create table(:squid_mesh_runs"
+    refute migration_body =~ "squid_mesh_runs_schedule_idempotency_index"
+    refute migration_body =~ "create table(:squid_mesh_step_runs"
+    refute migration_body =~ "create table(:squid_mesh_step_attempts"
     assert migration_body =~ "create table(:squid_mesh_journal_threads"
     assert migration_body =~ "create table(:squid_mesh_journal_entries"
     assert migration_body =~ "create table(:squid_mesh_journal_checkpoints"
+
+    assert output =~ "runtime: :journal"
+    assert output =~ "read_model: :read_model"
+    assert output =~ "SquidMesh.execute_next"
+    refute output =~ "SquidMesh.Runtime.Runner.perform(payload)"
   end
 
   test "skips the current-schema migration when it already exists", %{tmp_dir: tmp_dir} do

@@ -43,17 +43,11 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert {:ok, run} = WorkflowRuns.start_payment_recovery(attrs)
 
-    assert_enqueued(
-      worker: MinimalHostApp.Workers.SquidMeshWorker,
-      queue: "squid_mesh",
-      args: %{"kind" => "step", "run_id" => run.id, "step" => "load_invoice"}
-    )
-
-    assert run.workflow == MinimalHostApp.Workflows.PaymentRecovery
-    assert run.trigger == :payment_recovery
-    assert run.status == :pending
-    assert run.payload == attrs
-    assert run.current_step == :load_invoice
+    assert run.workflow == "Elixir.MinimalHostApp.Workflows.PaymentRecovery"
+    assert run.trigger == "payment_recovery"
+    assert run.status == :running
+    assert run.input == attrs
+    assert [%{step: "load_invoice", status: :available}] = run.visible_attempts
   end
 
   test "inspects a started run through the host boundary" do
@@ -65,7 +59,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
                gateway_url: "http://127.0.0.1:4010/gateway"
              })
 
-    assert {:ok, inspected_run} = WorkflowRuns.inspect_payment_recovery(run.id)
+    assert {:ok, inspected_run} = WorkflowRuns.inspect_payment_recovery(run.run_id)
     assert inspected_run == run
   end
 
@@ -89,22 +83,8 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
 
-    assert :ok =
-             MinimalHostApp.RuntimeHarness.perform_scheduled_step!(run.id, "check_gateway_status")
-
-    assert :ok =
-             MinimalHostApp.RuntimeHarness.perform_scheduled_step!(run.id, "check_gateway_status")
-
-    assert :ok =
-             MinimalHostApp.RuntimeHarness.perform_scheduled_step!(run.id, "check_gateway_status")
-
-    assert :ok =
-             MinimalHostApp.RuntimeHarness.perform_scheduled_step!(run.id, "check_gateway_status")
-
-    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
-
-    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
-    assert {:ok, history_run} = WorkflowRuns.inspect_run(run.id, include_history: true)
+    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.run_id)
+    assert {:ok, history_run} = WorkflowRuns.inspect_run(run.run_id, include_history: true)
 
     assert completed_run.status == :completed
 
@@ -115,22 +95,15 @@ defmodule MinimalHostApp.WorkflowRunsTest do
            }
 
     assert [
-             %{
-               type: :compensation_routed,
-               step: :check_gateway_status,
-               metadata: %{target: :issue_gateway_credit}
-             }
-           ] = history_run.audit_events
-
-    assert [
-             %{step: :load_invoice, status: :completed},
-             %{
-               step: :check_gateway_status,
-               status: :failed,
-               recovery: %{failure: %{strategy: :compensation, target: :issue_gateway_credit}}
-             },
-             %{step: :issue_gateway_credit, status: :completed}
-           ] = history_run.step_runs
+             {"load_invoice", :completed, true, 1},
+             {"check_gateway_status", :failed, false, 1},
+             {"check_gateway_status", :failed, false, 2},
+             {"check_gateway_status", :failed, false, 3},
+             {"check_gateway_status", :failed, false, 4},
+             {"check_gateway_status", :failed, true, 5},
+             {"issue_gateway_credit", :completed, true, 1}
+           ] =
+             Enum.map(history_run.attempts, &{&1.step, &1.status, &1.applied?, &1.attempt_number})
   end
 
   test "executes a dependency-based workflow through the host boundary" do
@@ -141,11 +114,11 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     }
 
     assert {:ok, run} = WorkflowRuns.start_dependency_recovery(attrs)
-    assert run.current_step == nil
+    assert Enum.map(run.visible_attempts, & &1.step) == ["load_account", "load_invoice"]
 
     assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
-    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
-    assert {:ok, history_run} = WorkflowRuns.inspect_run(run.id, include_history: true)
+    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.run_id)
+    assert {:ok, history_run} = WorkflowRuns.inspect_run(run.run_id, include_history: true)
 
     assert completed_run.status == :completed
     assert completed_run.context.account == %{id: "acct_123", tier: "standard"}
@@ -163,17 +136,11 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              account_tier: "standard"
            }
 
-    assert Enum.map(history_run.steps, &{&1.step, &1.status, &1.depends_on}) == [
-             {:load_account, :completed, []},
-             {:load_invoice, :completed, []},
-             {:prepare_notification, :completed, [:load_account, :load_invoice]}
-           ]
-
     assert [
              _load_account,
              _load_invoice,
-             %{step: :prepare_notification, input: prepare_notification_input}
-           ] = history_run.step_runs
+             %{step: "prepare_notification", input: prepare_notification_input}
+           ] = history_run.attempts
 
     assert prepare_notification_input == %{
              account_id: "acct_123",
@@ -340,11 +307,11 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              })
 
     assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
-    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
+    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.run_id)
 
     assert completed_run.status == :completed
     assert completed_run.context.local_ledger == %{status: "committed", entries: 2}
-    assert local_ledger_entries(run.id) == ["reserve", "capture"]
+    assert local_ledger_entries(run.run_id) == ["reserve", "capture"]
   end
 
   test "rolls back local repo transaction groups when the step fails" do
@@ -355,68 +322,52 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              })
 
     assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
-    assert {:ok, failed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
+    assert {:ok, failed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.run_id)
 
     assert failed_run.status == :failed
-    assert failed_run.current_step == :post_local_ledger_entries
 
-    assert failed_run.last_error == %{
-             message: "local ledger capture failed",
-             retryable?: false
-           }
+    assert [%{step: "post_local_ledger_entries", status: :failed, error: error}] =
+             failed_run.attempts
 
-    assert local_ledger_entries(run.id) == []
+    assert error.message == "step execution failed"
+    assert error.retryable? == false
+
+    assert local_ledger_entries(run.run_id) == []
   end
 
   test "approves a manual approval workflow through the host boundary" do
     assert {:ok, run} = WorkflowRuns.start_manual_approval(%{account_id: "acct_approval_123"})
 
-    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
-    assert {:ok, paused_run} = WorkflowRuns.inspect_run(run.id, include_history: true)
+    assert {:ok, %Snapshot{status: :paused}} =
+             SquidMesh.execute_next(owner_id: "minimal-host-app-approval-test")
+
+    assert {:ok, paused_run} = WorkflowRuns.inspect_run(run.run_id, include_history: true)
 
     assert paused_run.status == :paused
-    assert paused_run.current_step == :wait_for_approval
-
-    assert Enum.map(paused_run.audit_events, &{&1.type, &1.step}) == [
-             {:paused, :wait_for_approval}
-           ]
-
-    assert Enum.map(paused_run.steps, &{&1.step, &1.status}) == [
-             {:wait_for_approval, :running},
-             {:record_approval, :waiting},
-             {:record_rejection, :waiting}
-           ]
+    assert paused_run.manual_state.step == "wait_for_approval"
 
     assert {:ok, resumed_run} =
              WorkflowRuns.approve_run(
-               run.id,
+               run.run_id,
                %{actor: "ops_123", comment: "approved", metadata: %{ticket: "SUP-123"}}
              )
 
     assert resumed_run.status == :running
-    assert resumed_run.current_step == :record_approval
+    assert [%{step: "record_approval", status: :available}] = resumed_run.visible_attempts
 
-    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
-    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
-    assert {:ok, completed_history} = WorkflowRuns.inspect_run(run.id, include_history: true)
+    assert {:ok, completed_run} =
+             MinimalHostApp.RuntimeHarness.await_terminal_run(run.run_id)
+
+    assert {:ok, completed_history} = WorkflowRuns.inspect_run(run.run_id, include_history: true)
 
     assert completed_run.status == :completed
 
-    assert completed_run.context.approval.account_id == "acct_approval_123"
     assert completed_run.context.approval.status == "approved"
     assert completed_run.context.approval.decision == "approved"
     assert completed_run.context.approval.actor == "ops_123"
     assert completed_run.context.approval.comment == "approved"
 
-    assert Enum.map(completed_history.audit_events, &{&1.type, &1.step, &1.actor}) == [
-             {:paused, :wait_for_approval, nil},
-             {:approved, :wait_for_approval, "ops_123"}
-           ]
-
-    assert Enum.map(completed_history.audit_events, & &1.metadata) == [
-             nil,
-             %{ticket: "SUP-123"}
-           ]
+    assert completed_history.manual_state == nil
   end
 
   test "runs the daily digest workflow through its manual trigger" do
@@ -424,25 +375,19 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert {:ok, run} = WorkflowRuns.start_manual_digest(attrs)
 
-    assert run.workflow == MinimalHostApp.Workflows.DailyDigest
-    assert run.trigger == :manual_digest
-    assert run.payload == attrs
-
-    assert_enqueued(
-      worker: MinimalHostApp.Workers.SquidMeshWorker,
-      queue: "squid_mesh",
-      args: %{"kind" => "step", "run_id" => run.id, "step" => "announce_digest"}
-    )
+    assert run.workflow == "Elixir.MinimalHostApp.Workflows.DailyDigest"
+    assert run.trigger == "manual_digest"
+    assert run.input == attrs
 
     assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
-    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
+    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.run_id)
 
     assert completed_run.status == :completed
     assert completed_run.context.digest_delivery.channel == "ops-manual"
     assert completed_run.context.digest_delivery.digest_date == "2026-05-10"
 
-    assert {:ok, inspected_run} = WorkflowRuns.inspect_run(run.id)
-    assert inspected_run.payload == attrs
+    assert {:ok, inspected_run} = WorkflowRuns.inspect_run(run.run_id)
+    assert inspected_run.input == attrs
   end
 
   test "runs the daily digest workflow through its cron trigger" do
@@ -450,7 +395,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     existing_run_ids =
       case WorkflowRuns.list_daily_digest_runs() do
-        {:ok, runs} -> MapSet.new(runs, & &1.id)
+        {:ok, runs} -> MapSet.new(runs, & &1.run_id)
         {:error, _reason} -> MapSet.new()
       end
 
@@ -465,23 +410,18 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert :ok = MinimalHostApp.Workers.SquidMeshWorker.perform(job)
 
-    assert_enqueued(
-      worker: MinimalHostApp.Workers.SquidMeshWorker,
-      queue: "squid_mesh",
-      args: %{"kind" => "step", "step" => "announce_digest"}
-    )
-
-    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
-
     assert {:ok, runs} = WorkflowRuns.list_daily_digest_runs()
-    run = Enum.find(runs, fn run -> not MapSet.member?(existing_run_ids, run.id) end)
+    run = Enum.find(runs, fn run -> not MapSet.member?(existing_run_ids, run.run_id) end)
 
-    assert %SquidMesh.Run{} = run
-    assert run.trigger == :daily_digest
-    assert is_binary(run.payload.digest_date)
-    assert run.payload.channel == "ops"
-    assert run.context.schedule.idempotency == "return_existing_run"
-    assert run.context.schedule.idempotency_key == signal_id
+    assert %Summary{} = run
+
+    assert {:ok, inspected_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.run_id)
+    assert inspected_run.status == :completed
+    assert inspected_run.trigger == "daily_digest"
+    assert is_binary(inspected_run.input.digest_date)
+    assert inspected_run.input.channel == "ops"
+    assert inspected_run.context.schedule.idempotency == :return_existing_run
+    assert inspected_run.context.schedule.idempotency_key == signal_id
   end
 
   test "generates a new reboot signal id for each cron plugin boot" do
@@ -515,7 +455,11 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     runs_with_signal =
       Enum.filter(runs, fn run ->
-        get_in(run.context, [:schedule, :idempotency_key]) == signal_id
+        with {:ok, inspected_run} <- WorkflowRuns.inspect_run(run.run_id) do
+          inspected_run.context.schedule.idempotency_key == signal_id
+        else
+          {:error, _reason} -> false
+        end
       end)
 
     assert [_run] = runs_with_signal
@@ -531,33 +475,30 @@ defmodule MinimalHostApp.WorkflowRunsTest do
   test "rejects a manual approval workflow through the host boundary" do
     assert {:ok, run} = WorkflowRuns.start_manual_approval(%{account_id: "acct_review_123"})
 
-    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
-    assert {:ok, paused_run} = WorkflowRuns.inspect_run(run.id, include_history: true)
+    assert {:ok, %Snapshot{status: :paused}} =
+             SquidMesh.execute_next(owner_id: "minimal-host-app-rejection-test")
+
+    assert {:ok, paused_run} = WorkflowRuns.inspect_run(run.run_id, include_history: true)
 
     assert paused_run.status == :paused
-    assert paused_run.current_step == :wait_for_approval
+    assert paused_run.manual_state.step == "wait_for_approval"
 
     assert {:ok, resumed_run} =
-             WorkflowRuns.reject_run(run.id, %{actor: "ops_456", comment: "rejected"})
+             WorkflowRuns.reject_run(run.run_id, %{actor: "ops_456", comment: "rejected"})
 
     assert resumed_run.status == :running
-    assert resumed_run.current_step == :record_rejection
+    assert [%{step: "record_rejection", status: :available}] = resumed_run.visible_attempts
 
-    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
-    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
-    assert {:ok, completed_history} = WorkflowRuns.inspect_run(run.id, include_history: true)
+    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.run_id)
+    assert {:ok, completed_history} = WorkflowRuns.inspect_run(run.run_id, include_history: true)
 
     assert completed_run.status == :completed
-    assert completed_run.context.approval.account_id == "acct_review_123"
     assert completed_run.context.approval.status == "rejected"
     assert completed_run.context.approval.decision == "rejected"
     assert completed_run.context.approval.actor == "ops_456"
     assert completed_run.context.approval.comment == "rejected"
 
-    assert Enum.map(completed_history.audit_events, &{&1.type, &1.step, &1.actor}) == [
-             {:paused, :wait_for_approval, nil},
-             {:rejected, :wait_for_approval, "ops_456"}
-           ]
+    assert completed_history.manual_state == nil
   end
 
   test "runs the documented smoke path" do
@@ -588,13 +529,15 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert manual_approval.context.approval.status == "approved"
 
     assert manual_digest.status == :completed
-    assert manual_digest.trigger == :manual_digest
+    assert manual_digest.trigger == "manual_digest"
 
     assert local_ledger_checkout.status == :completed
     assert local_ledger_checkout.context.local_ledger.entries == 2
 
     assert local_ledger_rollback.status == :failed
-    assert local_ledger_rollback.current_step == :post_local_ledger_entries
+
+    assert [%{step: "post_local_ledger_entries", status: :failed}] =
+             local_ledger_rollback.attempts
 
     assert journal_executor.status == :completed
     assert journal_executor.applied_runnable_keys == journal_executor.planned_runnable_keys
@@ -613,7 +556,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert journal_cron_digest.context.schedule.signal_id
 
     assert daily_digest.status == :completed
-    assert daily_digest.trigger == :daily_digest
+    assert daily_digest.trigger == "daily_digest"
   end
 
   test "runs the journal executor smoke path" do
@@ -685,7 +628,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
   end
 
   test "runs the cancellation smoke path" do
-    assert %SquidMesh.Run{} = run = Smoke.run_cancellation!()
+    assert %SquidMesh.ReadModel.Inspection.Snapshot{} = run = Smoke.run_cancellation!()
     assert run.status == :cancelled
   end
 

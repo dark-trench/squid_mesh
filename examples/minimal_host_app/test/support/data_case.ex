@@ -18,8 +18,27 @@ defmodule MinimalHostApp.DataCase do
   end
 
   setup tags do
+    original_queue = Application.get_env(:squid_mesh, :queue)
+    queue = "minimal-host-app-test-#{System.unique_integer([:positive])}"
+    Application.put_env(:squid_mesh, :queue, queue)
+
+    on_exit(fn ->
+      case original_queue do
+        nil -> Application.delete_env(:squid_mesh, :queue)
+        queue -> Application.put_env(:squid_mesh, :queue, queue)
+      end
+    end)
+
     pid = Sandbox.start_owner!(MinimalHostApp.Repo, shared: not tags[:async])
+    cleanup_runtime_state()
     on_exit(fn -> Sandbox.stop_owner(pid) end)
     :ok
+  end
+
+  defp cleanup_runtime_state do
+    MinimalHostApp.Repo.delete_all("squid_mesh_journal_entries")
+    MinimalHostApp.Repo.delete_all("squid_mesh_journal_checkpoints")
+    MinimalHostApp.Repo.delete_all("squid_mesh_journal_threads")
+    MinimalHostApp.Repo.delete_all("local_ledger_entries")
   end
 end

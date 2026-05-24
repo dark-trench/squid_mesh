@@ -2,21 +2,17 @@ defmodule SquidMesh.Runs.GraphInspection do
   @moduledoc """
   Graph-oriented inspection output for one workflow run.
 
-  This projection is read-only and executor-agnostic. It is built from the same
-  durable table or journal inspection data returned by `SquidMesh.inspect_run/2`,
-  then overlays the declared workflow graph when the workflow module can still
-  be loaded.
+  This projection is read-only and executor-agnostic. It is built from the
+  journal inspection data returned by `SquidMesh.inspect_run/2`, then overlays
+  the declared workflow graph when the workflow module can still be loaded.
   """
 
   alias SquidMesh.ReadModel.Inspection.Snapshot
-  alias SquidMesh.Run
   alias SquidMesh.Runs.GraphInspection.Edge
   alias SquidMesh.Runs.GraphInspection.Node
   alias SquidMesh.Workflow.Definition
 
-  @terminal_statuses [:completed, :failed, :cancelled]
-
-  @type source :: :runtime_tables | :read_model
+  @type source :: :read_model
 
   @type t :: %__MODULE__{
           run_id: String.t(),
@@ -47,32 +43,6 @@ defmodule SquidMesh.Runs.GraphInspection do
   ]
 
   @doc false
-  @spec from_run(Run.t(), keyword()) :: t()
-  def from_run(%Run{} = run, opts) when is_list(opts) do
-    source = Keyword.get(opts, :source, :runtime_tables)
-    include_details? = Keyword.get(opts, :include_details, false)
-    definition = load_definition(run.workflow)
-    fallback_current_node_id = current_node_id(run.current_step, run.status)
-    initial_nodes = runtime_nodes(run, definition, include_details?)
-    current_node_ids = runtime_current_node_ids(run, initial_nodes, fallback_current_node_id)
-    current_node_id = List.first(current_node_ids)
-    nodes = mark_current_nodes(initial_nodes, current_node_ids)
-
-    %__MODULE__{
-      run_id: run.id,
-      workflow: run.workflow,
-      source: source,
-      status: run.status,
-      current_node_id: current_node_id,
-      current_node_ids: current_node_ids,
-      terminal?: terminal_status?(run.status),
-      nodes: nodes,
-      edges: graph_edges(definition, nodes),
-      anomalies: []
-    }
-  end
-
-  @doc false
   @spec from_snapshot(Snapshot.t(), keyword()) :: t()
   def from_snapshot(%Snapshot{} = snapshot, opts) when is_list(opts) do
     source = Keyword.get(opts, :source, :read_model)
@@ -95,71 +65,6 @@ defmodule SquidMesh.Runs.GraphInspection do
       edges: graph_edges(definition, nodes),
       anomalies: sanitize_anomalies(snapshot.anomalies)
     }
-  end
-
-  defp runtime_nodes(%Run{} = run, definition, include_details?) do
-    step_states = run.steps || run.step_runs || []
-    node_ids = ordered_node_ids(definition, step_states, &runtime_step_id/1)
-    step_states_by_id = Map.new(step_states, &{runtime_step_id(&1), &1})
-
-    Enum.map(node_ids, fn node_id ->
-      step_state = Map.get(step_states_by_id, node_id)
-      runtime_node(run, step_state, node_id, include_details?)
-    end)
-  end
-
-  defp runtime_node(%Run{} = run, nil, node_id, include_details?) do
-    %Node{
-      id: node_id,
-      status: :waiting,
-      current?: false,
-      manual_state: detail(include_details?, runtime_manual_state(run, node_id))
-    }
-  end
-
-  defp runtime_node(%Run{} = run, step_state, node_id, include_details?) do
-    %Node{
-      id: node_id,
-      status: runtime_node_status(run, step_state, node_id),
-      current?: false,
-      input: detail(include_details?, step_state.input),
-      output: detail(include_details?, step_state.output),
-      error: detail(include_details?, step_state.last_error),
-      recovery: detail(include_details?, step_state.recovery),
-      transition: step_state.transition,
-      manual_state: detail(include_details?, runtime_manual_state(run, node_id)),
-      attempts:
-        detail(include_details?, Enum.map(step_state.attempts || [], &runtime_attempt/1), [])
-    }
-  end
-
-  defp runtime_node_status(%Run{} = run, step_state, node_id) do
-    cond do
-      runtime_manual_node?(run, node_id) -> :paused
-      runtime_retry_node?(run, step_state, node_id) -> :retrying
-      true -> step_state.status
-    end
-  end
-
-  defp runtime_manual_state(%Run{} = run, node_id) do
-    if runtime_manual_node?(run, node_id), do: %{status: :paused, step: node_id}, else: nil
-  end
-
-  defp runtime_manual_node?(%Run{} = run, node_id) do
-    run.status == :paused and current_node_id(run.current_step, run.status) == node_id
-  end
-
-  defp runtime_retry_node?(%Run{} = run, step_state, node_id) do
-    run.status == :retrying and step_state.status == :failed and
-      current_node_id(run.current_step, run.status) == node_id
-  end
-
-  defp runtime_attempt(attempt) do
-    compact(%{
-      attempt_number: attempt.attempt_number,
-      status: attempt.status,
-      error: attempt.error
-    })
   end
 
   defp snapshot_nodes(%Snapshot{} = snapshot, definition, include_details?) do
@@ -371,30 +276,6 @@ defmodule SquidMesh.Runs.GraphInspection do
     Enum.filter(attempts, &(Map.get(&1, :status) == :claimed))
   end
 
-  defp runtime_current_node_ids(%Run{status: status}, _nodes, _fallback_current_node_id)
-       when status in @terminal_statuses do
-    []
-  end
-
-  defp runtime_current_node_ids(%Run{} = run, nodes, fallback_current_node_id) do
-    active_node_ids =
-      nodes
-      |> Enum.filter(&runtime_current_node?(run, &1))
-      |> Enum.map(& &1.id)
-
-    case active_node_ids do
-      [] -> List.wrap(fallback_current_node_id)
-      node_ids -> node_ids
-    end
-  end
-
-  defp runtime_current_node?(%Run{}, %Node{status: status})
-       when status in [:pending, :running, :retrying, :paused] do
-    true
-  end
-
-  defp runtime_current_node?(%Run{}, %Node{}), do: false
-
   defp mark_current_nodes(nodes, current_node_ids) do
     current_node_ids = MapSet.new(current_node_ids)
 
@@ -425,9 +306,6 @@ defmodule SquidMesh.Runs.GraphInspection do
     declared_ids ++ extra_ids
   end
 
-  defp runtime_step_id(nil), do: nil
-  defp runtime_step_id(step_state), do: normalize_id(step_state.step)
-
   defp snapshot_step_id(step_source) when is_map(step_source) do
     step_source
     |> Map.get(:step)
@@ -435,11 +313,6 @@ defmodule SquidMesh.Runs.GraphInspection do
   end
 
   defp snapshot_step_id(_step_source), do: nil
-
-  defp current_node_id(_step, status) when status in @terminal_statuses, do: nil
-  defp current_node_id(step, _status), do: normalize_id(step)
-
-  defp terminal_status?(status), do: status in @terminal_statuses
 
   defp load_definition(workflow) when is_atom(workflow) do
     case Definition.load(workflow) do
