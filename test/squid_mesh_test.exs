@@ -1228,17 +1228,15 @@ defmodule SquidMeshTest do
       end)
     end
 
-    test "ignores removed executor and stale timeout config keys" do
-      assert {:ok, config} =
+    test "rejects removed executor and stale timeout config keys" do
+      assert {:error, {:invalid_config, details}} =
                SquidMesh.config(
                  repo: SquidMesh.Test.Repo,
                  executor: IncompleteExecutor,
                  stale_step_timeout: 60_000
                )
 
-      assert config.repo == SquidMesh.Test.Repo
-      refute Map.has_key?(config, :executor)
-      refute Map.has_key?(config, :stale_step_timeout)
+      assert Enum.sort(details) == [executor: :removed, stale_step_timeout: :removed]
     end
   end
 
@@ -4509,7 +4507,7 @@ defmodule SquidMeshTest do
       refute inspect(reason) =~ "super-secret-token"
     end
 
-    test "journal runtime start ignores removed public options" do
+    test "journal runtime start rejects removed public options" do
       assert {:error, {:invalid_option, {:journal_storage, String}}} =
                SquidMesh.start_run(
                  PaymentRecoveryWorkflow,
@@ -4552,7 +4550,7 @@ defmodule SquidMeshTest do
                  run_id: "not-a-uuid"
                )
 
-      assert {:ok, _run} =
+      assert {:error, {:invalid_config, [stale_step_timeout: :removed]}} =
                SquidMesh.start_run(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
@@ -4561,7 +4559,7 @@ defmodule SquidMeshTest do
                  stale_step_timeout: 60_000
                )
 
-      assert {:ok, _run} =
+      assert {:error, {:invalid_config, [executor: :removed]}} =
                SquidMesh.start_run(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},

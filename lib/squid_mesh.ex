@@ -625,9 +625,21 @@ defmodule SquidMesh do
 
   defp validate_keyword_options(overrides) do
     if Keyword.keyword?(overrides) do
-      :ok
+      validate_removed_runtime_options(overrides)
     else
       {:error, {:invalid_option, {:opts, :invalid}}}
+    end
+  end
+
+  defp validate_removed_runtime_options(overrides) do
+    removed_keys =
+      overrides
+      |> Keyword.take([:executor, :stale_step_timeout])
+      |> Enum.map(fn {key, _value} -> {key, :removed} end)
+
+    case removed_keys do
+      [] -> :ok
+      keys -> {:error, {:invalid_config, keys}}
     end
   end
 
@@ -739,7 +751,9 @@ defmodule SquidMesh do
       :repo,
       :runtime,
       :read_model,
-      :journal_storage
+      :journal_storage,
+      :executor,
+      :stale_step_timeout
     ])
   end
 end
