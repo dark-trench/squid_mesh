@@ -421,7 +421,7 @@ config :squid_mesh,
   executor: MyApp.SquidMeshExecutor,
   runtime: :journal,
   read_model: :read_model,
-  journal_storage: {MyApp.JournalStorage, storage_opts},
+  journal_storage: {SquidMesh.Runtime.Journal.Storage.Ecto, repo: MyApp.Repo},
   queue: "default"
 ```
 
@@ -436,11 +436,14 @@ threading journal options through every boundary:
 
 The storage setting is intentionally adapter-shaped rather than database-shaped.
 Squid Mesh validates it through its own journal storage boundary and then
-delegates to `Jido.Storage`. Production adapters should provide ordered
-per-thread appends, optimistic conflict detection, and durable checkpoint reads;
-not every database can provide those properties without extra coordination. Use
-`Jido.Storage.ETS` only for tests and local demos because it is process-local and
-ephemeral.
+delegates to `Jido.Storage`. The built-in Ecto adapter is the recommended
+starting point for Postgres-compatible Ecto repos because it persists Jido
+threads and checkpoints in the host database through the Squid Mesh migration.
+Other Jido-compatible stores can be used, but production adapters should provide
+ordered per-thread appends, optimistic conflict detection, and durable
+checkpoint reads; not every database can provide those properties without extra
+coordination. Use `Jido.Storage.ETS` only for tests and local demos because it is
+process-local and ephemeral.
 
 ## Graph Inspection
 

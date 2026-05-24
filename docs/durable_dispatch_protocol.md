@@ -41,6 +41,52 @@ Jido-native runtime, projection read model, journal storage adapter, and queue a
 the Squid Mesh boundary so start, execution, inspection, and manual controls use
 the journal path without per-call runtime options.
 
+## Journal Runtime Support
+
+The journal runtime is built around append-only facts, rebuildable Jido agents,
+and optional checkpoints:
+
+- `SquidMesh.Runtime.WorkflowAgent` and `SquidMesh.Runtime.DispatchAgent` are
+  `Jido.Agent` modules whose state can be rebuilt from journal entries.
+- `SquidMesh.Runtime.Journal.Storage` is the Squid Mesh-owned boundary that
+  validates storage config before delegating to a `Jido.Storage` adapter.
+- Run threads record workflow lifecycle facts, planned runnables, applied
+  runnables, manual pauses or resolutions, and terminal state.
+- Dispatch threads record queue-visible facts, including scheduled attempts,
+  claims, heartbeats, completions, failures, and wakeup emissions.
+- Run-index threads keep workflow-scoped lookup projections rebuildable without
+  reading legacy runtime tables.
+- Checkpoints store compact projections at a covered thread revision. They are
+  rebuild accelerators; missing or stale checkpoints must not become the source
+  of truth.
+
+The Postgres-backed adapter,
+`SquidMesh.Runtime.Journal.Storage.Ecto`, persists Jido thread entries and
+checkpoints in Squid Mesh tables installed through the host migration. Appends
+lock the thread row, honor Jido's `:expected_rev` option, and assign stable
+per-thread sequence numbers before writing entries. The example host app smoke
+path now exercises `Squid -> journal runtime -> Jido agents -> Ecto/Postgres`
+and includes a checkpoint-loss recovery case that starts a journal run, deletes
+run and dispatch checkpoints, then inspects and completes the run from persisted
+thread entries.
+
+Important edge cases are intentionally handled in the runtime protocol:
+
+- stale claim completions and heartbeats are fenced by `claim_id` and
+  `claim_token_hash`
+- duplicate runnable scheduling is interpreted through runnable keys and
+  idempotency keys
+- concurrent appenders must use storage-level expected revisions or serialized
+  appends
+- corrupted persisted entry payloads are surfaced as invalid journal entries
+  instead of being replayed silently
+- terminal state is derived from the run thread, while dispatch projection state
+  remains explainable from the queue thread
+
+The current recovery smoke proves replay from persisted entries after checkpoint
+loss. A literal mid-run VM or OS-process restart remains a stronger follow-up
+for the switchover, especially once the journal runtime becomes the default.
+
 For production adapters, the required storage properties are:
 
 - ordered thread append with stable per-thread sequence numbers
@@ -54,11 +100,12 @@ That makes the desired shape adapter-based, not tied to one database. It does
 not mean every database is an equally good fit. A backend that cannot provide
 atomic per-thread append, deterministic ordering, conflict detection, and
 durable checkpoint reads would need extra coordination or should not be used as
-a production journal backend. The Postgres path should use a `jido_ecto` adapter
-when that adapter provides those properties. The Bedrock path should use a
-`jido_bedrock` adapter where Bedrock is available. Squid Mesh should not
-introduce a second persistence contract for those stores; adapters only need to
-satisfy the journal storage boundary.
+a production journal backend. The recommended Postgres path is
+`SquidMesh.Runtime.Journal.Storage.Ecto`, which satisfies the Jido storage
+callbacks through the host repo and Squid Mesh journal tables. The Bedrock path
+should use a Jido-compatible adapter where Bedrock is available. Squid Mesh
+should not introduce a second persistence contract for those stores; adapters
+only need to satisfy the journal storage boundary.
 
 ## Commit Order
 

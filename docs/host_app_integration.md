@@ -70,7 +70,7 @@ config :squid_mesh,
   executor: MyApp.SquidMeshExecutor,
   runtime: :journal,
   read_model: :read_model,
-  journal_storage: {MyApp.JournalStorage, storage_opts},
+  journal_storage: {SquidMesh.Runtime.Journal.Storage.Ecto, repo: MyApp.Repo},
   queue: "default"
 
 config :my_app, MyApp.SquidMeshExecutor,
@@ -97,6 +97,15 @@ Optional keys:
   Squid Mesh's storage boundary
 - `:queue` - `"default"` by default; selects the journal dispatch queue used by
   the configured journal runtime and read model
+
+For most host apps, start with
+`{SquidMesh.Runtime.Journal.Storage.Ecto, repo: MyApp.Repo}` when `MyApp.Repo`
+uses Postgres or a Postgres-compatible Ecto adapter. It persists Jido threads
+and checkpoints in Squid Mesh's installed tables and keeps journal storage in
+the same transactional database boundary as the host app. The boundary remains
+adapter-shaped, so other Jido-compatible stores can be used later, but
+production stores must still provide ordered per-thread appends, durable
+checkpoint reads, and conflict detection for `:expected_rev`.
 
 ## Executor Contract
 

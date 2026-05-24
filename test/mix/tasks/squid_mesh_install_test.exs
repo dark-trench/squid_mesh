@@ -45,6 +45,9 @@ defmodule Mix.Tasks.SquidMesh.InstallTest do
     assert migration_body =~ "add :resume, :map"
     assert migration_body =~ "add :manual, :map"
     assert migration_body =~ "create table(:squid_mesh_step_attempts"
+    assert migration_body =~ "create table(:squid_mesh_journal_threads"
+    assert migration_body =~ "create table(:squid_mesh_journal_entries"
+    assert migration_body =~ "create table(:squid_mesh_journal_checkpoints"
   end
 
   test "skips the current-schema migration when it already exists", %{tmp_dir: tmp_dir} do
