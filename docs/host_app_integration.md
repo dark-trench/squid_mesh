@@ -57,8 +57,9 @@ migrations for the host application's job backend.
 
 Start with three pieces:
 
-1. Squid Mesh config points at the host repo and executor.
-2. The executor config owns the queue name.
+1. Squid Mesh config points at the host repo, executor, and runtime boundary.
+2. The executor config owns the legacy host queue name; the journal runtime owns
+   its dispatch queue through Squid Mesh config.
 3. The host job calls `SquidMesh.Runtime.Runner.perform/1`.
 
 The host application configures Squid Mesh under the `:squid_mesh` application:
@@ -66,7 +67,11 @@ The host application configures Squid Mesh under the `:squid_mesh` application:
 ```elixir
 config :squid_mesh,
   repo: MyApp.Repo,
-  executor: MyApp.SquidMeshExecutor
+  executor: MyApp.SquidMeshExecutor,
+  runtime: :journal,
+  read_model: :read_model,
+  journal_storage: {MyApp.JournalStorage, storage_opts},
+  queue: "default"
 
 config :my_app, MyApp.SquidMeshExecutor,
   queue: :squid_mesh
@@ -82,12 +87,22 @@ Optional keys:
 - `:stale_step_timeout` - `:disabled` by default; set a non-negative
   millisecond timeout to let redelivered jobs reclaim stale `running` steps
   after worker interruption
+- `:runtime` - `:runtime_tables` by default; set `:journal` to route public
+  start, execution, and manual-control APIs through the Jido-native journal
+  runtime
+- `:read_model` - `:runtime_tables` by default; set `:read_model` to route
+  inspection, graph inspection, and explanation through journal projections
+- `:journal_storage` - required when `:runtime` is `:journal` or `:read_model`
+  is `:read_model`; this is a `Jido.Storage` adapter config validated through
+  Squid Mesh's storage boundary
+- `:queue` - `"default"` by default; selects the journal dispatch queue used by
+  the configured journal runtime and read model
 
 ## Executor Contract
 
-The host executor is the only queue boundary Squid Mesh calls. Copy this module,
-replace `MyApp.JobQueue.enqueue/1` with the host app's job backend, and keep the
-queued job generic:
+For the runtime-table path, the host executor is the queue boundary Squid Mesh
+calls. Copy this module, replace `MyApp.JobQueue.enqueue/1` with the host app's
+job backend, and keep the queued job generic:
 
 ```elixir
 defmodule MyApp.SquidMeshExecutor do

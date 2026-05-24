@@ -145,24 +145,32 @@ defmodule MinimalHostApp.Smoke do
       attempt_id: "attempt_journal_demo"
     }
 
-    with {:ok, started_run} <-
-           SquidMesh.start_run(
-             MinimalHostApp.Workflows.DependencyRecovery,
-             :dependency_recovery,
-             attrs,
-             journal_executor_start_options()
+    with_journal_runtime_config(fn ->
+      with {:ok, started_run} <-
+             SquidMesh.start_run(
+               MinimalHostApp.Workflows.DependencyRecovery,
+               :dependency_recovery,
+             attrs
            ),
          {:ok, inspected_run} <-
-           drain_journal_executor(started_run.run_id, @journal_executor_attempts) do
+           drain_journal_executor(started_run.run_id, @journal_executor_attempts),
+         {:ok, explanation} <- SquidMesh.explain_run(started_run.run_id) do
+      unless started_run.queue == @journal_executor_queue and
+               inspected_run.queue == @journal_executor_queue and
+               explanation.queue == @journal_executor_queue do
+        raise "unexpected journal executor queue"
+      end
+
       unless inspected_run.status == :completed do
         raise "unexpected journal executor smoke result"
       end
 
-      inspected_run
-    else
-      {:error, reason} ->
-        raise "journal executor smoke test failed: #{inspect(reason)}"
-    end
+        inspected_run
+      else
+        {:error, reason} ->
+          raise "journal executor smoke test failed: #{inspect(reason)}"
+      end
+    end)
   end
 
   @spec run_cancellation!() :: SquidMesh.Run.t()
@@ -401,7 +409,7 @@ defmodule MinimalHostApp.Smoke do
   defp drain_journal_executor(_run_id, 0), do: {:error, :timeout}
 
   defp drain_journal_executor(run_id, attempts_remaining) when attempts_remaining > 0 do
-    case SquidMesh.inspect_run(run_id, journal_executor_inspect_options()) do
+    case SquidMesh.inspect_run(run_id) do
       {:ok, %SquidMesh.ReadModel.Inspection.Snapshot{terminal?: true} = run} ->
         {:ok, run}
 
@@ -426,29 +434,32 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
-  defp journal_executor_start_options do
-    [
-      runtime: :journal,
-      journal_storage: @journal_executor_storage,
-      queue: @journal_executor_queue
-    ]
-  end
-
   defp journal_executor_execute_options do
     [
-      runtime: :journal,
-      journal_storage: @journal_executor_storage,
-      queue: @journal_executor_queue,
       owner_id: "minimal-host-app-smoke"
     ]
   end
 
-  defp journal_executor_inspect_options do
-    [
-      read_model: :read_model,
-      journal_storage: @journal_executor_storage,
-      queue: @journal_executor_queue
-    ]
+  defp with_journal_runtime_config(fun) when is_function(fun, 0) do
+    original_config = Application.get_all_env(:squid_mesh)
+
+    try do
+      Application.put_env(:squid_mesh, :runtime, :journal)
+      Application.put_env(:squid_mesh, :read_model, :read_model)
+      Application.put_env(:squid_mesh, :journal_storage, @journal_executor_storage)
+      Application.put_env(:squid_mesh, :queue, @journal_executor_queue)
+
+      fun.()
+    after
+      :squid_mesh
+      |> Application.get_all_env()
+      |> Keyword.keys()
+      |> Enum.each(&Application.delete_env(:squid_mesh, &1))
+
+      Enum.each(original_config, fn {key, value} ->
+        Application.put_env(:squid_mesh, key, value)
+      end)
+    end
   end
 
   @spec ensure_manual_approval_audit(SquidMesh.Run.t()) ::
