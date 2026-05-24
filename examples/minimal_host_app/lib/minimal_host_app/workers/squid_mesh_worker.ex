@@ -12,10 +12,6 @@ defmodule MinimalHostApp.Workers.SquidMeshWorker do
     Runner.perform(args)
   end
 
-  def perform(%Oban.Job{args: %{"kind" => kind}}) when kind in ["step", "compensation"] do
-    {:error, {:unsupported_journal_worker_payload, kind}}
-  end
-
   def perform(%Oban.Job{args: args}) do
     {:error, {:invalid_squid_mesh_payload, args}}
   end
