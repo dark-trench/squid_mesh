@@ -35,7 +35,6 @@ itself.
 - Do not configure `:executor` for step execution.
 - Do not configure `:stale_step_timeout`.
 - Do not use or document `:runtime_tables`.
-- Do not reintroduce legacy run, step, or attempt tables as runtime authority.
 - Do not deliver step or compensation payloads through
   `SquidMesh.Runtime.Runner.perform/2`.
 - Do not make workflow modules depend on Bedrock, Oban, or another backend's

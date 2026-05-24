@@ -65,9 +65,6 @@ inside host applications.
 - Execute visible work through `SquidMesh.execute_next/1`.
 - Keep workflow modules backend-neutral; Bedrock, Oban, or another backend
   belongs behind host adapter modules.
-- Do not reintroduce runtime-table execution, legacy run/step/attempt tables as
-  runtime authority, `:runtime_tables`, `:executor` step execution config, or
-  `:stale_step_timeout`.
 - Cron activation may use `SquidMesh.Executor.Payload.cron/3` delivered through
   `SquidMesh.Runtime.Runner.perform/2`; step and compensation payloads are not
   part of the current runner boundary.
