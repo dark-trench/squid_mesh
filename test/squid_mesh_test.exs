@@ -929,7 +929,11 @@ defmodule SquidMeshTest do
       end
 
       step :wait_for_approval, :pause
-      step :record_delivery, :log, message: "delivery recorded", level: :info
+
+      step :record_delivery, :log,
+        message: "delivery recorded",
+        level: :info,
+        input: [account_id: [:account_id]]
 
       transition :wait_for_approval, on: :ok, to: :record_delivery
       transition :record_delivery, on: :ok, to: :complete
@@ -2734,6 +2738,350 @@ defmodule SquidMeshTest do
                  metadata: %{output: %{}, target: "record_delivery"}
                }
              } = List.last(run_entries)
+    end
+
+    test "journal runtime resumes built-in pause steps through durable manual resolution" do
+      run_id = Ecto.UUID.generate()
+      resumed_at = DateTime.add(@read_model_visible_at, 1, :second)
+      resumed_at_iso = DateTime.to_iso8601(resumed_at)
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 PauseWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert [%{step: "wait_for_approval", status: :available}] = snapshot.visible_attempts
+
+      assert {:ok, %Snapshot{status: :paused}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-pause-resolution-test",
+                 claim_id: "claim_pause_resolution",
+                 claim_token: "token_pause_resolution",
+                 now: @read_model_visible_at,
+                 finished_at: @read_model_visible_at
+               )
+
+      assert {:ok, %Snapshot{} = resumed_snapshot} =
+               SquidMesh.unblock_run(
+                 run_id,
+                 %{actor: "ops_123", comment: "resume requested"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: resumed_at
+               )
+
+      assert resumed_snapshot.status == :running
+      assert resumed_snapshot.reason == :attempt_visible
+      assert resumed_snapshot.manual_state == nil
+      assert resumed_snapshot.pending_dispatches == []
+
+      assert [
+               %{step: "record_delivery", status: :available, input: %{account_id: "acct_123"}}
+             ] = resumed_snapshot.visible_attempts
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
+               SquidMesh.inspect_run_graph(run_id,
+                 read_model: :read_model,
+                 include_history: true,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: resumed_at
+               )
+
+      graph_nodes = Map.new(graph.nodes, &{&1.id, &1})
+
+      assert graph.current_node_id == "record_delivery"
+      assert graph.current_node_ids == ["record_delivery"]
+      assert graph_nodes["wait_for_approval"].status == :completed
+      assert graph_nodes["wait_for_approval"].manual_state == nil
+      assert graph_nodes["record_delivery"].status == :pending
+      assert graph_nodes["record_delivery"].current?
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :manual_step_paused,
+               :manual_step_resolved,
+               :runnables_planned
+             ]
+
+      assert %{
+               type: :manual_step_resolved,
+               data: %{
+                 step: "wait_for_approval",
+                 action: "resumed",
+                 result: %{},
+                 metadata: %{
+                   "event" => "resumed",
+                   "actor" => "ops_123",
+                   "comment" => "resume requested",
+                   "at" => ^resumed_at_iso
+                 }
+               }
+             } = Enum.at(run_entries, 4)
+
+      assert {:ok, %Snapshot{} = replayed_resume_snapshot} =
+               SquidMesh.unblock_run(
+                 run_id,
+                 %{actor: "ops_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: resumed_at
+               )
+
+      assert [
+               %{step: "record_delivery", status: :available, input: %{account_id: "acct_123"}}
+             ] = replayed_resume_snapshot.visible_attempts
+
+      assert {:ok, %Snapshot{} = completed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-pause-resolution-test",
+                 claim_id: "claim_record_delivery",
+                 claim_token: "token_record_delivery",
+                 now: resumed_at,
+                 finished_at: resumed_at
+               )
+
+      assert completed_snapshot.status == :completed
+      assert completed_snapshot.terminal?
+
+      assert {:ok, replayed_run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert Enum.count(replayed_run_entries, &(&1.type == :manual_step_resolved)) == 1
+    end
+
+    test "journal runtime returns structured errors for invalid pause resume requests" do
+      assert {:error, {:invalid_option, {:runtime_tables, [:journal_storage]}}} =
+               SquidMesh.unblock_run(Ecto.UUID.generate(),
+                 journal_storage: @read_model_storage
+               )
+
+      assert {:error, {:invalid_option, {:runtime_tables, [:journal_storage]}}} =
+               SquidMesh.unblock_run(Ecto.UUID.generate(), %{},
+                 journal_storage: @read_model_storage
+               )
+
+      assert {:error, :invalid_run_id} =
+               SquidMesh.unblock_run(
+                 "not-a-uuid",
+                 %{},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert {:error, :not_found} =
+               SquidMesh.unblock_run(
+                 Ecto.UUID.generate(),
+                 %{},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      run_id = Ecto.UUID.generate()
+
+      assert {:ok, %Snapshot{}} =
+               SquidMesh.start_run(
+                 PauseWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert {:ok, %Snapshot{status: :paused}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-invalid-pause-resolution-test",
+                 now: @read_model_visible_at,
+                 finished_at: @read_model_visible_at
+               )
+
+      assert {:error, {:invalid_resume, %{actor: :invalid}}} =
+               SquidMesh.unblock_run(
+                 run_id,
+                 %{actor: ""},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      refute Enum.any?(run_entries, &(&1.type == :manual_step_resolved))
+    end
+
+    test "journal runtime rejects approval controls while decision semantics remain unsupported" do
+      assert {:error, {:unsupported_journal_control, :approval}} =
+               SquidMesh.approve_run(Ecto.UUID.generate(), %{},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage
+               )
+
+      assert {:error, {:unsupported_journal_control, :rejection}} =
+               SquidMesh.reject_run(Ecto.UUID.generate(), %{},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage
+               )
+
+      assert {:error, {:invalid_option, {:runtime_tables, [:journal_storage]}}} =
+               SquidMesh.approve_run(Ecto.UUID.generate(), %{},
+                 journal_storage: @read_model_storage
+               )
+    end
+
+    test "journal runtime resumes pending dispatch after manual resolution was already committed" do
+      run_id = Ecto.UUID.generate()
+      resumed_at = DateTime.add(@read_model_visible_at, 1, :second)
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 PauseWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert [%{step: "wait_for_approval"}] = snapshot.visible_attempts
+
+      assert {:ok, %Snapshot{status: :paused}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-pause-resolution-crash-test",
+                 claim_id: "claim_pause_resolution_crash",
+                 claim_token: "token_pause_resolution_crash",
+                 now: @read_model_visible_at,
+                 finished_at: @read_model_visible_at
+               )
+
+      successor_runnable = %{
+        run_id: run_id,
+        runnable_key: "#{run_id}:record_delivery:1",
+        idempotency_key: "#{run_id}:record_delivery:1",
+        attempt_number: 1,
+        queue: @read_model_queue,
+        step: "record_delivery",
+        input: %{account_id: "acct_123"},
+        visible_at: resumed_at
+      }
+
+      append_read_model_run_entries([
+        read_model_entry!(:manual_step_resolved, %{
+          run_id: run_id,
+          step: "wait_for_approval",
+          action: "resumed",
+          result: %{},
+          metadata: %{"event" => "resumed", "at" => DateTime.to_iso8601(resumed_at)},
+          occurred_at: resumed_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [successor_runnable],
+          occurred_at: resumed_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = resumed_snapshot} =
+               SquidMesh.unblock_run(
+                 run_id,
+                 %{actor: "ops_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: resumed_at
+               )
+
+      assert resumed_snapshot.status == :running
+      assert resumed_snapshot.reason == :attempt_visible
+
+      assert [
+               %{step: "record_delivery", status: :available, input: %{account_id: "acct_123"}}
+             ] = resumed_snapshot.visible_attempts
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert Enum.count(run_entries, &(&1.type == :manual_step_resolved)) == 1
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.count(dispatch_entries, &(&1.type == :attempt_scheduled)) == 2
+    end
+
+    test "journal runtime does not resolve manual pause after terminal transition" do
+      run_id = Ecto.UUID.generate()
+      terminal_at = DateTime.add(@read_model_visible_at, 1, :second)
+
+      assert {:ok, %Snapshot{}} =
+               SquidMesh.start_run(
+                 PauseWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert {:ok, %Snapshot{status: :paused}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-terminal-pause-resolution-test",
+                 now: @read_model_visible_at,
+                 finished_at: @read_model_visible_at
+               )
+
+      append_read_model_run_entries([
+        read_model_entry!(:run_terminal, %{
+          run_id: run_id,
+          status: :cancelled,
+          occurred_at: terminal_at
+        })
+      ])
+
+      assert {:error, {:invalid_transition, :cancelled, :running}} =
+               SquidMesh.unblock_run(
+                 run_id,
+                 %{actor: "ops_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: terminal_at
+               )
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      refute Enum.any?(run_entries, &(&1.type == :manual_step_resolved))
     end
 
     test "journal runtime recovers built-in pause manual state after dispatch completion" do
