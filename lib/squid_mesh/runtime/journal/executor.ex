@@ -38,6 +38,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
            | {:claim_id, term()}
            | {:claim_token, term()}
            | {:test_after_claim, term()}
+           | {:test_after_transaction_step, term()}
            | {:option, atom()}}
           | Definition.load_error()
           | {:unknown_step, atom()}
@@ -166,13 +167,17 @@ defmodule SquidMesh.Runtime.Journal.Executor do
         finished_at = lifecycle_time(opts, claim_now)
         runtime = %{storage: storage, queue: queue, now: finished_at}
 
-        case run_step(storage, step, attempt.input, context) do
-          {:ok, output, execution_opts} ->
-            complete_attempt(runtime, claim, definition, step_name, output, execution_opts)
-
-          {:error, reason} ->
-            fail_attempt(runtime, claim, workflow, definition, step_name, reason)
-        end
+        execute_step_and_record(%{
+          storage: storage,
+          runtime: runtime,
+          claim: claim,
+          workflow: workflow,
+          definition: definition,
+          step_name: step_name,
+          step: step,
+          context: context,
+          opts: opts
+        })
 
       {:error, reason} ->
         finished_at = lifecycle_time(opts, claim_now)
@@ -1876,38 +1881,121 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     end
   end
 
-  @spec run_step(map(), map(), map()) :: {:ok, map(), keyword()} | {:error, term()}
-  defp run_step(
-         %{adapter: SquidMesh.Runtime.Journal.Storage.Ecto, opts: opts},
-         %{opts: step_opts} = step,
-         input,
-         context
+  defp execute_step_and_record(
+         %{
+           storage: %{adapter: SquidMesh.Runtime.Journal.Storage.Ecto, opts: storage_opts},
+           step: %{opts: step_opts}
+         } = execution
+       )
+       when is_list(storage_opts) and is_list(step_opts) do
+    case Keyword.get(step_opts, :transaction) do
+      :repo ->
+        run_repo_transaction_attempt(Keyword.fetch!(storage_opts, :repo), execution)
+
+      _other ->
+        run_step_and_record(execution)
+    end
+  end
+
+  defp execute_step_and_record(
+         %{
+           runtime: runtime,
+           claim: claim,
+           workflow: workflow,
+           definition: definition,
+           step_name: step_name,
+           step: %{opts: step_opts}
+         } = execution
        )
        when is_list(step_opts) do
     case Keyword.get(step_opts, :transaction) do
-      :repo -> run_repo_transaction_step(Keyword.fetch!(opts, :repo), step, input, context)
-      _other -> run_step(step, input, context)
+      :repo ->
+        fail_attempt(
+          runtime,
+          claim,
+          workflow,
+          definition,
+          step_name,
+          repo_transaction_storage_error()
+        )
+
+      _other ->
+        run_step_and_record(execution)
     end
   end
 
-  defp run_step(_storage, step, input, context) do
-    run_step(step, input, context)
+  defp run_step_and_record(%{
+         runtime: runtime,
+         claim: claim,
+         workflow: workflow,
+         definition: definition,
+         step_name: step_name,
+         step: step,
+         context: context
+       }) do
+    case run_step(step, claim.attempt.input, context) do
+      {:ok, output, execution_opts} ->
+        complete_attempt(runtime, claim, definition, step_name, output, execution_opts)
+
+      {:error, reason} ->
+        fail_attempt(runtime, claim, workflow, definition, step_name, reason)
+    end
   end
 
-  defp run_repo_transaction_step(repo, step, input, context) do
+  defp run_repo_transaction_attempt(repo, execution) do
     case repo.transaction(fn ->
-           run_or_rollback_transactional_step(repo, step, input, context)
+           run_transactional_step_and_record(repo, execution)
          end) do
-      {:ok, result} -> result
-      {:error, {:squid_mesh_step_error, reason}} -> {:error, reason}
-      {:error, reason} -> {:error, reason}
+      {:ok, snapshot} ->
+        {:ok, snapshot}
+
+      {:error, {:squid_mesh_step_error, reason}} ->
+        fail_attempt(
+          execution.runtime,
+          execution.claim,
+          execution.workflow,
+          execution.definition,
+          execution.step_name,
+          reason
+        )
+
+      {:error, {:squid_mesh_transaction_completion_failed, reason}} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  defp run_or_rollback_transactional_step(repo, step, input, context) do
-    case run_transactional_step(step, input, context) do
-      {:ok, _output, _execution_opts} = result -> result
-      {:error, reason} -> repo.rollback({:squid_mesh_step_error, reason})
+  defp run_transactional_step_and_record(repo, execution) do
+    case run_transactional_step(
+           execution.step,
+           execution.claim.attempt.input,
+           execution.context
+         ) do
+      {:ok, output, execution_opts} ->
+        complete_transactional_attempt(repo, execution, output, execution_opts)
+
+      {:error, reason} ->
+        repo.rollback({:squid_mesh_step_error, reason})
+    end
+  end
+
+  defp complete_transactional_attempt(repo, execution, output, execution_opts) do
+    with :ok <- run_test_after_transaction_step_hook(execution.opts, execution.claim.attempt),
+         {:ok, snapshot} <-
+           complete_attempt(
+             execution.runtime,
+             execution.claim,
+             execution.definition,
+             execution.step_name,
+             output,
+             execution_opts
+           ) do
+      snapshot
+    else
+      {:error, reason} ->
+        repo.rollback({:squid_mesh_transaction_completion_failed, reason})
     end
   end
 
@@ -1921,6 +2009,14 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          retryable?: false
        }}
     end
+  end
+
+  defp repo_transaction_storage_error do
+    %{
+      message: "repo transaction steps require Ecto journal storage",
+      retryable?: false,
+      code: "unsupported_repo_transaction_storage"
+    }
   end
 
   defp run_step(%{module: :wait, opts: opts}, _input, _context) when is_list(opts) do
@@ -2053,25 +2149,45 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   defp safe_error_message(_message), do: "step execution failed"
 
   defp execute_options(opts) when is_list(opts) do
-    cond do
-      not Keyword.keyword?(opts) ->
-        {:error, {:invalid_option, {:opts, :invalid}}}
-
-      unsupported = Enum.find(Keyword.keys(opts), &(&1 not in supported_options())) ->
-        {:error, {:invalid_option, {:option, unsupported}}}
-
-      Keyword.has_key?(opts, :finished_at) and not match?(%DateTime{}, opts[:finished_at]) ->
-        invalid_option(:finished_at)
-
-      Keyword.has_key?(opts, :test_after_claim) and not is_function(opts[:test_after_claim], 1) ->
-        invalid_option(:test_after_claim)
-
-      Keyword.get(opts, :runtime) != :journal ->
-        invalid_option(:runtime)
-
-      true ->
-        {:ok, opts}
+    with :ok <- validate_keyword_options(opts),
+         :ok <- validate_supported_options(opts),
+         :ok <- validate_finished_at_option(opts),
+         :ok <- validate_test_hook_option(opts, :test_after_claim),
+         :ok <- validate_test_hook_option(opts, :test_after_transaction_step),
+         :ok <- validate_runtime_option(opts) do
+      {:ok, opts}
     end
+  end
+
+  defp validate_keyword_options(opts) do
+    if Keyword.keyword?(opts), do: :ok, else: {:error, {:invalid_option, {:opts, :invalid}}}
+  end
+
+  defp validate_supported_options(opts) do
+    case Enum.find(Keyword.keys(opts), &(&1 not in supported_options())) do
+      nil -> :ok
+      unsupported -> {:error, {:invalid_option, {:option, unsupported}}}
+    end
+  end
+
+  defp validate_finished_at_option(opts) do
+    if Keyword.has_key?(opts, :finished_at) and not match?(%DateTime{}, opts[:finished_at]) do
+      invalid_option(:finished_at)
+    else
+      :ok
+    end
+  end
+
+  defp validate_test_hook_option(opts, option) do
+    if Keyword.has_key?(opts, option) and not is_function(opts[option], 1) do
+      invalid_option(option)
+    else
+      :ok
+    end
+  end
+
+  defp validate_runtime_option(opts) do
+    if Keyword.get(opts, :runtime) == :journal, do: :ok, else: invalid_option(:runtime)
   end
 
   defp supported_options do
@@ -2085,7 +2201,8 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       :lease_for,
       :now,
       :finished_at,
-      :test_after_claim
+      :test_after_claim,
+      :test_after_transaction_step
     ]
   end
 
@@ -2093,6 +2210,20 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     case Keyword.get(opts, :test_after_claim) do
       nil -> :ok
       hook when is_function(hook, 1) -> hook.(attempt)
+    end
+  end
+
+  defp run_test_after_transaction_step_hook(opts, %ActionAttempt{} = attempt) do
+    case Keyword.get(opts, :test_after_transaction_step) do
+      nil ->
+        :ok
+
+      hook when is_function(hook, 1) ->
+        case hook.(attempt) do
+          :ok -> :ok
+          {:error, reason} -> {:error, {:test_after_transaction_step, reason}}
+          other -> {:error, {:test_after_transaction_step, other}}
+        end
     end
   end
 

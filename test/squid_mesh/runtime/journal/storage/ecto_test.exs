@@ -115,7 +115,7 @@ defmodule SquidMesh.Runtime.Journal.Storage.EctoTest do
              @storage_adapter.load_thread(@thread_id, repo: Repo)
   end
 
-  test "reloads persisted entries that contain atom metadata not loaded by the current VM" do
+  test "fails closed when a persisted entry would create a new atom" do
     now = DateTime.utc_now(:microsecond)
     insert_thread!(rev: 1, now: now)
 
@@ -142,26 +142,65 @@ defmodule SquidMesh.Runtime.Journal.Storage.EctoTest do
       }
     ])
 
-    assert {:ok, %{entries: [%Entry{kind: :attempt_scheduled, refs: refs}]}} =
+    assert {:error, {:invalid_journal_entry, 0, _reason}} =
              @storage_adapter.load_thread(@thread_id, repo: Repo)
 
-    assert Map.has_key?(refs, String.to_existing_atom(unknown_atom_name))
+    assert_raise ArgumentError, fn -> String.to_existing_atom(unknown_atom_name) end
+  end
+
+  test "fails closed when a versioned persisted entry would create a new atom" do
+    now = DateTime.utc_now(:microsecond)
+    insert_thread!(rev: 1, now: now)
+
+    unknown_atom_name = unknown_atom_name()
+
+    Repo.insert_all(JournalEntry, [
+      %{
+        id: Ecto.UUID.generate(),
+        thread_id: @thread_id,
+        seq: 0,
+        entry: versioned_binary({:atom, unknown_atom_name}),
+        inserted_at: now,
+        updated_at: now
+      }
+    ])
+
+    assert {:error, {:invalid_journal_entry, 0, {:unknown_atom, ^unknown_atom_name}}} =
+             @storage_adapter.load_thread(@thread_id, repo: Repo)
+
+    assert_raise ArgumentError, fn -> String.to_existing_atom(unknown_atom_name) end
   end
 
   test "fails closed when thread rev diverges from persisted entries" do
-    now = DateTime.utc_now(:microsecond)
-    insert_thread!(rev: 2, now: now)
-    insert_entry!(entry(:attempt_scheduled), seq: 0, now: now)
+    assert {:ok, %{rev: 1}} =
+             @storage_adapter.append_thread(@thread_id, [entry(:attempt_scheduled)], repo: Repo)
+
+    Repo.update_all(
+      from(thread in JournalThread, where: thread.id == ^@thread_id),
+      set: [rev: 2]
+    )
 
     assert {:error, {:invalid_journal_thread, @thread_id, {:rev_mismatch, 2, 1}}} =
              @storage_adapter.load_thread(@thread_id, repo: Repo)
   end
 
   test "fails closed when persisted entry sequences are not contiguous" do
-    now = DateTime.utc_now(:microsecond)
-    insert_thread!(rev: 2, now: now)
-    insert_entry!(entry(:attempt_scheduled), seq: 0, now: now)
-    insert_entry!(entry(:attempt_claimed), seq: 2, now: now)
+    assert {:ok, %{rev: 3}} =
+             @storage_adapter.append_thread(
+               @thread_id,
+               [entry(:attempt_scheduled), entry(:attempt_claimed), entry(:attempt_completed)],
+               repo: Repo
+             )
+
+    Repo.delete_all(
+      from(entry in JournalEntry, where: entry.thread_id == ^@thread_id and entry.seq == 1),
+      []
+    )
+
+    Repo.update_all(
+      from(thread in JournalThread, where: thread.id == ^@thread_id),
+      set: [rev: 2]
+    )
 
     assert {:error, {:invalid_journal_thread, @thread_id, {:seq_gap, [0, 2]}}} =
              @storage_adapter.load_thread(@thread_id, repo: Repo)
@@ -181,6 +220,36 @@ defmodule SquidMesh.Runtime.Journal.Storage.EctoTest do
 
     assert :ok = @storage_adapter.delete_checkpoint(key, repo: Repo)
     assert :not_found = @storage_adapter.get_checkpoint(key, repo: Repo)
+  end
+
+  test "fails closed when checkpoint payload is not a versioned journal term" do
+    key = {"squid_mesh", :checkpoint, @thread_id}
+
+    assert :ok = @storage_adapter.put_checkpoint(key, %{thread_rev: 1}, repo: Repo)
+
+    Repo.update_all(
+      from(checkpoint in JournalCheckpoint),
+      set: [checkpoint: :erlang.term_to_binary(%{unexpected: :shape})]
+    )
+
+    assert {:error, :invalid_encoded_term} = @storage_adapter.get_checkpoint(key, repo: Repo)
+  end
+
+  test "fails closed when a versioned checkpoint contains an unknown atom" do
+    key = {"squid_mesh", :checkpoint, @thread_id}
+    unknown_atom_name = unknown_atom_name()
+
+    assert :ok = @storage_adapter.put_checkpoint(key, %{thread_rev: 1}, repo: Repo)
+
+    Repo.update_all(
+      from(checkpoint in JournalCheckpoint),
+      set: [checkpoint: versioned_binary({:atom, unknown_atom_name})]
+    )
+
+    assert {:error, {:unknown_atom, ^unknown_atom_name}} =
+             @storage_adapter.get_checkpoint(key, repo: Repo)
+
+    assert_raise ArgumentError, fn -> String.to_existing_atom(unknown_atom_name) end
   end
 
   test "integrates with the Squid Mesh journal boundary" do
@@ -246,26 +315,13 @@ defmodule SquidMesh.Runtime.Journal.Storage.EctoTest do
     ])
   end
 
-  defp insert_entry!(%Entry{} = entry, opts) do
-    now = Keyword.fetch!(opts, :now)
-    seq = Keyword.fetch!(opts, :seq)
-    entry = %Entry{entry | seq: seq, id: "entry_#{seq}"}
-
-    Repo.insert_all(JournalEntry, [
-      %{
-        id: Ecto.UUID.generate(),
-        thread_id: @thread_id,
-        seq: seq,
-        entry: :erlang.term_to_binary(entry),
-        inserted_at: now,
-        updated_at: now
-      }
-    ])
-  end
-
   defp unknown_atom_name do
     unique = Integer.to_string(System.unique_integer([:positive]), 36)
 
     "zz_" <> String.pad_trailing(unique, 14, "x")
+  end
+
+  defp versioned_binary(encoded_value) do
+    :erlang.term_to_binary({:squid_mesh_ecto_term_v1, encoded_value})
   end
 end

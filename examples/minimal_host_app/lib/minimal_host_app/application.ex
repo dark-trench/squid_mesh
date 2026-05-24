@@ -21,7 +21,8 @@ defmodule MinimalHostApp.Application do
   defp default_children do
     [
       MinimalHostApp.Repo,
-      {Oban, Application.fetch_env!(:minimal_host_app, Oban)}
+      {Oban, Application.fetch_env!(:minimal_host_app, Oban)},
+      MinimalHostApp.JournalExecutor
     ]
   end
 end

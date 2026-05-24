@@ -84,6 +84,48 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule RepoTransactionWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :repo_transaction do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :record_event, RepoTransactionWorkflow.RecordEvent, transaction: :repo
+      transition :record_event, on: :ok, to: :complete
+    end
+  end
+
+  defmodule RepoTransactionWorkflow.RecordEvent do
+    use SquidMesh.Step,
+      name: :record_event,
+      description: "Records one transactional event",
+      input_schema: [account_id: [type: :string, required: true]],
+      output_schema: [event: [type: :string, required: true]]
+
+    @impl SquidMesh.Step
+    def run(%{account_id: account_id}, %SquidMesh.Step.Context{run_id: run_id}) do
+      now = NaiveDateTime.utc_now(:second)
+
+      SquidMesh.Test.Repo.insert_all("transactional_events", [
+        %{
+          run_id: Ecto.UUID.dump!(run_id),
+          account_id: account_id,
+          event: "recorded",
+          inserted_at: now,
+          updated_at: now
+        }
+      ])
+
+      {:ok, %{event: "recorded"}}
+    end
+  end
+
   defmodule JournalConditionalWorkflow do
     use SquidMesh.Workflow
 
@@ -4790,6 +4832,89 @@ defmodule SquidMeshTest do
              ]
     end
 
+    test "execute_next/1 rolls back repo transaction writes when journal completion aborts" do
+      Repo.delete_all("transactional_events")
+
+      queue = "repo-transaction-#{System.unique_integer([:positive])}"
+      storage = {SquidMesh.Runtime.Journal.Storage.Ecto, repo: Repo}
+
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 RepoTransactionWorkflow,
+                 :repo_transaction,
+                 %{account_id: "acct_repo_txn"},
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 now: @read_model_started_at
+               )
+
+      test_after_transaction_step = fn %{run_id: run_id} ->
+        assert run_id == started_snapshot.run_id
+        {:error, :simulated_crash}
+      end
+
+      assert {:error, {:test_after_transaction_step, :simulated_crash}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 owner_id: "repo-txn-worker",
+                 lease_for: 1,
+                 now: @read_model_visible_at,
+                 test_after_transaction_step: test_after_transaction_step
+               )
+
+      assert transactional_events(started_snapshot.run_id) == []
+
+      assert {:ok, %Snapshot{} = completed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 owner_id: "repo-txn-worker-retry",
+                 now: DateTime.add(@read_model_visible_at, 2, :second)
+               )
+
+      assert completed_snapshot.run_id == started_snapshot.run_id
+      assert completed_snapshot.status == :completed
+      assert transactional_events(started_snapshot.run_id) == ["recorded"]
+    end
+
+    test "execute_next/1 fails repo transaction steps closed for non-Ecto journal storage" do
+      Repo.delete_all("transactional_events")
+
+      queue = "repo-transaction-unsupported-#{System.unique_integer([:positive])}"
+
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 RepoTransactionWorkflow,
+                 :repo_transaction,
+                 %{account_id: "acct_repo_txn_unsupported"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = failed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: queue,
+                 owner_id: "repo-txn-worker",
+                 now: @read_model_visible_at
+               )
+
+      assert failed_snapshot.run_id == started_snapshot.run_id
+      assert failed_snapshot.status == :failed
+      assert transactional_events(started_snapshot.run_id) == []
+
+      assert [%{status: :failed, error: error}] = failed_snapshot.attempts
+      assert error.code == "unsupported_repo_transaction_storage"
+      assert error.retryable? == false
+    end
+
     test "execute_next/1 plans and schedules the successor step after a journal completion" do
       assert {:ok, %Snapshot{} = started_snapshot} =
                SquidMesh.start_run(
@@ -6956,6 +7081,16 @@ defmodule SquidMeshTest do
 
   defp claim_token_hash(token) do
     Base.encode16(:crypto.hash(:sha256, token), case: :lower)
+  end
+
+  defp transactional_events(run_id) do
+    Repo.all(
+      from(event in "transactional_events",
+        where: event.run_id == type(^run_id, Ecto.UUID),
+        order_by: event.id,
+        select: event.event
+      )
+    )
   end
 
   defp journal_start_runnable(run_id, account_id \\ "acct_123") do

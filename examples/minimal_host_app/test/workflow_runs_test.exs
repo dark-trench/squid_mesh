@@ -149,6 +149,30 @@ defmodule MinimalHostApp.WorkflowRunsTest do
            }
   end
 
+  test "executes a dependency workflow through the supervised journal executor" do
+    attrs = %{
+      account_id: "acct_supervised_executor",
+      invoice_id: "inv_supervised_executor",
+      attempt_id: "attempt_supervised_executor"
+    }
+
+    assert {:ok, run} = WorkflowRuns.start_dependency_recovery(attrs)
+
+    executor_name = :"minimal_host_app_journal_executor_#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      {MinimalHostApp.JournalExecutor,
+       name: executor_name,
+       owner_id: "minimal-host-app-supervised-test",
+       idle_interval_ms: 10,
+       error_interval_ms: 10}
+    )
+
+    assert {:ok, completed_run} = await_terminal_without_harness(run.run_id)
+    assert completed_run.status == :completed
+    assert completed_run.context.notification.account_id == "acct_supervised_executor"
+  end
+
   test "executes a dependency workflow through inferred Ecto journal defaults" do
     queue = "minimal-host-app-default-journal-#{System.unique_integer([:positive])}"
 
@@ -691,6 +715,24 @@ defmodule MinimalHostApp.WorkflowRunsTest do
       Enum.each(original_config, fn {key, value} ->
         Application.put_env(:squid_mesh, key, value)
       end)
+    end
+  end
+
+  defp await_terminal_without_harness(run_id, attempts \\ 50)
+  defp await_terminal_without_harness(_run_id, 0), do: {:error, :timeout}
+
+  defp await_terminal_without_harness(run_id, attempts_remaining)
+       when attempts_remaining > 0 do
+    case WorkflowRuns.inspect_run(run_id) do
+      {:ok, %{status: status} = run} when status in [:completed, :failed, :cancelled] ->
+        {:ok, run}
+
+      {:ok, _run} ->
+        Process.sleep(20)
+        await_terminal_without_harness(run_id, attempts_remaining - 1)
+
+      {:error, _reason} = error ->
+        error
     end
   end
 

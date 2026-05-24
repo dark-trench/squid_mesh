@@ -51,10 +51,53 @@ defmodule Mix.Tasks.SquidMesh.InstallTest do
     refute output =~ "SquidMesh.Runtime.Runner.perform(payload)"
   end
 
+  test "creates the current schema when an older copied migration exists", %{tmp_dir: tmp_dir} do
+    File.write!(
+      Path.join(tmp_dir, "priv/repo/migrations/20260101000000_create_squid_mesh_schema.exs"),
+      """
+      defmodule ExistingMigration do
+        use Ecto.Migration
+
+        def change do
+          create table(:squid_mesh_runs)
+        end
+      end
+      """
+    )
+
+    output =
+      File.cd!(tmp_dir, fn ->
+        capture_io(fn ->
+          Install.run([])
+        end)
+      end)
+
+    installed_migrations = File.ls!(Path.join(tmp_dir, "priv/repo/migrations"))
+
+    assert "20260101000000_create_squid_mesh_schema.exs" in installed_migrations
+
+    assert Enum.count(
+             installed_migrations,
+             &String.ends_with?(&1, "create_squid_mesh_schema.exs")
+           ) == 2
+
+    assert output =~ "creating"
+  end
+
   test "skips the current-schema migration when it already exists", %{tmp_dir: tmp_dir} do
     File.write!(
       Path.join(tmp_dir, "priv/repo/migrations/20260101000000_create_squid_mesh_schema.exs"),
-      "# existing migration\n"
+      """
+      defmodule ExistingMigration do
+        use Ecto.Migration
+
+        def change do
+          create table(:squid_mesh_journal_threads)
+          create table(:squid_mesh_journal_entries)
+          create table(:squid_mesh_journal_checkpoints)
+        end
+      end
+      """
     )
 
     output =
