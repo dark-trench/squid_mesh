@@ -243,7 +243,7 @@ schedule context on the `:run_started` journal fact. Only cron payloads are
 accepted because step execution is claimed through
 `SquidMesh.execute_next/1`.
 
-That is the whole execution contract for the journal-backed runtime path. Workflow
+That is the whole execution contract for the journal-backed runtime. Workflow
 modules, context modules, and controllers should not need to know which job
 backend the scheduler uses.
 

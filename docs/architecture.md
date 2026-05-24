@@ -28,7 +28,7 @@ inside a host application's supervision tree and infrastructure.
 `SquidMesh.Runtime.DispatchProtocol`
 
 - defines append-only run, dispatch, and run-index journal entries for the
-  Jido-native runtime path; its claim and heartbeat vocabulary is compatible
+  journal-backed runtime; its claim and heartbeat vocabulary is compatible
   with lease-capable backend adapters and refers only to durable dispatch
   fencing metadata, not host-backend worker lifecycle management
 
@@ -53,7 +53,7 @@ inside a host application's supervision tree and infrastructure.
 `SquidMesh.ReadModel.Inspection`
 
 - rebuilds workflow and dispatch agent projections into a read-only inspection
-  snapshot for the Jido-native runtime path, including pending dispatches,
+  snapshot for the journal-backed runtime, including pending dispatches,
   unapplied results, scheduled attempts, visible attempts, expired claims,
   manual intervention state, terminal state, and projection anomalies
 
