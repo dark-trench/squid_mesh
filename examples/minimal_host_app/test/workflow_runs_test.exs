@@ -149,20 +149,20 @@ defmodule MinimalHostApp.WorkflowRunsTest do
            }
   end
 
-  test "executes a dependency workflow through the supervised journal executor" do
+  test "executes a dependency workflow through the supervised journal run loop" do
     attrs = %{
-      account_id: "acct_supervised_executor",
-      invoice_id: "inv_supervised_executor",
-      attempt_id: "attempt_supervised_executor"
+      account_id: "acct_supervised_run",
+      invoice_id: "inv_supervised_run",
+      attempt_id: "attempt_supervised_run"
     }
 
     assert {:ok, run} = WorkflowRuns.start_dependency_recovery(attrs)
 
-    executor_name = :"minimal_host_app_journal_executor_#{System.unique_integer([:positive])}"
+    journal_run_name = :"minimal_host_app_journal_run_#{System.unique_integer([:positive])}"
 
     start_supervised!(
       {MinimalHostApp.JournalExecutor,
-       name: executor_name,
+       name: journal_run_name,
        owner_id: "minimal-host-app-supervised-test",
        idle_interval_ms: 10,
        error_interval_ms: 10}
@@ -170,7 +170,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert {:ok, completed_run} = await_terminal_without_harness(run.run_id)
     assert completed_run.status == :completed
-    assert completed_run.context.notification.account_id == "acct_supervised_executor"
+    assert completed_run.context.notification.account_id == "acct_supervised_run"
   end
 
   test "executes a dependency workflow through inferred Ecto journal defaults" do
@@ -558,7 +558,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              manual_digest: manual_digest,
              local_ledger_checkout: local_ledger_checkout,
              local_ledger_rollback: local_ledger_rollback,
-             journal_executor: journal_executor,
+             journal_run: journal_run,
              journal_recovery: journal_recovery,
              journal_cancellation: journal_cancellation,
              journal_replay: journal_replay,
@@ -588,8 +588,8 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert [%{step: "post_local_ledger_entries", status: :failed}] =
              local_ledger_rollback.attempts
 
-    assert journal_executor.status == :completed
-    assert journal_executor.applied_runnable_keys == journal_executor.planned_runnable_keys
+    assert journal_run.status == :completed
+    assert journal_run.applied_runnable_keys == journal_run.planned_runnable_keys
 
     assert journal_recovery.status == :completed
     assert journal_recovery.applied_runnable_keys == journal_recovery.planned_runnable_keys
@@ -640,8 +640,8 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert run.status == :completed
   end
 
-  test "runs the journal executor smoke path" do
-    assert %SquidMesh.ReadModel.Inspection.Snapshot{} = run = Smoke.run_journal_executor!()
+  test "runs the journal run smoke path" do
+    assert %SquidMesh.ReadModel.Inspection.Snapshot{} = run = Smoke.run_journal_run!()
 
     assert run.status == :completed
     assert run.workflow == "Elixir.MinimalHostApp.Workflows.DependencyRecovery"
@@ -667,7 +667,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
            }
   end
 
-  test "recovers the journal executor smoke path from persisted entries" do
+  test "recovers the journal run smoke path from persisted entries" do
     assert %SquidMesh.ReadModel.Inspection.Snapshot{} = run = Smoke.run_journal_recovery!()
 
     assert run.status == :completed
