@@ -88,9 +88,8 @@ Optional keys:
 - `:queue` - `"default"` by default; selects the journal dispatch queue used by
   the configured journal runtime and read model
 
-`:executor` and `:stale_step_timeout` are no longer supported configuration
-keys. The runtime is journal-only; stale-worker handling comes from journal
-claim fencing or the host backend's lease system.
+Stale-worker handling comes from journal claim fencing or the host backend's
+lease system.
 
 For most host apps, the inferred Ecto storage is the recommended starting point
 when `MyApp.Repo` uses Postgres or a Postgres-compatible Ecto adapter. It

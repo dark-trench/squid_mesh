@@ -63,7 +63,7 @@ Use Squid Mesh when a Phoenix or OTP app needs a durable workflow run as the
 main abstraction, not just a background job. It fits flows where:
 
 - state should stay inside the host app and survive restarts, deploys, retries,
-  and executor redelivery
+  and worker redelivery
 - operators need to inspect why work is waiting, retrying, paused, failed,
   cancelled, or complete
 - approvals, manual review, replay, cancellation, and recovery policy belong to
@@ -97,8 +97,8 @@ manual gates, cron, and Bedrock-backed leases when those pieces are needed.
 The current runtime is Jido-native. Squid Mesh records workflow facts in Jido
 journals while host-owned workers provide process supervision and capacity by
 calling `SquidMesh.execute_next/1`. External schedulers may enqueue cron
-activation payloads, but step delivery no longer requires a host executor
-module.
+activation payloads, but step delivery now runs through the journal-backed
+worker loop.
 
 ```text
 +-----------------------------------------------------+
