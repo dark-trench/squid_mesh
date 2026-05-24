@@ -58,7 +58,7 @@ boundary options when a host needs a non-default journal setup.
 - Supported: available in the journal-backed runtime and covered by repository docs
   and tests.
 - In progress: implemented as a protocol or foundation, but not wired through
-  the full journal-backed runtime path yet.
+  the full journal-backed runtime yet.
 - Planned: accepted roadmap direction linked to an issue, but not a runtime
   guarantee today.
 - Out of scope: intentionally not part of Squid Mesh's product surface.

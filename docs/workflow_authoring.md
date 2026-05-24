@@ -346,7 +346,7 @@ native step's returned map under that key after the step returns. The
 mapping is applied.
 
 Raw `Jido.Action` modules remain supported for advanced interop. They execute
-through the same runtime path, but applications should prefer `use
+through the same journal-backed runtime, but applications should prefer `use
 SquidMesh.Step` for the common authoring path.
 
 Built-in steps:
