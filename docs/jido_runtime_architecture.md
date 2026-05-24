@@ -15,6 +15,10 @@ Squid Mesh's runtime shape is:
 - optional cron payload delivery remains backend-neutral through
   `SquidMesh.Runtime.Runner.perform/2`
 
+If you only read three diagrams in this file, read the system overview, runtime
+shape, and inspection flow. The tables below are reference material for
+concrete boundaries.
+
 ## Roadmap Alignment
 
 The current shape is anchored in the public issue roadmap:
@@ -37,7 +41,7 @@ trustworthy static workflow runtime. Dynamic graph expansion, richer agent-step
 execution, and advanced reference workflows come after the journaled core is
 stable.
 
-## Layer Map
+## System Overview
 
 ```mermaid
 flowchart TB
@@ -91,7 +95,7 @@ The key design point is that the journal, not a worker process, becomes the
 authority for workflow intent and dispatch lifecycle. Processes are allowed to
 crash and restart because their projections can be rebuilt from durable facts.
 
-## Component Responsibilities
+## Runtime Flow
 
 | Component | Owns | Does not own |
 | --- | --- | --- |
@@ -103,6 +107,28 @@ crash and restart because their projections can be rebuilt from durable facts.
 | Optional lease backend | Waking workers and integrating durable delivery, claim, heartbeat, retry, and recovery mechanics | Rewriting Squid Mesh workflow semantics |
 | Jido actions | Step callback contract and action execution boundary | Whole-workflow orchestration |
 | Host app | Domain code, repo, deployment, external APIs, permissions | Squid Mesh runtime invariants |
+
+```mermaid
+flowchart LR
+    Author[Workflow author] --> DSL[Squid Mesh DSL]
+    DSL --> Plan[Planner and runtime journal]
+    Plan --> RunAgent[WorkflowAgent]
+    RunAgent --> DispatchAgent[DispatchAgent]
+    DispatchAgent --> Backend[Optional lease backend]
+    Backend --> Worker[Worker loop]
+    Worker --> Action[Jido action or built-in step]
+    Action --> DispatchAgent
+    DispatchAgent --> RunAgent
+    RunAgent --> Inspect[Projection-backed inspection]
+    Inspect --> Editor[SquidSonar or visual editor]
+```
+
+The runtime is intentionally asymmetric:
+
+- authoring stays declarative
+- durable facts stay in the journal
+- execution stays in worker processes and Jido actions
+- inspection stays read-only and projection-backed
 
 ## Runtime Shape
 
@@ -128,6 +154,21 @@ The current runtime uses two different kinds of durable state:
 
 Checkpoints are always disposable. If a checkpoint is missing or stale, the
 agent can replay entries from the thread and reconstruct the same projection.
+
+```mermaid
+flowchart TD
+    RunJournal[Run thread entries] --> RunProjection[WorkflowAgent projection]
+    DispatchJournal[Dispatch thread entries] --> DispatchProjection[DispatchAgent projection]
+    RunProjection --> ListRuns[list_runs]
+    RunProjection --> InspectRun[inspect_run]
+    RunProjection --> ExplainRun[explain_run]
+    DispatchProjection --> ExplainRun
+    RunProjection --> Editor[SquidSonar / visual editor]
+    DispatchProjection --> Editor
+```
+
+This is the contract visual tooling should target. The editor reads from
+projections, not from worker processes or live queue internals.
 
 ## Execution Ordering
 
