@@ -4,7 +4,7 @@ defmodule SquidMesh.Executor.LeasesTest do
   alias SquidMesh.Executor.Leases
   alias SquidMesh.Executor.Leases.Claim
 
-  test "declares the lease executor callbacks" do
+  test "declares the lease adapter callbacks" do
     assert Leases.required_callbacks() == [
              claim: 4,
              heartbeat: 3,

@@ -705,7 +705,7 @@ defmodule SquidMeshTest do
 
     @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
-      if hook = :persistent_term.get(:journal_executor_conflict_hook, nil) do
+      if hook = :persistent_term.get(:journal_run_conflict_hook, nil) do
         hook.()
       end
 
@@ -6393,7 +6393,7 @@ defmodule SquidMeshTest do
                  now: @read_model_started_at
                )
 
-      :persistent_term.put(:journal_executor_conflict_hook, fn ->
+      :persistent_term.put(:journal_run_conflict_hook, fn ->
         assert {:ok, %Snapshot{}} =
                  SquidMesh.start_run(
                    PaymentRecoveryWorkflow,
@@ -6422,7 +6422,7 @@ defmodule SquidMeshTest do
         assert snapshot.status == :completed
         assert snapshot.reason == :terminal
       after
-        :persistent_term.erase(:journal_executor_conflict_hook)
+        :persistent_term.erase(:journal_run_conflict_hook)
       end
 
       assert {:ok, dispatch_entries} =
