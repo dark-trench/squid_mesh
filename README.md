@@ -37,6 +37,19 @@ instead of running as a separate platform. Jido, Runic, and Spark are foundation
 layers in the current architecture; Reactor, Ash Reactor, Sage, and FlowStone
 solve adjacent orchestration problems at different abstraction layers.
 
+## Getting Started
+
+Start with the manual and the example host apps:
+
+1. Read the [Squid Mesh Manual](docs/index.md) and the
+   [Learning Path](docs/learning_path.md).
+2. Use the [Minimal Host App](examples/minimal_host_app/README.md) to see
+   manual approval, dependency recovery, saga compensation, local repo
+   transactions, cron delivery, restart resilience, and bounded soak coverage.
+3. Use the [Bedrock Minimal Host App](examples/bedrock_minimal_host_app/README.md)
+   to see backend-owned delivery, leases, delayed visibility, retry requeue,
+   dead-letter handling, and cron payload mapping.
+
 ## What It Does
 
 - workflow DSL with manual and cron triggers
@@ -56,6 +69,15 @@ read-only Phoenix LiveView dashboard for Squid Mesh. Mount it inside a Phoenix
 host app to inspect recent workflow runs, filter by status, search runtime
 metadata, and view run detail pages with diagnosis, history counts, last error
 information, and workflow graph visualization.
+
+## Example Apps
+
+- [Minimal host app](examples/minimal_host_app/README.md): the reference
+  standalone harness for recovery, approvals, cron, local transactions, replay,
+  and smoke/resilience/soak verification.
+- [Bedrock minimal host app](examples/bedrock_minimal_host_app/README.md): the
+  delivery-and-leasing harness for Bedrock-backed queueing, lease ownership,
+  delayed jobs, retry requeue, and dead-letter behavior.
 
 ## When To Use It
 
