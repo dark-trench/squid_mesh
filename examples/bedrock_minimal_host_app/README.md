@@ -38,7 +38,7 @@ Bedrock storage or a real cluster topology.
 Run the Bedrock job queue stress coverage:
 
 ```sh
-MIX_ENV=test mix test test/bedrock_job_queue_stress_test.exs test/bedrock_minimal_host_app/squid_mesh_lease_executor_test.exs
+MIX_ENV=test mix test test/bedrock_job_queue_stress_test.exs test/bedrock_minimal_host_app/squid_mesh_lease_adapter_test.exs
 ```
 
 The stress test covers:

@@ -1,4 +1,4 @@
-defmodule BedrockMinimalHostApp.SquidMeshLeaseExecutor do
+defmodule BedrockMinimalHostApp.SquidMeshLeaseAdapter do
   @moduledoc """
   Bedrock-backed Squid Mesh lease adapter owned by the host app.
   """

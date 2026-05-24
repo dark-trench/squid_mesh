@@ -20,7 +20,7 @@ config :minimal_host_app, Oban,
   ],
   queues: [squid_mesh: 5]
 
-config :minimal_host_app, MinimalHostApp.SquidMeshExecutor,
+config :minimal_host_app, MinimalHostApp.SquidMeshDeliveryAdapter,
   oban_name: Oban,
   queue: :squid_mesh
 
