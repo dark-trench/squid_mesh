@@ -6,7 +6,7 @@ The format is based on Keep a Changelog and the project follows Semantic
 Versioning, including prerelease tags while the runtime remains in early
 development.
 
-## Unreleased
+## [0.1.0-beta.1] - 2026-05-24
 
 ### Added
 - Opt-in journal executor runtime through `SquidMesh.execute_next/1`, including
@@ -54,7 +54,7 @@ development.
 ### Changed
 - Example workflows now use native Squid Mesh steps instead of raw actions by
   default.
-- README and host app setup snippets now reference `0.1.0-alpha.7`.
+- README and host app setup snippets now reference `0.1.0-beta.1`.
 - Dependency join explanations and workflow-centric examples were tightened for
   clearer operator and authoring guidance.
 
@@ -66,9 +66,9 @@ development.
   stale persisted data more defensively.
 
 ### Notes
-- This remains an alpha release. Runtime agents, journal-backed projections,
-  and dispatch protocol boundaries are still evolving and should be evaluated
-  with host-app smoke coverage before broader use.
+- This is the first beta release. Runtime agents, journal-backed projections,
+  and dispatch protocol boundaries are now the supported contract and should be
+  evaluated with host-app smoke coverage before broader use.
 
 ## [0.1.0-alpha.6] - 2026-05-13
 
