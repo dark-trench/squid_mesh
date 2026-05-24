@@ -1061,9 +1061,6 @@ defmodule SquidMeshTest do
     end
   end
 
-  defmodule IncompleteExecutor do
-  end
-
   defp without_squid_mesh_env(keys, fun) when is_list(keys) and is_function(fun, 0) do
     preserved_config =
       for key <- keys, into: %{} do
@@ -1232,7 +1229,7 @@ defmodule SquidMeshTest do
       assert {:error, {:invalid_config, details}} =
                SquidMesh.config(
                  repo: SquidMesh.Test.Repo,
-                 executor: IncompleteExecutor,
+                 executor: String,
                  stale_step_timeout: 60_000
                )
 
@@ -4565,7 +4562,7 @@ defmodule SquidMeshTest do
                  %{account_id: "acct_123"},
                  runtime: :journal,
                  journal_storage: @read_model_storage,
-                 executor: IncompleteExecutor
+                 executor: String
                )
 
       assert {:error, reason} =
