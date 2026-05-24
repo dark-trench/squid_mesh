@@ -58,11 +58,11 @@ defmodule SquidMesh.Runtime.Runner do
   @doc """
   Starts a workflow run from a serialized cron trigger and scheduler payload.
 
-  `signal_payload` is the scheduler metadata subset from a cron executor
-  payload. When it contains `"signal_id"` and `"intended_window"`, the runtime
-  stores those values under `run.context.schedule` before dispatching the first
-  step, making delayed delivery and restart recovery observable to workflow
-  steps and operators.
+  `signal_payload` is the scheduler metadata subset from a cron payload. When
+  it contains `"signal_id"` and `"intended_window"`, the runtime stores those
+  values under `run.context.schedule` before dispatching the first step,
+  making delayed delivery and restart recovery observable to workflow steps
+  and operators.
   """
   @spec start_cron_trigger(String.t(), String.t(), map(), keyword()) ::
           :ok

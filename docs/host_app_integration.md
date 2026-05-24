@@ -239,28 +239,28 @@ complete `intended_window`; otherwise Squid Mesh returns
 
 With the journal default, cron payload delivery through
 `SquidMesh.Runtime.Runner.perform/2` starts a journal run and persists the
-schedule context on the `:run_started` journal fact. Step and compensation
-payloads are rejected because step execution is claimed through
+schedule context on the `:run_started` journal fact. Only cron payloads are
+accepted because step execution is claimed through
 `SquidMesh.execute_next/1`.
 
 That is the whole execution contract for the current runtime path. Workflow
 modules, context modules, and controllers should not need to know which job
 backend the scheduler uses.
 
-## Optional Lease Executor Contract
+## Optional Lease Contract
 
 Backends that expose worker leases can also implement
 `SquidMesh.Executor.Leases`. This is separate from the queue executor: it claims
 visible work, heartbeats active claims, completes delivered work, and returns
 failed work to the backend's retry or dead-letter policy.
 
-The current runtime does not require a lease executor. The behavior exists so
+The current runtime does not require a lease adapter. The behavior exists so
 Bedrock or another durable backend can expose lease semantics through a stable
 Squid Mesh boundary without changing workflow modules.
 
 ## Bedrock Lease Backend Setup
 
-Squid Mesh stays executor-agnostic: workflow modules and runtime state do not
+Squid Mesh stays backend-neutral: workflow modules and runtime state do not
 depend on Bedrock APIs. For hosts that want backend-owned leasing today, Bedrock
 is the recommended reference backend because it already owns durable delivery,
 delayed visibility, leases, heartbeats, retry timing, and recovery. That same
@@ -284,7 +284,7 @@ keeps the storage and lease boundaries explicit:
 A host app using the same shape should:
 
 1. Configure `:squid_mesh` with the host repo and journal queue.
-2. Configure the cron executor's Bedrock queue id and topic.
+2. Configure the cron adapter's Bedrock queue id and topic.
 3. Start the host repo, Bedrock cluster, and Bedrock job queue under
    supervision.
 4. Keep workflow definitions backend-neutral; only the Bedrock adapter modules
