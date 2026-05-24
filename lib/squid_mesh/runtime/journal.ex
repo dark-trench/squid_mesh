@@ -1,6 +1,6 @@
 defmodule SquidMesh.Runtime.Journal do
   @moduledoc """
-  Jido.Storage boundary for Squid Mesh durable runtime facts.
+  Storage boundary for Squid Mesh durable runtime facts.
 
   The dispatch protocol owns the runtime fact schema. This module adapts those
   facts into Jido thread entries and checkpoints so storage-backed runtime
@@ -11,9 +11,10 @@ defmodule SquidMesh.Runtime.Journal do
   alias SquidMesh.Runtime.DispatchProtocol.Entry
   alias SquidMesh.Runtime.DispatchProtocol.Projection
   alias SquidMesh.Runtime.Journal.Checkpoint
+  alias SquidMesh.Runtime.Journal.Storage
   alias SquidMesh.Runtime.RunIndexProjection
 
-  @type storage_config :: module() | {module(), keyword()}
+  @type storage_config :: Storage.config() | Storage.t()
   @type append_error :: :empty_entries | {:mixed_threads, [Entry.thread()]} | term()
   @type loaded_thread :: %{
           thread: Entry.thread(),
@@ -34,13 +35,11 @@ defmodule SquidMesh.Runtime.Journal do
   def append_entries(storage, [%Entry{} | _entries] = entries, opts) when is_list(opts) do
     case entry_thread(entries) do
       {:ok, thread} ->
-        {adapter, storage_opts} = Jido.Storage.normalize_storage(storage)
-        append_opts = Keyword.merge(storage_opts, opts)
-
-        adapter.append_thread(
+        Storage.append_thread(
+          storage,
           thread_id(thread),
           Enum.map(entries, &to_jido_entry/1),
-          append_opts
+          opts
         )
 
       {:error, _reason} = error ->
@@ -60,11 +59,9 @@ defmodule SquidMesh.Runtime.Journal do
   @doc false
   @spec load_thread(storage_config(), Entry.thread()) :: {:ok, loaded_thread()} | {:error, term()}
   def load_thread(storage, thread) do
-    {adapter, opts} = Jido.Storage.normalize_storage(storage)
     thread_id = thread_id(thread)
 
-    with {:ok, %Thread{} = jido_thread} <-
-           Jido.Storage.fetch_thread(adapter, thread_id, opts),
+    with {:ok, %Thread{} = jido_thread} <- Storage.fetch_thread(storage, thread_id),
          {:ok, entries} <- decode_entries(jido_thread.entries, thread) do
       {:ok,
        %{
@@ -104,7 +101,6 @@ defmodule SquidMesh.Runtime.Journal do
           :ok | {:error, term()}
   def put_checkpoint(storage, thread, projection, thread_rev, opts \\ [])
       when is_integer(thread_rev) and thread_rev >= 0 and is_list(opts) do
-    {adapter, storage_opts} = Jido.Storage.normalize_storage(storage)
     thread_id = thread_id(thread)
 
     checkpoint = %Checkpoint{
@@ -115,15 +111,14 @@ defmodule SquidMesh.Runtime.Journal do
       updated_at: Keyword.get(opts, :updated_at, DateTime.utc_now())
     }
 
-    adapter.put_checkpoint(checkpoint_key(thread_id), checkpoint, storage_opts)
+    Storage.put_checkpoint(storage, checkpoint_key(thread_id), checkpoint)
   end
 
   @doc false
   @spec fetch_checkpoint(storage_config(), Entry.thread()) ::
           {:ok, Checkpoint.t()} | {:error, term()}
   def fetch_checkpoint(storage, thread) do
-    {adapter, opts} = Jido.Storage.normalize_storage(storage)
-    Jido.Storage.fetch_checkpoint(adapter, checkpoint_key(thread_id(thread)), opts)
+    Storage.fetch_checkpoint(storage, checkpoint_key(thread_id(thread)))
   end
 
   @doc false
