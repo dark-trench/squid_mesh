@@ -219,9 +219,9 @@ run instead of starting a second one.
 
 ## 8. Use Bedrock For Backend-Owned Leases
 
-The core runtime stays executor-agnostic. A basic host can run a worker loop
-that calls `execute_next/1`; a larger host can use a durable backend for
-delivery and lease ownership.
+The core runtime stays backend-neutral. A basic host can run a worker loop that
+calls `execute_next/1`; a larger host can use a durable backend for delivery
+and lease ownership.
 
 Bedrock is the recommended reference backend today because the example app
 already covers durable queueing, delayed visibility, claims, heartbeats,
@@ -237,7 +237,6 @@ and the [Bedrock minimal host app](../examples/bedrock_minimal_host_app/README.m
 | Gotcha | What to do |
 | --- | --- |
 | Treating Squid Mesh like only a job queue | Model business lifecycle in workflow steps, transitions, retries, waits, and manual boundaries. |
-| Expecting `:executor` config for step execution | Start a worker loop that calls `SquidMesh.execute_next/1`; use cron payloads only for cron activation. |
 | Depending on external exactly-once behavior | Use idempotency keys, natural keys, or domain duplicate checks in side-effecting steps. |
 | Hiding decisions in step internals | Put branches, manual gates, retries, and recovery routes in the workflow where inspection can explain them. |
 | Using long waits as general timers | Use waits for workflow-scale delays; use host scheduling when the whole run should start later. |

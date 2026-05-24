@@ -73,7 +73,7 @@ inspection, and planner rebuilds:
 `validate_spec/1` validates the spec as data. It checks trigger shape, payload
 fields, step modules, step options, transitions, dependency graphs, retry
 policies, and entry metadata without starting a run and without coupling the
-workflow to a specific executor.
+workflow to a specific delivery backend.
 
 The spec is an Elixir data representation with atom keys and module atoms:
 
@@ -167,7 +167,7 @@ Invalid specs return structured errors:
 Serialized module names and string-keyed runtime records are intentionally
 rejected. Runtime-authored workflows are still out of scope; host applications
 should define workflows as compiled Elixir modules and use `to_spec/1` when
-they need a stable data representation for executor-agnostic tooling or
+they need a stable data representation for backend-neutral tooling or
 distributed workflow planning. `validate_spec/1` checks shape and invariants; it
 does not act as a module ownership allowlist.
 
