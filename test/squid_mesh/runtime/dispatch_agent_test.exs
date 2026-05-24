@@ -195,13 +195,13 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
 
     assert {:ok, thread} = Journal.append_entries(@storage, [queued_entry])
 
-    legacy_projection = Map.delete(Projection.new(), :queued_run_ids)
+    baseline_projection = Map.delete(Projection.new(), :queued_run_ids)
 
     assert :ok =
              Journal.put_checkpoint(
                @storage,
                {:dispatch, "default"},
-               legacy_projection,
+               baseline_projection,
                0,
                updated_at: @visible_at
              )
