@@ -40,7 +40,7 @@ defmodule SquidMesh.ReadModel.Listing do
   Lists redacted summaries from the global journal run catalog.
 
   Results are ordered newest first by the durable catalog timestamp. Optional
-  `:workflow` and `:status` filters are applied without reading legacy runtime
+  `:workflow` and `:status` filters are applied without scanning journal storage
   tables. The `:status` filter is applied after rebuilding each run-thread
   projection so it reflects current journal state instead of stale catalog
   metadata. Use `SquidMesh.inspect_run/2` when callers need detailed attempts,

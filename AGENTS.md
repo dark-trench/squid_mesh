@@ -9,6 +9,10 @@ migrations live in `priv/repo`. Tests mirror the source layout under
 `docs`, and `examples/minimal_host_app` is the executable host-app harness used
 for integration and smoke testing.
 
+Package-style usage rules for AI agents live in `usage-rules.md` and
+`usage-rules/*.md`. Read them before changing runtime behavior, host-app setup,
+workflow authoring docs, tests, or dashboard/tooling APIs.
+
 ## Build, Test, and Development Commands
 
 - `mix deps.get` installs root project dependencies.
@@ -37,6 +41,10 @@ Add regression coverage with behavior-focused assertions, especially for retries
 pause/resume, cancellation, dependency ordering, stale workflow definitions,
 input/output mapping, persistence, and error routing.
 
+Use `examples/minimal_host_app` for embedded runtime smoke tests. Use
+`examples/bedrock_minimal_host_app` for Bedrock queue, lease, heartbeat, retry,
+dead-letter, and cron delivery coverage.
+
 ## Commit & Pull Request Guidelines
 
 Follow Conventional Commits, for example `feat: add native step contract` or
@@ -50,3 +58,20 @@ include the verification commands run.
 Do not commit secrets, local machine paths, hostnames, or user-specific config.
 Review dependency and lockfile changes carefully because Squid Mesh is embedded
 inside host applications.
+
+## Squid Mesh Runtime Rules
+
+- Treat the Jido journal runtime as the only execution path.
+- Execute visible work through `SquidMesh.execute_next/1`.
+- Keep workflow modules backend-neutral; Bedrock, Oban, or another backend
+  belongs behind host adapter modules.
+- Do not reintroduce runtime-table execution, legacy run/step/attempt tables as
+  runtime authority, `:runtime_tables`, `:executor` step execution config, or
+  `:stale_step_timeout`.
+- Cron activation may use `SquidMesh.Executor.Payload.cron/3` delivered through
+  `SquidMesh.Runtime.Runner.perform/2`; step and compensation payloads are not
+  part of the current runner boundary.
+- Preserve public tooling surfaces needed by dashboards and visual editors:
+  `SquidMesh.list_runs/2`, `SquidMesh.inspect_run/2`,
+  `SquidMesh.inspect_run_graph/2`, `SquidMesh.explain_run/2`, and normalized
+  workflow specs.

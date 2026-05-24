@@ -19,10 +19,9 @@ Squid Mesh sits between a job backend and a standalone workflow service.
 - It is more than a job queue: Squid Mesh owns workflow structure, step state,
   attempts, retries, waits, approvals, replay policy, and inspection.
 - It is less than a separate workflow platform: Squid Mesh runs inside the host
-  app and keeps durable journal execution inside the host repo. Explicit
-  table-runtime integrations can still delegate queueing, delayed scheduling,
-  redelivery, and cron activation to the host's chosen executor while that path
-  is being retired.
+  app and keeps durable journal execution inside the host repo. Host workers
+  call `SquidMesh.execute_next/1`, and host schedulers may deliver cron
+  activations through backend-neutral payloads.
 - Jido, Runic, and Spark are foundation layers in the current architecture.
 - Reactor, Ash Reactor, Sage, and FlowStone solve adjacent workflow and
   orchestration problems at different abstraction layers.
@@ -42,15 +41,14 @@ The long-term runtime shape is:
 3. Squid Mesh records durable workflow and dispatch facts.
 4. Jido provides the runtime foundation for actions, signals, agents, thread
    journals, checkpoints, storage, and supervised execution.
-5. Executor backends remain responsible for concrete delivery mechanics such as
-   queues, scheduled work, redelivery, and worker infrastructure. IntentLedger is
-   the preferred durable executor direction, while Squid Mesh keeps the core
-   dispatch contract backend-neutral so host applications can provide their own
-   executor when needed.
+5. Optional backend adapters remain responsible for concrete delivery mechanics
+   such as queues, delayed visibility, redelivery, leases, and worker
+   infrastructure. Bedrock is the recommended reference backend for
+   backend-owned leases today, while Squid Mesh keeps the core dispatch
+   contract backend-neutral.
 
-The current implementation is partway through that transition. Squid Mesh
-already uses Spark and Jido-compatible step execution, and it now has a durable
-dispatch protocol plus rebuildable workflow and dispatch agents for the
+Squid Mesh now uses Spark, Runic, Jido-compatible step execution, durable
+dispatch journals, and rebuildable workflow and dispatch agents for the
 Jido-native core. Host applications get the journal runtime, projection read
 model, and inferred Ecto storage by default; storage and queue remain explicit
 boundary options when a host needs a non-default journal setup.
@@ -71,17 +69,17 @@ boundary options when a host needs a non-default journal setup.
 | --- | --- | --- |
 | Spark-backed workflow DSL | Supported | Triggers, payload contracts, steps, transitions, retries, dependency edges, and formatter support. |
 | Native step contract | Supported | `SquidMesh.Step` is the preferred authoring path. Raw `Jido.Action` modules remain an explicit interop path. |
-| Durable run history | Supported | Runs, step runs, attempts, and audit events are persisted in the host app's Postgres database. |
-| Host executor boundary | Supported, legacy | Explicit table-runtime integrations delegate step queueing, delayed scheduling, redelivery, and compensation work to `SquidMesh.Executor`. The journal default does not require a host executor for step delivery or cron start. |
+| Durable run history | Supported | Run, dispatch, attempt, terminal, manual-control, replay, and catalog facts are persisted in the configured Jido journal storage. |
+| Cron payload boundary | Supported | Host schedulers may enqueue `SquidMesh.Executor.Payload.cron/3` maps and deliver them to `SquidMesh.Runtime.Runner.perform/2`; step execution is claimed through `SquidMesh.execute_next/1`. |
 | Human approval workflows | Supported | Pause and approval flows are durable for transition-based workflows. |
 | Replay | Supported, evolving | Journal replay starts a fresh Jido-native run from durable source-run metadata and preserves irreversible-step safety gates. |
 | Inspection and explanation | Supported, evolving | Journal-backed inspection and explanation are the default and infer Ecto storage from the configured repo; [#163](https://github.com/dark-trench/squid_mesh/issues/163) delivered the durable projection foundation. |
 | Durable dispatch protocol | Supported, evolving | The pure protocol, projection, and `Jido.Storage` journal boundary define runnable intent, claims, leases, heartbeats, completion, failure, retries, terminal-run fencing, and checkpoint pointers for the journal runtime. |
-| Jido.Storage-backed core | Supported, evolving | Start, cron start, execution, replay, cancellation, inspection, explanation, pause, and approval controls run through the Jido journal runtime by default and do not write legacy runtime rows for the covered journal path. |
+| Jido.Storage-backed core | Supported, evolving | Start, cron start, execution, replay, cancellation, inspection, explanation, pause, and approval controls run through the Jido journal runtime by default. |
 | Jido-native runtime agents | Supported, evolving | Workflow and dispatch agents rebuild from durable journals and checkpoints; [#164](https://github.com/dark-trench/squid_mesh/issues/164) covers the completed agent foundation. |
-| IntentLedger executor | Planned | IntentLedger is the preferred durable executor direction for leases, retries, queue delivery, and worker recovery while Squid Mesh keeps custom executor support. |
+| Bedrock lease backend | Supported, evolving | The Bedrock example app demonstrates durable delivery, delayed visibility, leases, heartbeats, retries, and dead-letter behavior through Squid Mesh's backend-neutral lease boundary. |
 | Scheduled-start metadata | Supported, evolving | Intended schedule windows are stored in durable run context for journal cron starts and exposed to steps through `context.state.schedule`. |
-| Conditional and deferred continuation | Planned | Durable planner facts and deferred wakeups are tracked in [#140](https://github.com/dark-trench/squid_mesh/issues/140). |
+| Conditional and deferred continuation | Supported, evolving | Durable planner facts and deferred wakeups are tracked in [#140](https://github.com/dark-trench/squid_mesh/issues/140). |
 | Fan-out and fan-in contract | Supported, evolving | Runic-backed dependency ordering and join semantics are defined for the current static workflow graph; [#142](https://github.com/dark-trench/squid_mesh/issues/142) captured the closed design clarification. |
 | Dynamic graph expansion | Planned | Runtime-safe dynamic subflows are deferred until after the core runtime and tracked in [#141](https://github.com/dark-trench/squid_mesh/issues/141). |
 | Oban-specific core | Out of scope | Host apps may choose Oban behind the executor boundary, but Squid Mesh core is not Oban-centric. |
@@ -103,10 +101,10 @@ Squid Mesh adds the workflow product layer:
 - retry, replay, cancellation, approval, and failure-routing policy
 - durable dispatch semantics
 - workflow inspection and explanation projections
-- host-app integration around an existing Ecto repo and executor
-- a backend-neutral dispatch contract that can use IntentLedger as the default
-  durable executor path without making every workflow definition depend on
-  IntentLedger-specific concepts
+- host-app integration around an existing Ecto repo and worker supervision
+- a backend-neutral dispatch contract that can use Bedrock or another durable
+  backend for lease ownership without making workflow definitions depend on
+  backend-specific concepts
 
 Use Jido directly when the main abstraction is an autonomous or supervised
 agent. Use Squid Mesh when the main abstraction is a durable workflow run that
@@ -129,7 +127,7 @@ orchestrate Ash actions.
 Squid Mesh intentionally sits one layer farther out. It treats the durable
 workflow run as the product surface: persisted run, step, attempt, and audit
 history; approvals and manual unblocking; replay and cancellation policy;
-operator inspection; explanation; and executor-backed recovery. Reactor and Ash
+operator inspection; explanation; and backend-owned recovery. Reactor and Ash
 Reactor are useful comparison points for orchestration semantics, while Squid
 Mesh focuses on long-running, inspectable, host-app workflow state.
 
@@ -140,13 +138,13 @@ Mesh focuses on long-running, inspectable, host-app workflow state.
 | [Jido](https://hex.pm/packages/jido) | OTP-native agents, actions, signals, directives, and supervised autonomous systems. | Runtime foundation and interop layer. Squid Mesh keeps raw Jido primitives out of the common workflow authoring path. |
 | [Runic](https://hex.pm/packages/runic) | Data-driven workflow graphs, dependency planning, and runnable extraction. | Planner foundation. Squid Mesh maps declared workflow structure and readiness into durable runnable intent. |
 | [Spark](https://hex.pm/packages/spark) | Declarative Elixir DSL and extension framework. | Authoring foundation. Squid Mesh uses Spark to define the workflow DSL and normalized workflow spec. |
-| Durable executor backends | Concrete delivery mechanics such as queues, scheduled work, leases, redelivery, and worker infrastructure. | Delivery foundation. Squid Mesh keeps this boundary backend-neutral while tracking IntentLedger as the preferred durable executor direction. |
+| Durable backend adapters | Concrete delivery mechanics such as queues, scheduled work, leases, redelivery, and worker infrastructure. | Delivery foundation. Squid Mesh keeps this boundary backend-neutral and recommends Bedrock as the reference lease backend today. |
 
 ## Adjacent Choices
 
 | Project | Primary fit | Relationship to Squid Mesh |
 | --- | --- | --- |
-| [Reactor](https://hex.pm/packages/reactor) | Concurrent dependency-resolving saga orchestration for Elixir applications, with compensation and undo semantics. | Closest adjacent orchestrator. Squid Mesh emphasizes durable host-app workflow state, operator inspection, approvals, replay, cancellation, and executor-backed recovery. |
+| [Reactor](https://hex.pm/packages/reactor) | Concurrent dependency-resolving saga orchestration for Elixir applications, with compensation and undo semantics. | Closest adjacent orchestrator. Squid Mesh emphasizes durable host-app workflow state, operator inspection, approvals, replay, cancellation, and backend-owned recovery. |
 | [Ash Reactor](https://hexdocs.pm/ash/reactor.html) | Ash-native orchestration over resources and actions, built on Reactor. | Strong fit for Ash applications that want saga orchestration inside the Ash domain model. Squid Mesh targets broader Phoenix/OTP workflow runs with durable history, HITL, replay, cancellation, and recovery. |
 | [Sage](https://hex.pm/packages/sage) | Dependency-free saga composition with transaction and compensation callbacks. | Good fit for local saga execution. Squid Mesh targets longer-lived inspectable workflow runs with persisted step and attempt history. |
 | [FlowStone](https://hex.pm/packages/flowstone) | Asset-first data orchestration and dependency-aware pipelines. | Adjacent data-pipeline tool. Squid Mesh focuses on application workflows, approvals, recovery policy, dispatch semantics, and inspection. |
@@ -180,22 +178,21 @@ are being prepared for the next runtime generation.
 
 Use the configured journal runtime when you need the supported workflow DSL,
 Jido-native persisted run and dispatch facts, journal dispatch claims, retries,
-approvals, pause/resume controls, and projection-backed inspection. The legacy
-runtime-table path remains available while the final switchover work lands.
+approvals, pause/resume controls, and projection-backed inspection.
 
 Treat the durable dispatch protocol as an architectural foundation. It defines
 the vocabulary for runnable intent, claim fencing, leases, heartbeats, retries,
 and terminal-run behavior. The workflow and dispatch agents can rebuild that
 state from durable journals. Runtime-safe dynamic graph expansion remains a
 future feature; it is useful after the Jido-native core is stable, but it is not
-required for the core switchover.
+required for the current runtime.
 
-Track the linked issues for the larger runtime transition:
+Track the linked issues for remaining feature work:
 
-- [#170](https://github.com/dark-trench/squid_mesh/issues/170) covers the
-  lease, heartbeat, and fencing guarantees expected from the durable executor
-  integration.
-- [#163](https://github.com/dark-trench/squid_mesh/issues/163) delivered the
-  journal-backed inspection and explanation projection foundation.
-Oban can still be a practical executor choice in a host application. It is an
-executor implementation detail, not the core Squid Mesh runtime model.
+- [#141](https://github.com/dark-trench/squid_mesh/issues/141) covers dynamic
+  workflow graph expansion after the static Jido-native core.
+- [#109](https://github.com/dark-trench/squid_mesh/issues/109) covers advanced
+  reference workflows.
+
+Oban can still be a practical scheduler or job backend in a host application.
+It is an implementation detail, not the core Squid Mesh runtime model.

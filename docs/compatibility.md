@@ -25,8 +25,8 @@ Supported host apps are expected to provide:
 
 - an Ecto `Repo`
 - Postgres for durable state
-- a module implementing `SquidMesh.Executor`
-- a durable job backend for queued and scheduled work
+- a supervised worker that calls `SquidMesh.execute_next/1`
+- a scheduler that can deliver cron payloads to `SquidMesh.Runtime.Runner.perform/2`, if the app uses cron triggers
 - step modules that conform to the current Squid Mesh action contract
 
 ## Version Evaluation Policy

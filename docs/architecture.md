@@ -13,23 +13,6 @@ inside a host application's supervision tree and infrastructure.
 
 - public runtime API for starting, inspecting, listing, cancelling, and replaying runs
 
-`SquidMesh.Runs.Store`
-
-- durable run persistence and run lifecycle transitions
-
-`SquidMesh.Steps.Store`
-
-- durable state for individual workflow steps
-
-`SquidMesh.AttemptStore`
-
-- persisted attempt history per step run
-
-`SquidMesh.Runtime.Dispatcher`
-
-- legacy table-runtime bridge that turns workflow execution intent into calls
-  to the configured host executor
-
 `SquidMesh.Runtime.WorkflowAgent`
 
 - rebuilds per-run workflow coordination state from durable run-thread journal
@@ -46,8 +29,8 @@ inside a host application's supervision tree and infrastructure.
 
 - defines append-only run, dispatch, and run-index journal entries for the
   Jido-native runtime path; its claim and heartbeat vocabulary is compatible
-  with IntentLedger-backed dispatch adapters and refers only to durable
-  dispatch fencing metadata, not host-backend worker lifecycle management
+  with lease-capable backend adapters and refers only to durable dispatch
+  fencing metadata, not host-backend worker lifecycle management
 
 `SquidMesh.Runtime.Journal`
 
@@ -90,15 +73,14 @@ inside a host application's supervision tree and infrastructure.
 
 `SquidMesh.Executor`
 
-- host-implemented behaviour for enqueueing step, compensation, and cron work
+- optional host-implemented behaviour for enqueueing cron activations when an
+  external scheduler wants to deliver `SquidMesh.Executor.Payload.cron/3`
+  payloads through a job backend
 
 `SquidMesh.Runtime.Runner`
 
-- backend-neutral entrypoint that host jobs call when queued work is delivered
-
-`SquidMesh.Runtime.StepExecutor`
-
-- executes one workflow step, merges step output into context, and advances the run
+- backend-neutral entrypoint that host jobs call when queued cron payloads are
+  delivered
 
 `SquidMesh.Runtime.RetryPolicy`
 
@@ -114,26 +96,10 @@ Squid Mesh owns:
 
 - workflow structure
 - payload validation
-- durable run state
-- step state and attempt history
+- durable run, dispatch, step, attempt, and manual-control facts
 - replay and cancellation semantics
 - retry policy at the workflow-step layer
-- telemetry and structured log metadata
-
-The host executor owns:
-
-- durable job execution
-- queueing
-- delayed scheduling
-- redelivery after worker crashes or restarts
-
-IntentLedger is the preferred future durable executor integration:
-
-- Squid Mesh keeps the workflow and dispatch protocol executor-agnostic.
-- An IntentLedger-backed dispatcher can map Squid runnables to Intents and
-  translate lifecycle signals back into durable workflow result application.
-- Host applications can still provide a custom executor when they need a
-  different delivery backend.
+- projection-backed inspection and explanation
 
 Jido owns:
 
@@ -143,7 +109,8 @@ Jido owns:
 
 Postgres owns:
 
-- source-of-truth persistence for runs, steps, and attempts
+- source-of-truth persistence for journal threads, entries, checkpoints, and
+  host application data when using the default Ecto storage adapter
 
 ## Execution Flow
 
@@ -159,27 +126,25 @@ Postgres owns:
    workers can claim it.
 
 Delivered cron payloads use `SquidMesh.Runtime.Runner.perform/2` to start runs
-through the configured runtime, which is journal-backed by default. Step and
-compensation payloads delivered through `Runner` remain part of the explicit
-`runtime: :runtime_tables` executor path while that path remains available.
+through the configured journal runtime. Step execution is claimed through
+`SquidMesh.execute_next/1`.
 
 ## Recovery Boundary
 
-Squid Mesh is intentionally not a replacement for worker coordination in the
-host job backend. The Jido-native dispatch protocol records claim, lease, and
-result facts for replay and recovery, but concrete worker leasing belongs to
-the selected executor backend.
+Squid Mesh records claim, lease, and result facts in the Jido-native dispatch
+protocol for replay and recovery. A host can run a simple supervised worker that
+calls `SquidMesh.execute_next/1`; lease-capable backends can additionally expose
+backend-owned worker fencing through `SquidMesh.Executor.Leases`.
 
 Current guarantees:
 
-- run, step, and attempt history is durable
-- queued and scheduled work can survive deploys and restarts when the host executor uses a durable backend
+- run, step, attempt, manual-control, and dispatch history is durable
+- queued and scheduled workflow intent survives deploys and restarts through the journal
 - stale or duplicate deliveries are treated as workflow-level no-ops when possible
 
 Current non-goals:
 
-- a second worker-lifecycle heartbeat or lease manager when a durable executor
-  such as IntentLedger already owns that runtime concern
+- replacing every backend-specific worker heartbeat or lease manager
 - automatic reclamation of a step that died mid-side-effect
 - exactly-once external side effects without idempotent step implementations
 

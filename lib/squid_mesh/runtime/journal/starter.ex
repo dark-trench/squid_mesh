@@ -1,21 +1,17 @@
 defmodule SquidMesh.Runtime.Journal.Starter do
   @moduledoc """
-  Opt-in journal-backed workflow start boundary for the Jido-native runtime.
+  Journal-backed workflow start boundary for the Jido-native runtime.
 
-  This module proves the first live cutover path away from legacy runtime
-  tables. It resolves the public Squid Mesh workflow contract, plans initial
+  This module resolves the public Squid Mesh workflow contract, plans initial
   runnables through Runic, appends durable run and run-index facts to
   `Jido.Storage`, then uses `WorkflowAgent` and `DispatchAgent` as rebuildable
   coordinators to schedule dispatch attempts from the journal.
 
-  This is an incremental cutover gate, not a long-term compatibility layer. The
-  table-backed runtime remains in place only while the rest of execution,
-  controls, and recovery move onto the journal-backed path. The journal runtime
-  can execute normal action steps, immediate built-in `:log` steps, built-in
-  `:wait` steps in transition and dependency workflows, and manual `:pause` or
-  `:approval` boundaries. Manual boundaries persist inspectable intervention
-  state and can be resumed or reviewed through journal manual controls. Callers
-  enter this path explicitly with `runtime: :journal`,
+  The journal runtime can execute normal action steps, immediate built-in `:log`
+  steps, built-in `:wait` steps in transition and dependency workflows, and
+  manual `:pause` or `:approval` boundaries. Manual boundaries persist
+  inspectable intervention state and can be resumed or reviewed through journal
+  manual controls. Callers enter this path explicitly with `runtime: :journal`,
   `journal_storage:`, and optional queue or clock overrides. No Jido primitive
   is required in workflow authoring.
   """

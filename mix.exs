@@ -56,7 +56,7 @@ defmodule SquidMesh.MixProject do
       maintainers: ["Cristiano Carvalho"],
       licenses: ["Apache-2.0"],
       files:
-        ~w(lib priv docs .formatter.exs mix.exs mix.lock README* CHANGELOG* LICENSE* CONTRIBUTING* CODE_OF_CONDUCT*),
+        ~w(lib priv docs usage-rules usage-rules.md .formatter.exs mix.exs mix.lock README* CHANGELOG* LICENSE* CONTRIBUTING* CODE_OF_CONDUCT*),
       links: %{"GitHub" => "https://github.com/dark-trench/squid_mesh"}
     ]
   end
@@ -67,6 +67,7 @@ defmodule SquidMesh.MixProject do
       extras: [
         "docs/index.md",
         "README.md",
+        "docs/learning_path.md",
         "docs/architecture.md",
         "docs/durable_dispatch_protocol.md",
         "docs/positioning.md",
@@ -77,6 +78,13 @@ defmodule SquidMesh.MixProject do
         "docs/host_app_integration.md",
         "docs/operations.md",
         "docs/production_readiness.md",
+        "usage-rules.md",
+        "usage-rules/runtime.md",
+        "usage-rules/host-apps.md",
+        "usage-rules/workflow-authoring.md",
+        "usage-rules/testing.md",
+        "usage-rules/documentation.md",
+        "usage-rules/tooling.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "CODE_OF_CONDUCT.md",

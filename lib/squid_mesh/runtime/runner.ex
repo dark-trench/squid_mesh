@@ -1,6 +1,6 @@
 defmodule SquidMesh.Runtime.Runner do
   @moduledoc """
-  Backend-neutral runtime entrypoints for host executors.
+  Backend-neutral runtime entrypoints for host scheduler jobs.
 
   Cron scheduler jobs should call this module when a serialized cron activation
   is delivered. Step execution is claimed through `SquidMesh.execute_next/1`.

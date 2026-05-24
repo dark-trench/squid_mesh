@@ -4,7 +4,7 @@ defmodule SquidMesh.Runtime.RunIndexProjection do
 
   Run-index entries are lookup facts, not execution state. They let the
   Jido-native runtime rebuild "which runs exist for this workflow?" from the
-  journal boundary without reading the legacy runtime tables.
+  journal boundary without scanning storage adapter internals.
 
   Duplicate entries for the same run are idempotent when they carry the same
   workflow and timestamp. Conflicting or malformed persisted entries are kept as

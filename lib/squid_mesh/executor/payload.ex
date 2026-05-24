@@ -1,6 +1,6 @@
 defmodule SquidMesh.Executor.Payload do
   @moduledoc """
-  Backend-neutral payloads that host executors can hand to their queue.
+  Backend-neutral cron payloads that host schedulers can hand to their queue.
 
   Payloads are plain maps with string keys so host applications can store them
   in job systems without depending on Squid Mesh structs or atoms. A queued job

@@ -74,7 +74,8 @@ That keeps retry policy in one place:
 
 - adapters report the first failure
 - workflow steps declare retry policy
-- Squid Mesh and the host executor schedule the next step attempt
+- Squid Mesh appends the next journal dispatch attempt with the resolved retry
+  visibility time
 
 This keeps transport behavior predictable and avoids stacking HTTP-client
 retries underneath workflow retries.

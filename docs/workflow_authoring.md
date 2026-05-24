@@ -364,7 +364,7 @@ Built-in step options supported today:
 - `:log` requires `message` and accepts `level`
 - `:pause` intentionally stops the run at that step until an operator resumes it
 - `approval_step/2` pauses the run for an explicit approve/reject decision and uses `:ok` or `:error` transitions to continue
-- `:wait` uses executor-delayed continuation so long waits do not block a worker slot
+- `:wait` appends delayed journal continuation so long waits do not block a worker slot
 - `:pause` is supported in transition-based workflows; dependency-based workflows cannot declare `:pause`
 - `approval_step/2` is also transition-based only; dependency-based workflows cannot declare built-in `:approval` steps
 
@@ -468,10 +468,9 @@ projection for inspection; the cancellation boundary is the globally unique
 
 Journal replay rebuilds the source run from durable journal facts, starts a
 fresh journal run with the same trigger and resolved input, and stores
-`replayed_from_run_id` on the replayed run's projection. Replay keeps the same
-irreversible-step safety gate as the table runtime: completed steps marked
+`replayed_from_run_id` on the replayed run's projection. Completed steps marked
 `irreversible: true` or `compensatable: false` require
-`allow_irreversible: true`.
+`allow_irreversible: true` before replay can proceed.
 
 Journal snapshots are full-detail operator views. `inspect_run/2` includes the
 resolved trigger input on `snapshot.input`; keep secrets out of workflow inputs
@@ -500,12 +499,12 @@ specific call, pass the same projection options used for inspection:
   )
 ```
 
-The returned shape is stable across executors:
+The returned shape is stable across backend execution choices:
 
 ```elixir
 %SquidMesh.Runs.GraphInspection{
   run_id: run_id,
-  source: :runtime_tables,
+  source: :read_model,
   status: :running,
   current_node_id: "send_email",
   current_node_ids: ["send_email"],
@@ -835,7 +834,7 @@ to a join step.
 
 In the example above, `:load_account` and `:load_invoice` are independent root
 steps. Squid Mesh does not need a transition between them because neither one
-depends on the other. They may be enqueued independently, and
+depends on the other. They may become visible independently, and
 `:prepare_notification` becomes runnable only after both have completed.
 
 `after: [...]` makes a step runnable only after every named dependency
@@ -851,17 +850,16 @@ as independent runnable work for the same run. A join step is any step with one
 or more dependencies; it becomes runnable only after every declared dependency
 has completed successfully.
 
-Squid Mesh treats Runic-ready work as workflow runnable intent. In the current
-runtime, that intent is represented by scheduled step rows and host-executor
-jobs. In the Jido-native runtime path, the same readiness maps to durable
-dispatch entries before live wakeups are considered successful. Either way, the
-workflow contract is the same: readiness comes from persisted step state, not
-from Oban or any other specific executor's concurrency model.
+Squid Mesh treats Runic-ready work as workflow runnable intent. The journal
+runtime persists that intent as durable dispatch entries before workers can
+claim it through `SquidMesh.execute_next/1`. The workflow contract is the same
+across backends: readiness comes from persisted journal state, not from Oban,
+Bedrock, or any other backend's concurrency model.
 
 Sibling behavior:
 
 - sibling root steps may run in either order, or concurrently when the host
-  executor delivers them concurrently
+  runs multiple journal workers
 - a join waits while any dependency is still pending or running
 - a join is not scheduled after a sibling reaches terminal failure
 - a sibling retry keeps the run in retrying state until the retry is delivered
@@ -927,9 +925,10 @@ Supported retry options today:
 - `max_attempts`
 - `backoff: [type: :exponential, min: ..., max: ...]`
 
-Squid Mesh resolves workflow retry policy and asks the host executor to
-schedule the next step attempt. If a step also declares an `on: :error` transition, Squid Mesh
-takes that route only after retries are exhausted.
+Squid Mesh resolves workflow retry policy and appends the next journal dispatch
+attempt with its computed visibility time. If a step also declares an
+`on: :error` transition, Squid Mesh takes that route only after retries are
+exhausted.
 
 ## Starting Runs
 

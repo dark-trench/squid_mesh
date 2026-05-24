@@ -1096,7 +1096,7 @@ defmodule SquidMeshTest do
 
       assert config.repo == SquidMesh.Test.Repo
       refute Map.has_key?(config, :executor)
-      assert config.stale_step_timeout == :disabled
+      refute Map.has_key?(config, :stale_step_timeout)
       assert config.runtime == :journal
       assert config.read_model == :read_model
       assert config.journal_storage.adapter == SquidMesh.Runtime.Journal.Storage.Ecto
@@ -1115,17 +1115,6 @@ defmodule SquidMeshTest do
         assert config.journal_storage.adapter == SquidMesh.Runtime.Journal.Storage.Ecto
         assert config.journal_storage.opts == [repo: SquidMesh.Test.Repo]
       end)
-    end
-
-    test "allows host applications to configure stale step timeout" do
-      overrides = [
-        repo: SquidMesh.Test.Repo,
-        stale_step_timeout: 60_000
-      ]
-
-      assert {:ok, config} = SquidMesh.config(overrides)
-
-      assert config.stale_step_timeout == 60_000
     end
 
     test "allows host applications to configure journal runtime defaults" do
@@ -1239,22 +1228,22 @@ defmodule SquidMeshTest do
       end)
     end
 
-    test "rejects legacy executor module configuration" do
+    test "rejects removed executor module configuration" do
       assert {:error, {:invalid_config, [executor: :unsupported]}} =
                SquidMesh.config(repo: SquidMesh.Test.Repo, executor: IncompleteExecutor)
     end
 
-    test "reports invalid stale step timeout settings" do
-      assert {:error, {:invalid_config, [stale_step_timeout: -1]}} =
+    test "rejects stale step timeout configuration" do
+      assert {:error, {:invalid_config, [stale_step_timeout: :unsupported]}} =
                SquidMesh.config(
                  repo: SquidMesh.Test.Repo,
-                 stale_step_timeout: -1
+                 stale_step_timeout: 60_000
                )
     end
   end
 
-  describe "journal default table-runtime parity gaps" do
-    test "runner rejects legacy step and compensation executor payloads" do
+  describe "journal-only executor payloads" do
+    test "runner rejects removed step and compensation executor payloads" do
       assert {:error, {:unsupported_executor_payload, "step"}} =
                Runner.perform(%{
                  "kind" => "step",
@@ -4560,6 +4549,24 @@ defmodule SquidMeshTest do
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  run_id: "not-a-uuid"
+               )
+
+      assert {:error, {:invalid_option, {:stale_step_timeout, :unsupported}}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 stale_step_timeout: 60_000
+               )
+
+      assert {:error, {:invalid_option, {:executor, :unsupported}}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 executor: IncompleteExecutor
                )
 
       assert {:error, reason} =

@@ -3,7 +3,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
   Rebuildable projection over durable dispatch journal entries.
 
   The projection is deliberately pure. Storage adapters can rebuild it from
-  Jido thread journals, IntentLedger lifecycle signals, or from a single
+  Jido thread journals, backend lease lifecycle signals, or from a single
   append-only Squid Mesh journal table without changing the runtime invariants.
   """
 

@@ -59,7 +59,7 @@ Start with three pieces:
 
 1. Squid Mesh config points at the host repo and runtime boundary.
 2. The journal runtime owns its dispatch queue through Squid Mesh config; the
-   executor config only matters for hosts still exercising the table runtime.
+   host app only needs a worker process that calls `SquidMesh.execute_next/1`.
 3. Journal workers call `SquidMesh.execute_next/1` to claim and execute visible
    attempts.
 
@@ -87,12 +87,10 @@ Optional keys:
   journal-backed runtime or read-model paths.
 - `:queue` - `"default"` by default; selects the journal dispatch queue used by
   the configured journal runtime and read model
-- `:executor` - required only when `:runtime` is explicitly
-  `:runtime_tables`; this host module implements `SquidMesh.Executor`
-- `:stale_step_timeout` - table-runtime-only; `:disabled` by default. Set a
-  non-negative millisecond timeout only when using legacy runtime tables and
-  redelivered jobs need to reclaim stale `running` steps after worker
-  interruption
+
+`:executor` and `:stale_step_timeout` are no longer supported configuration
+keys. The runtime is journal-only; stale-worker handling comes from journal
+claim fencing or the host backend's lease system.
 
 For most host apps, the inferred Ecto storage is the recommended starting point
 when `MyApp.Repo` uses Postgres or a Postgres-compatible Ecto adapter. It
@@ -112,43 +110,56 @@ inputs, outputs, attempts, or claim metadata. Dashboards can call
 and `queue` to `inspect_run(run_id, queue: queue, include_history: true)` or
 `inspect_run_graph(run_id, queue: queue)` for detail views.
 
-## Executor Contract
+## Journal Worker Contract
 
-For the runtime-table path, the host executor is the queue boundary Squid Mesh
-calls. Copy this module, replace `MyApp.JobQueue.enqueue/1` with the host app's
-job backend, and keep the queued job generic:
+Step execution is pulled by host-owned workers. A minimal worker can be a small
+GenServer loop under the host supervision tree:
 
 ```elixir
-defmodule MyApp.SquidMeshExecutor do
+defmodule MyApp.SquidMeshWorker do
+  use GenServer
+
+  def start_link(opts \\ []) do
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  def init(opts) do
+    {:ok, %{owner_id: Keyword.get(opts, :owner_id, "my-app-squid-mesh")}, {:continue, :drain}}
+  end
+
+  def handle_continue(:drain, state), do: {:noreply, drain_once(state)}
+  def handle_info(:drain, state), do: {:noreply, drain_once(state)}
+
+  defp drain_once(state) do
+    interval =
+      case SquidMesh.execute_next(owner_id: state.owner_id) do
+        {:ok, :none} -> 100
+        {:ok, _snapshot} -> 0
+        {:error, _reason} -> 1_000
+      end
+
+    Process.send_after(self(), :drain, interval)
+    state
+  end
+end
+```
+
+This loop is intentionally small. Production hosts can add capacity limits,
+back-pressure, node placement, metrics, and shutdown policy around the same
+public call. Squid Mesh still owns the journaled claim, completion, retry,
+manual-control, and terminal-state facts.
+
+## Cron Payload Contract
+
+Cron starts are the only remaining `SquidMesh.Executor` payload boundary. Hosts
+that already have a scheduler can enqueue `SquidMesh.Executor.Payload.cron/3`
+and deliver the stored payload to `SquidMesh.Runtime.Runner.perform/2`:
+
+```elixir
+defmodule MyApp.SquidMeshCronExecutor do
   @behaviour SquidMesh.Executor
 
   alias SquidMesh.Executor.Payload
-
-  def enqueue_step(_config, run, step, opts) do
-    run
-    |> Payload.step(step)
-    |> enqueue(opts)
-  end
-
-  def enqueue_steps(config, run, steps, opts) do
-    steps
-    |> Enum.reduce_while({:ok, []}, fn step, {:ok, metadata} ->
-      case enqueue_step(config, run, step, opts) do
-        {:ok, job_metadata} -> {:cont, {:ok, [job_metadata | metadata]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, metadata} -> {:ok, Enum.reverse(metadata)}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  def enqueue_compensation(_config, run, opts) do
-    run
-    |> Payload.compensation()
-    |> enqueue(opts)
-  end
 
   def enqueue_cron(_config, workflow, trigger, opts) do
     workflow
@@ -176,18 +187,15 @@ defmodule MyApp.SquidMeshExecutor do
 end
 ```
 
-The executor callbacks receive:
+The cron callback receives:
 
-- `run` - the persisted Squid Mesh run
-- `step` - the next step name, for step jobs
 - `workflow` and `trigger` - the cron workflow activation target
-- `opts[:schedule_in]` - seconds to delay a retry or wait continuation
 - `opts[:signal_id]` - optional stable scheduler signal id for a cron activation
 - `opts[:intended_window]` - optional logical schedule window for a cron activation
 
 Return `{:ok, metadata}` after enqueueing. Metadata is included in dispatch
 telemetry, so useful values are `:job_id`, `:queue`, `:worker`, and
-`:schedule_in`.
+`:scheduled_at`.
 
 The queued job should deliver the stored payload back to Squid Mesh without
 knowing workflow details:
@@ -201,9 +209,9 @@ end
 ```
 
 `MyApp.JobQueue` is intentionally a placeholder. In a real host app, replace it
-with the app's durable job backend and make sure delayed jobs honor
-`:schedule_in`. Cron activation is also host-owned; the host scheduler should
-call `enqueue_cron/4` or enqueue `SquidMesh.Executor.Payload.cron/3`.
+with the app's durable job backend. Cron activation is host-owned; the host
+scheduler should call `enqueue_cron/4` or enqueue
+`SquidMesh.Executor.Payload.cron/3`.
 
 When a scheduler can provide deterministic schedule metadata, pass it with the
 cron payload instead of adding it to workflow input:
@@ -233,8 +241,8 @@ complete `intended_window`; otherwise Squid Mesh returns
 With the journal default, cron payload delivery through
 `SquidMesh.Runtime.Runner.perform/2` starts a journal run and persists the
 schedule context on the `:run_started` journal fact. Step and compensation
-payloads delivered through `Runner` remain part of the explicit legacy
-table-runtime executor path while that path exists.
+payloads are rejected because step execution is claimed through
+`SquidMesh.execute_next/1`.
 
 That is the whole execution contract for the current runtime path. Workflow
 modules, context modules, and controllers should not need to know which job
@@ -248,8 +256,8 @@ visible work, heartbeats active claims, completes delivered work, and returns
 failed work to the backend's retry or dead-letter policy.
 
 The current runtime does not require a lease executor. The behavior exists so
-Bedrock, IntentLedger, or another durable backend can expose lease semantics
-through a stable Squid Mesh boundary while the Jido-native dispatch path evolves.
+Bedrock or another durable backend can expose lease semantics through a stable
+Squid Mesh boundary without changing workflow modules.
 
 ## Bedrock Lease Backend Setup
 
@@ -262,24 +270,25 @@ multiple workers may claim, heartbeat, fail, or recover work across process and
 node boundaries.
 
 Use `examples/bedrock_minimal_host_app` as the concrete setup guide. The example
-keeps the storage boundary explicit:
+keeps the storage and lease boundaries explicit:
 
 - `BedrockMinimalHostApp.Repo` stores Squid Mesh workflow and attempt state.
 - `BedrockMinimalHostApp.JobQueue` stores queue items, delayed visibility,
   leases, retries, and queue metadata.
-- `BedrockMinimalHostApp.SquidMeshExecutor` adapts Squid Mesh enqueue calls to
-  Bedrock Job Queue.
+- `BedrockMinimalHostApp.SquidMeshExecutor` adapts cron activations to Bedrock
+  Job Queue payloads.
 - `BedrockMinimalHostApp.SquidMeshLeaseExecutor` adapts Bedrock claims,
   heartbeats, completion, and failure to `SquidMesh.Executor.Leases`.
+- `BedrockMinimalHostApp.Jobs.SquidMeshPayload` delivers cron payloads and then
+  drains visible journal attempts while the Bedrock lease is held.
 
 A host app using the same shape should:
 
-1. Configure `:squid_mesh` with the host repo and Squid Mesh executor module.
-2. Configure the executor's Bedrock queue id and topic.
+1. Configure `:squid_mesh` with the host repo and journal queue.
+2. Configure the cron executor's Bedrock queue id and topic.
 3. Start the host repo, Bedrock cluster, and Bedrock job queue under
    supervision.
-4. Keep `:stale_step_timeout` disabled so Bedrock owns stale-worker recovery.
-5. Keep workflow definitions backend-neutral; only the host executor modules
+4. Keep workflow definitions backend-neutral; only the Bedrock adapter modules
    should know Bedrock exists.
 
 The example config shape is:
@@ -291,7 +300,7 @@ config :my_app, MyApp.SquidMeshExecutor,
 
 config :squid_mesh,
   repo: MyApp.Repo,
-  executor: MyApp.SquidMeshExecutor
+  queue: "tenant_a"
 ```
 
 To verify the reference path locally:
@@ -304,8 +313,8 @@ MIX_ENV=test mix test test/bedrock_job_queue_stress_test.exs test/bedrock_minima
 
 That test path covers Bedrock queue behavior plus the lease executor contract.
 It does not make Bedrock a required Squid Mesh dependency; another durable
-executor can use the same Squid Mesh boundaries if it provides equivalent lease,
-heartbeat, retry, and recovery semantics.
+executor can use the same Squid Mesh boundaries if it provides equivalent
+delivery, lease, heartbeat, retry, and recovery semantics.
 
 For background on why durable workflow systems often benefit from queueing close
 to the data and tenancy model they serve, see Apple's
@@ -325,8 +334,8 @@ For a new integration, the shortest path to a successful first run is:
 7. Start one workflow through the public API, execute visible attempts with
    `SquidMesh.execute_next/1`, and inspect it with history enabled.
 
-Add a host executor and job system only when explicitly using
-`runtime: :runtime_tables` or validating a legacy executor scenario.
+Add a host job system only when the app needs one for cron scheduling,
+backend-owned leases, or other application work.
 
 ## Existing Application Setup
 
@@ -349,8 +358,7 @@ That means the embedded install path assumes:
 
 - the host app already owns its `Repo`
 - the host app starts workers that call `SquidMesh.execute_next/1`
-- the host app adds executor and job-system tables only for explicit table-runtime
-  integrations
+- the host app adds job-backend tables only for its own scheduler or lease backend
 
 ## Minimal OTP Host Skeleton
 
@@ -543,8 +551,8 @@ The example app wires:
 - journal runtime smoke paths that use inferred Ecto storage and
   `SquidMesh.execute_next/1`, including cron activation through the journal
   runtime
-- explicit table-runtime smoke paths that use `MinimalHostApp.SquidMeshExecutor`
-  and one generic worker calling `SquidMesh.Runtime.Runner.perform/1`
+- cron activation smoke paths that deliver `SquidMesh.Executor.Payload.cron/3`
+  through `SquidMesh.Runtime.Runner.perform/1`
 - Squid Mesh through `MinimalHostApp.WorkflowRuns`
 
 ## Inspecting History

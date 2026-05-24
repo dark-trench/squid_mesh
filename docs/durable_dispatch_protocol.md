@@ -55,7 +55,7 @@ and optional checkpoints:
 - Dispatch threads record queue-visible facts, including scheduled attempts,
   claims, heartbeats, completions, failures, and wakeup emissions.
 - Run-index threads keep workflow-scoped lookup projections rebuildable without
-  reading legacy runtime tables. Index facts carry the dispatch queue used by
+  scanning storage adapter internals. Index facts carry the dispatch queue used by
   the run.
 - The global run-catalog thread keeps all-run listing rebuildable without
   scanning storage-adapter internals. Catalog facts carry the workflow and queue
@@ -141,31 +141,31 @@ already become durable. The dispatch protocol does not use host-job concurrency
 as the source of truth for fan-out or fan-in readiness; persisted workflow facts
 do.
 
-## IntentLedger Alignment
+## Backend Lease Alignment
 
 Squid Mesh models workflow-specific facts, but its dispatch vocabulary is
-compatible with IntentLedger's durable intent model and its `bedrock_job_queue`
-runtime boundary:
+designed to map to durable queue and lease backends:
 
-- `attempt_scheduled` maps to an enqueued intent.
-- `runnable_key` maps to the Squid workflow identity carried as an Intent key
-  or lineage field.
-- `step` and `input` map to intent kind and payload.
+- `attempt_scheduled` maps to an enqueued durable work item.
+- `runnable_key` maps to a backend key, idempotency key, or lineage field.
+- `step` and `input` map to work kind and payload.
 - `claim_id`, `claim_token_hash`, `owner_id`, and `lease_until` mirror
-  the queue lease state behind IntentLedger.
+  queue lease state.
 - `attempt_heartbeat`, `attempt_completed`, and `attempt_failed` require the
   current claim fence.
 
-Squid Mesh should integrate through a dispatch backend adapter rather than make
-IntentLedger depend on Squid-specific workflow concepts. The adapter can map
-Squid runnables to IntentLedger intents and translate lifecycle signals back
-into the projection. IntentLedger is expected to be the default durable executor
-path once that adapter is wired, but the Squid Mesh core protocol remains
-backend-neutral so host applications can still provide their own dispatcher.
+Squid Mesh should integrate through backend adapters rather than make durable
+queue systems depend on Squid-specific workflow concepts. The adapter can map
+Squid runnables to backend work items and translate lifecycle signals back into
+the projection. Bedrock is the recommended reference backend today because the
+example app exercises durable queueing, delayed visibility, claims, heartbeats,
+completion, retry, and dead-letter behavior. The Squid Mesh core protocol
+remains backend-neutral so host applications can still provide another backend
+with equivalent lease and recovery semantics.
 
 ## Job Runner Boundary
 
-The protocol does not assume Oban, Broadway, IntentLedger, or a custom process as
+The protocol does not assume Oban, Broadway, Bedrock, or a custom process as
 the delivery mechanism. A runner may wake, claim, execute, retry, or redeliver
 work, but Squid Mesh treats the journal as authoritative for intent, claim,
 lease, fencing, completion, failure, and retry visibility.
@@ -196,9 +196,10 @@ On success, each API returns a lifecycle update map containing the updated
 post-append projection is available at `agent.state.projection`; concurrent
 stale callers receive `{:error, :conflict}` from the journal append.
 
-IntentLedger is the intended future integration point for lease-backed
-execution once its Bedrock and `bedrock_job_queue` recovery contracts settle.
-Until then, Squid Mesh keeps the protocol dependency-free.
+Backend-owned lease integration remains dependency-free at the Squid Mesh core
+layer. Bedrock is the recommended reference backend, but the protocol only
+requires the lease, heartbeat, conflict, retry, and recovery semantics described
+above.
 
 ## Completion And Retry
 
