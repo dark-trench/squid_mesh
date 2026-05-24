@@ -1061,24 +1061,6 @@ defmodule SquidMeshTest do
     end
   end
 
-  defp without_squid_mesh_env(keys, fun) when is_list(keys) and is_function(fun, 0) do
-    preserved_config =
-      for key <- keys, into: %{} do
-        {key, Application.fetch_env(:squid_mesh, key)}
-      end
-
-    Enum.each(keys, &Application.delete_env(:squid_mesh, &1))
-
-    try do
-      fun.()
-    after
-      Enum.each(preserved_config, fn
-        {key, {:ok, value}} -> Application.put_env(:squid_mesh, key, value)
-        {key, :error} -> Application.delete_env(:squid_mesh, key)
-      end)
-    end
-  end
-
   test "configures an application supervisor" do
     assert Application.spec(:squid_mesh, :mod) == {SquidMesh.Application, []}
   end
@@ -1101,17 +1083,21 @@ defmodule SquidMeshTest do
       assert config.queue == "default"
     end
 
-    test "journal defaults do not require a host executor" do
-      without_squid_mesh_env([:executor], fn ->
-        assert {:ok, config} = SquidMesh.config(repo: SquidMesh.Test.Repo)
+    test "ignores retired runtime keys" do
+      assert {:ok, config} =
+               SquidMesh.config(
+                 repo: SquidMesh.Test.Repo,
+                 executor: String,
+                 stale_step_timeout: 60_000
+               )
 
-        assert config.repo == SquidMesh.Test.Repo
-        refute Map.has_key?(config, :executor)
-        assert config.runtime == :journal
-        assert config.read_model == :read_model
-        assert config.journal_storage.adapter == SquidMesh.Runtime.Journal.Storage.Ecto
-        assert config.journal_storage.opts == [repo: SquidMesh.Test.Repo]
-      end)
+      assert config.repo == SquidMesh.Test.Repo
+      refute Map.has_key?(config, :executor)
+      refute Map.has_key?(config, :stale_step_timeout)
+      assert config.runtime == :journal
+      assert config.read_model == :read_model
+      assert config.journal_storage.adapter == SquidMesh.Runtime.Journal.Storage.Ecto
+      assert config.journal_storage.opts == [repo: SquidMesh.Test.Repo]
     end
 
     test "allows host applications to configure journal runtime defaults" do
@@ -1218,22 +1204,9 @@ defmodule SquidMeshTest do
       assert {:error, {:missing_config, [:repo]}} = SquidMesh.config()
     end
 
-    test "journal-only configuration does not treat executor as required for unsupported modes" do
-      without_squid_mesh_env([:executor], fn ->
-        assert {:error, {:invalid_config, [runtime: :unsupported]}} =
-                 SquidMesh.config(repo: SquidMesh.Test.Repo, runtime: :unsupported)
-      end)
-    end
-
-    test "rejects removed executor and stale timeout config keys" do
-      assert {:error, {:invalid_config, details}} =
-               SquidMesh.config(
-                 repo: SquidMesh.Test.Repo,
-                 executor: String,
-                 stale_step_timeout: 60_000
-               )
-
-      assert Enum.sort(details) == [executor: :removed, stale_step_timeout: :removed]
+    test "journal-only configuration still rejects unsupported runtimes" do
+      assert {:error, {:invalid_config, [runtime: :unsupported]}} =
+               SquidMesh.config(repo: SquidMesh.Test.Repo, runtime: :unsupported)
     end
   end
 
@@ -4547,30 +4520,14 @@ defmodule SquidMeshTest do
                  run_id: "not-a-uuid"
                )
 
-      assert {:error, {:invalid_config, [stale_step_timeout: :removed]}} =
-               SquidMesh.start_run(
-                 PaymentRecoveryWorkflow,
-                 %{account_id: "acct_123"},
-                 runtime: :journal,
-                 journal_storage: @read_model_storage,
-                 stale_step_timeout: 60_000
-               )
-
-      assert {:error, {:invalid_config, [executor: :removed]}} =
-               SquidMesh.start_run(
-                 PaymentRecoveryWorkflow,
-                 %{account_id: "acct_123"},
-                 runtime: :journal,
-                 journal_storage: @read_model_storage,
-                 executor: String
-               )
-
       assert {:error, reason} =
                SquidMesh.start_run(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
                  journal_storage: @read_model_storage,
+                 executor: String,
+                 stale_step_timeout: 60_000,
                  now: %{claim_token: "super-secret-token"}
                )
 
