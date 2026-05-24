@@ -1,6 +1,6 @@
 defmodule BedrockMinimalHostApp.SquidMeshLeaseExecutor do
   @moduledoc """
-  Bedrock-backed Squid Mesh lease executor owned by the host app.
+  Bedrock-backed Squid Mesh lease adapter owned by the host app.
   """
 
   @behaviour SquidMesh.Executor.Leases

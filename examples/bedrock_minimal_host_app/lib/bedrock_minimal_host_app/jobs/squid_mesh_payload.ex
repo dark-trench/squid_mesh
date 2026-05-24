@@ -1,6 +1,6 @@
 defmodule BedrockMinimalHostApp.Jobs.SquidMeshPayload do
   @moduledoc """
-  Bedrock job that delivers Squid Mesh executor payloads back to the runtime.
+  Bedrock job that delivers Squid Mesh delivery payloads back to the runtime.
   """
 
   use Bedrock.JobQueue.Job,

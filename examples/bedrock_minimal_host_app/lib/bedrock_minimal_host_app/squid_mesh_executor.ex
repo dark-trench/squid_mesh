@@ -1,6 +1,6 @@
 defmodule BedrockMinimalHostApp.SquidMeshExecutor do
   @moduledoc """
-  Bedrock-backed Squid Mesh executor owned by the host app.
+  Bedrock-backed Squid Mesh delivery adapter owned by the host app.
   """
 
   @behaviour SquidMesh.Executor
@@ -15,7 +15,7 @@ defmodule BedrockMinimalHostApp.SquidMeshExecutor do
   end
 
   def queue do
-    Keyword.get(executor_config(), :queue_id, "default")
+    Keyword.get(delivery_config(), :queue_id, "default")
   end
 
   defp enqueue(payload, opts) do
@@ -31,7 +31,7 @@ defmodule BedrockMinimalHostApp.SquidMeshExecutor do
     end
   end
 
-  defp executor_config do
+  defp delivery_config do
     Application.get_env(:bedrock_minimal_host_app, __MODULE__, [])
   end
 
@@ -47,13 +47,13 @@ defmodule BedrockMinimalHostApp.SquidMeshExecutor do
   defp maybe_put_delay(opts, _schedule_in), do: opts
 
   defp topic do
-    Keyword.get(executor_config(), :topic, "squid_mesh:payload")
+    Keyword.get(delivery_config(), :topic, "squid_mesh:payload")
   end
 
   defp metadata(item, queue_id, topic) do
     %{
       item_id: item.id,
-      executor: __MODULE__,
+      adapter: __MODULE__,
       queue: queue_id,
       topic: topic,
       scheduled_at: item.vesting_time

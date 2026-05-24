@@ -12,20 +12,20 @@ defmodule BedrockMinimalHostApp.BedrockJobQueueStressTest do
     queue_a = "tenant_a_#{System.unique_integer([:positive])}"
     queue_b = "tenant_b_#{System.unique_integer([:positive])}"
 
-    executor_config =
+    delivery_config =
       Application.get_env(:bedrock_minimal_host_app, BedrockMinimalHostApp.SquidMeshExecutor, [])
 
     Application.put_env(
       :bedrock_minimal_host_app,
       BedrockMinimalHostApp.SquidMeshExecutor,
-      Keyword.put(executor_config, :queue_id, queue_a)
+      Keyword.put(delivery_config, :queue_id, queue_a)
     )
 
     on_exit(fn ->
       Application.put_env(
         :bedrock_minimal_host_app,
         BedrockMinimalHostApp.SquidMeshExecutor,
-        executor_config
+        delivery_config
       )
     end)
 
@@ -141,6 +141,7 @@ defmodule BedrockMinimalHostApp.BedrockJobQueueStressTest do
                )
 
       assert %{
+               adapter: BedrockMinimalHostApp.SquidMeshExecutor,
                queue: ^queue_a,
                topic: "squid_mesh:payload",
                scheduled_at: scheduled_at
