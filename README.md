@@ -40,8 +40,8 @@ solve adjacent orchestration problems at different abstraction layers.
 ## What It Does
 
 - workflow DSL with manual and cron triggers
-- Postgres-backed run, step, attempt, and audit history
-- pluggable executor boundary for step execution, delayed scheduling, redelivery, and cron activation
+- Postgres-backed Jido journal history for runs, steps, attempts, and manual decisions
+- pulled execution through `SquidMesh.execute_next/1`, with optional cron payload delivery through host schedulers
 - retries, waits, failure routes, dependency joins, and HITL approval gates
 - explicit step input selection and output mapping
 - same-process host repo transactions for small local step groups
@@ -73,6 +73,11 @@ main abstraction, not just a background job. It fits flows where:
 For the full runtime direction and comparison with adjacent projects, see the
 [Positioning guide](docs/positioning.md).
 
+If you are new to the project, start with the
+[Learning Path](docs/learning_path.md). It teaches the model in order: install,
+write one workflow, drain journal attempts, inspect the run, then add retries,
+manual gates, cron, and Bedrock-backed leases when those pieces are needed.
+
 > [!WARNING]
 > Squid Mesh is still in early development. The runtime is suitable for evaluation, local development, and integration work, but it is not yet documented as production-ready.
 > See [Production Readiness](docs/production_readiness.md) for the current checklist and remaining bar.
@@ -80,18 +85,20 @@ For the full runtime direction and comparison with adjacent projects, see the
 ## Runtime Shape
 
 - Squid Mesh owns workflow structure, payload validation, runtime state, and retry policy
-- the host app owns durable execution, queueing, delayed scheduling, and redelivery through a `SquidMesh.Executor` implementation
-- your host app keeps its existing `Repo`, job system, and application boundaries
-- the Jido-native runtime path is moving toward IntentLedger as the preferred
-  durable executor while keeping custom executors possible
+- your host app keeps its existing `Repo`, supervision tree, and application boundaries
+- the Jido-native runtime persists workflow and dispatch facts through
+  `Jido.Storage`; the default Ecto adapter stores those journals in the host repo
+- workers execute visible attempts by calling `SquidMesh.execute_next/1`
+- cron schedulers can deliver `SquidMesh.Executor.Payload.cron/3` payloads to
+  `SquidMesh.Runtime.Runner.perform/2`
 
-## Future Executor Boundary
+## Execution Boundary
 
-The current public executor boundary lets host apps plug their own job runner for
-step delivery, delayed work, redelivery, and cron activation. The intended
-Jido-native path keeps that embedding model, but separates durable workflow
-facts from backend-specific delivery mechanics. In that shape, Squid Mesh records
-runtime facts in Jido journals while adapters provide queue and lease behavior.
+The current runtime is Jido-native. Squid Mesh records workflow facts in Jido
+journals while host-owned workers provide process supervision and capacity by
+calling `SquidMesh.execute_next/1`. External schedulers may enqueue cron
+activation payloads, but step delivery no longer requires a host executor
+module.
 
 ```text
 +-----------------------------------------------------+
@@ -118,9 +125,9 @@ runtime facts in Jido journals while adapters provide queue and lease behavior.
               |                          ^
               v                          |
 +----------------------------+  +----------------------------+
-| SquidMesh.Executor         |  | SquidMesh.Executor.Leases  |
+| SquidMesh.execute_next/1   |  | SquidMesh.Executor.Leases  |
 +----------------------------+  +----------------------------+
-| enqueue jobs / cron / delay|  | claim / heartbeat / finish |
+| claim and run journal work |  | claim / heartbeat / finish |
 +----------------------------+  +----------------------------+
               |                          |
               +-------------+------------+
@@ -154,7 +161,7 @@ Requirements:
 - an existing Elixir application
 - an existing Ecto `Repo`
 - Postgres for persisted runtime state
-- a host executor module that implements `SquidMesh.Executor`
+- a worker process that calls `SquidMesh.execute_next/1`
 
 ### 1. Install from Hex.pm
 
@@ -179,20 +186,16 @@ defp deps do
 end
 ```
 
-### 2. Configure Squid Mesh And An Executor
+### 2. Configure Squid Mesh
 
 ```elixir
 config :squid_mesh,
   repo: MiddleEarth.Repo,
-  executor: MiddleEarth.SquidMeshExecutor
-
-config :middle_earth, MiddleEarth.SquidMeshExecutor,
-  queue: :squid_mesh
+  queue: "default"
 ```
 
-The executor should enqueue `SquidMesh.Executor.Payload` values and deliver them
-back to `SquidMesh.Runtime.Runner.perform/1`. See
-[Host App Integration](docs/host_app_integration.md) for a minimal executor
+Start one supervised worker loop that calls `SquidMesh.execute_next/1`. See
+[Host App Integration](docs/host_app_integration.md) for a minimal worker
 shape.
 
 ### 3. Install migrations
@@ -359,9 +362,9 @@ defmodule Mordor.Workflows.FinalDistraction do
 end
 ```
 
-Step modules implement domain work. Squid Mesh records durable state, asks the
-configured executor to schedule work, applies step retry policy, routes failures
-after retry exhaustion, and exposes run inspection.
+Step modules implement domain work. Squid Mesh records durable journal state,
+makes runnable attempts visible to `SquidMesh.execute_next/1`, applies retry
+policy, routes failures after retry exhaustion, and exposes run inspection.
 
 For approval or manual-review gates, use `approval_step/2` in transition-based
 workflows and resume the paused run through `SquidMesh.approve_run/3` or

@@ -56,7 +56,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   - `:journal_storage` is the Jido storage adapter config.
   - `:queue` selects the dispatch queue and defaults to `"default"`.
   - `:owner_id` identifies the worker claiming the attempt.
-  - `:claim_id` and `:claim_token` may be supplied by tests or host executors
+  - `:claim_id` and `:claim_token` may be supplied by tests or host lease backends
     that need deterministic fencing values.
   - `:now` controls visibility, lease, and event timestamps.
   - `:finished_at` controls completion/failure timestamps for deterministic

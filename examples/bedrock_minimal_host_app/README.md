@@ -48,10 +48,10 @@ The stress test covers:
 - delayed job visibility
 - leasing and lease extension
 - retry requeue and dead-letter behavior
-- Squid Mesh executor payloads being mapped into Bedrock jobs
+- Squid Mesh cron payloads being mapped into Bedrock jobs
 - the `SquidMesh.Executor.Leases` contract through a Bedrock-backed example
   adapter
 
 The example intentionally does not include another job backend. That keeps the
-adapter boundary clear while the spike evaluates whether Bedrock can replace the
-delivery and leasing responsibilities currently handled by host executors.
+adapter boundary clear while the spike evaluates Bedrock as the host-owned
+delivery and leasing layer for Jido-native Squid Mesh execution.

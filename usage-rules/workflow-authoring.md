@@ -1,0 +1,45 @@
+# Squid Mesh Workflow Authoring Usage Rules
+
+## Workflow Shape
+
+- Define workflows as compiled Elixir modules with `use SquidMesh.Workflow`.
+- Use business names for triggers, steps, and transitions.
+- Keep workflow branches, retries, waits, recovery routes, and manual gates in
+  the workflow definition when operators need to understand them.
+- Use `SquidMesh.Workflow.to_spec/1` and `validate_spec/1` when tooling needs a
+  normalized data representation.
+- Do not build runtime-authored workflows from request input.
+
+## Steps
+
+- Prefer `use SquidMesh.Step` for custom steps.
+- Return `{:ok, output}` for success.
+- Return `{:error, reason}` for terminal failure governed by workflow routing.
+- Return `{:retry, reason}` or `{:retry, reason, opts}` for retryable failure.
+- Keep side-effect idempotency inside the step or host domain boundary.
+- Use raw `Jido.Action` modules only for explicit interop.
+
+## Data Mapping
+
+- Use payload contracts for start input validation.
+- Use step `input:` to select only the data a step needs.
+- Use step `output:` to place returned data under stable keys.
+- Use conditional transitions for inspectable routing decisions.
+- Keep condition `equals` values JSON-safe.
+
+## Manual And Long-Running Work
+
+- Use `:pause` or `approval_step/2` for operator-controlled boundaries.
+- Resolve manual gates through `unblock_run/3`, `approve_run/3`, and
+  `reject_run/3`.
+- Use `:wait` for workflow-scale delays, not arbitrary timers.
+- Prefer cron or host scheduling when the whole workflow should start later.
+
+## Recovery
+
+- Mark irreversible external side effects with `irreversible: true` or
+  `compensatable: false`.
+- Use `recovery: :compensation` or `recovery: :undo` on error transitions when
+  the route has operational meaning.
+- Do not rely on "this step should only run once" as the side-effect safety
+  model.

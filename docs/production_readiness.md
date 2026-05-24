@@ -10,7 +10,8 @@ that has actually been run.
 
 What exists today:
 
-- durable workflow runtime on top of Postgres and a host-provided executor
+- durable workflow runtime on top of Postgres-backed Jido journals and
+  host-supervised `execute_next/1` workers
 - replay, cancellation, retries, cron activation, and inspection
 - example host app harness with smoke, cancellation, restart resilience, and soak/load entrypoints
 - paused-run resume semantics now verified across restart boundaries in the example host app
@@ -47,7 +48,7 @@ MIX_ENV=test mix example.soak
 These checks are meant to answer different questions:
 
 - `example.smoke`: does the basic embedded workflow path work?
-- `example.resilience`: do queued, delayed, retrying, and paused-then-resumed runs survive a host executor restart boundary?
+- `example.resilience`: do queued, delayed, retrying, and paused-then-resumed runs survive worker and scheduler restart boundaries?
 - `example.soak`: does the runtime remain stable under a bounded mix of success, retry, replay, and cancellation traffic?
 
 ## Decision Rule

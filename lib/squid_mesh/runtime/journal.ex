@@ -4,7 +4,7 @@ defmodule SquidMesh.Runtime.Journal do
 
   The dispatch protocol owns the runtime fact schema. This module adapts those
   facts into Jido thread entries and checkpoints so storage-backed runtime
-  slices can rebuild projections without reading the legacy runtime tables.
+  slices can rebuild projections without scanning storage adapter internals.
   """
 
   alias Jido.Thread

@@ -3,8 +3,8 @@ defmodule SquidMesh.Runs.GraphInspection.Node do
   Public graph node for workflow run inspection.
 
   Nodes represent declared workflow steps. The graph projection keeps node
-  identifiers as strings so host UIs can use the same shape across runtime-table
-  and journal-backed inspection.
+  identifiers as strings so host UIs can use the same shape across persisted
+  inspection snapshots.
   """
 
   @type t :: %__MODULE__{

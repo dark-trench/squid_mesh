@@ -7,14 +7,14 @@ applications to own.
 
 Squid Mesh currently guarantees:
 
-- durable run, step, and attempt state in Postgres
-- durable queued and scheduled work through the configured host executor
+- durable run, step, attempt, dispatch, and manual-control facts in the configured journal storage
+- durable queued and scheduled workflow intent through journal dispatch facts
 - workflow-level retry, replay, inspection, and cancellation on top of that durable state
 
 Squid Mesh does not currently claim:
 
 - exactly-once external side effects
-- custom worker leases or heartbeats beyond the host executor backend
+- replacing every backend-specific worker lease or heartbeat system
 - dynamic cron registration after boot
 
 ## Idempotent Step Design
@@ -35,16 +35,16 @@ Avoid:
 - steps that produce irreversible side effects without a duplicate strategy
 - relying on "this step should only run once" as the safety model
 
-## Queue Sizing
+## Worker Sizing
 
-Squid Mesh calls the host app's executor, so queue sizing stays a host-app
-decision.
+Squid Mesh workers pull visible journal attempts through `SquidMesh.execute_next/1`,
+so worker sizing stays a host-app decision.
 
 Recommended starting point:
 
-- dedicate a workflow queue in the host executor, such as `:squid_mesh`
+- dedicate a small supervised worker pool to Squid Mesh execution
 - isolate higher-cost workflow traffic from unrelated app jobs
-- size concurrency conservatively, then increase based on observed queue depth
+- size concurrency conservatively, then increase based on visible attempt depth
 
 If workflows perform mostly I/O:
 
@@ -148,29 +148,6 @@ Use this path only after checking the external system or domain records. The
 marker changes Squid Mesh recovery semantics; it does not make a payment,
 message, shipment, or webhook idempotent.
 
-## Stale Running Steps
-
-By default, Squid Mesh does not reclaim a step that is already marked
-`running`. A duplicate or redelivered job skips the running step instead of
-starting another attempt.
-
-Host applications can opt in with `:stale_step_timeout`, measured in
-milliseconds. When enabled, a later redelivery can reclaim a `running` step whose
-step-run row has not been updated within that timeout. Reclaim marks the
-previous running attempt and step as failed with `reason: "stale_running_step"`,
-then prepares the same step again.
-
-Reclaim applies only while the run is still active. In practice the run is
-`:running` for the step being recovered; a `:pending` or `:retrying` run is
-transitioned back to `:running` during preparation. Terminal runs are skipped,
-and cancelling runs converge through cancellation instead of reclaiming work.
-
-Set this value higher than the longest normal step runtime. Squid Mesh does not
-heartbeat long-running actions while they execute, so a timeout that is too low
-can allow duplicate execution of a slow but still-running step. Steps that call
-external systems should still use idempotency keys or another duplicate-safety
-strategy.
-
 ## Backend-Owned Leases And Fencing
 
 Lease-capable executor backends should own queue delivery, claim expiry,
@@ -184,11 +161,6 @@ Recommended lease settings:
 - choose a lease timeout longer than the expected gap between heartbeats plus
   normal scheduler and database latency
 - heartbeat often enough that one missed heartbeat does not expire healthy work
-- keep Squid Mesh `:stale_step_timeout` disabled when Bedrock or another
-  lease-capable backend owns recovery
-- only enable `:stale_step_timeout` for executors that do not have leases or
-  heartbeats; set it higher than the longest step runtime you expect to be
-  healthy
 - use stable run, step, attempt, and domain-operation identifiers as backend
   work item keys or lineage metadata
 
@@ -204,8 +176,8 @@ calls still need idempotency keys or domain-level duplicate detection.
 
 ## Long Waits
 
-Built-in `:wait` steps are non-blocking because they ask the host executor to
-reschedule continuation instead of sleeping inside a worker.
+Built-in `:wait` steps are non-blocking because they append delayed journal
+runnable intent instead of sleeping inside a worker.
 
 Still, long waits have real operational cost:
 
@@ -222,7 +194,7 @@ Recommended practice:
 ## Cron Activation
 
 Cron triggers are declared in the workflow but activated by the host app through
-its scheduler and executor.
+its scheduler.
 
 Current boundary:
 
@@ -243,7 +215,7 @@ At minimum, production deployments should capture:
 
 - run lifecycle telemetry
 - step lifecycle telemetry
-- queue depth and throughput from the host executor backend
+- visible-attempt depth and journal worker throughput
 - structured logs with run and step metadata
 
 Recommended reading:

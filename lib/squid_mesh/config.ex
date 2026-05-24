@@ -9,12 +9,10 @@ defmodule SquidMesh.Config do
 
   alias SquidMesh.Runtime.Journal.Options
 
-  @type stale_step_timeout :: non_neg_integer() | :disabled
   @type runtime :: :journal
   @type read_model :: :read_model
   @type raw_config :: [
           repo: module(),
-          stale_step_timeout: stale_step_timeout(),
           runtime: runtime(),
           read_model: read_model(),
           journal_storage: term(),
@@ -22,7 +20,6 @@ defmodule SquidMesh.Config do
         ]
   @type t :: %__MODULE__{
           repo: module(),
-          stale_step_timeout: stale_step_timeout(),
           runtime: runtime(),
           read_model: read_model(),
           journal_storage: SquidMesh.Runtime.Journal.Storage.t() | nil,
@@ -32,13 +29,11 @@ defmodule SquidMesh.Config do
   defstruct [
     :repo,
     :journal_storage,
-    stale_step_timeout: :disabled,
     runtime: :journal,
     read_model: :read_model,
     queue: "default"
   ]
 
-  @default_stale_step_timeout :disabled
   @default_runtime :journal
   @default_read_model :read_model
   @default_queue "default"
@@ -62,20 +57,15 @@ defmodule SquidMesh.Config do
       |> Keyword.merge(overrides)
 
     with :ok <- validate_required_keys(config),
-         {:ok, stale_step_timeout} <-
-           validate_stale_step_timeout(
-             Keyword.get(config, :stale_step_timeout, @default_stale_step_timeout)
-           ),
+         :ok <- reject_removed_options(config),
          {:ok, runtime} <- validate_runtime(Keyword.get(config, :runtime, @default_runtime)),
          {:ok, read_model} <-
            validate_read_model(Keyword.get(config, :read_model, @default_read_model)),
          {:ok, queue} <- validate_queue(Keyword.get(config, :queue, @default_queue)),
-         :ok <- reject_legacy_executor(config),
          {:ok, journal_storage} <- validate_journal_storage(config, runtime, read_model) do
       {:ok,
        %__MODULE__{
          repo: Keyword.fetch!(config, :repo),
-         stale_step_timeout: stale_step_timeout,
          runtime: runtime,
          read_model: read_model,
          journal_storage: journal_storage,
@@ -114,19 +104,6 @@ defmodule SquidMesh.Config do
     case missing_keys do
       [] -> :ok
       keys -> {:error, {:missing_config, keys}}
-    end
-  end
-
-  defp validate_stale_step_timeout(stale_step_timeout) do
-    case stale_step_timeout do
-      :disabled ->
-        {:ok, :disabled}
-
-      timeout when is_integer(timeout) and timeout >= 0 ->
-        {:ok, timeout}
-
-      invalid ->
-        {:error, {:invalid_config, [stale_step_timeout: invalid]}}
     end
   end
 
@@ -188,9 +165,16 @@ defmodule SquidMesh.Config do
     end
   end
 
-  defp reject_legacy_executor(config) do
-    if Keyword.has_key?(config, :executor),
-      do: {:error, {:invalid_config, [executor: :unsupported]}},
-      else: :ok
+  defp reject_removed_options(config) do
+    cond do
+      Keyword.has_key?(config, :executor) ->
+        {:error, {:invalid_config, [executor: :unsupported]}}
+
+      Keyword.has_key?(config, :stale_step_timeout) ->
+        {:error, {:invalid_config, [stale_step_timeout: :unsupported]}}
+
+      true ->
+        :ok
+    end
   end
 end

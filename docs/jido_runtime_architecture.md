@@ -1,37 +1,34 @@
 # Jido Runtime Architecture
 
-This document describes the intended Squid Mesh runtime shape as the project
-continues moving onto Jido-native coordination. It is written for new
-contributors and host-app maintainers who need to understand how the pieces fit
-together before reading individual modules.
+This document describes the Squid Mesh runtime shape after the switchover to
+Jido-native coordination. It is written for new contributors and host-app
+maintainers who need to understand how the pieces fit together before reading
+individual modules.
 
-Squid Mesh's direction is:
+Squid Mesh's runtime shape is:
 
 - workflow authors keep using the Squid Mesh DSL for business workflows
 - custom step modules run through Jido action contracts
 - runtime coordination rebuilds from Jido-backed journals
 - workflow runs and dispatch queues are represented by Jido agents
-- durable executor integration can default to IntentLedger while staying
-  replaceable at the dispatch boundary
-
-The live runtime still includes the current Postgres tables and host-provided
-`SquidMesh.Executor` path. The Jido-native modules described here are the
-target architecture and are being introduced in small slices.
+- step execution is pulled through `SquidMesh.execute_next/1`
+- optional cron payload delivery remains backend-neutral through
+  `SquidMesh.Runtime.Runner.perform/2`
 
 ## Roadmap Alignment
 
-The final intended shape is anchored in the public issue roadmap:
+The current shape is anchored in the public issue roadmap:
 
 | Issue | Status | Architecture impact |
 | --- | --- | --- |
-| [#160](https://github.com/dark-trench/squid_mesh/issues/160) | Open umbrella | Rebuild the core around Jido primitives, Runic planning, Spark workflow specs, and journal-backed runtime state |
+| [#160](https://github.com/dark-trench/squid_mesh/issues/160) | Closed umbrella | Rebuild the core around Jido primitives, Runic planning, Spark workflow specs, and journal-backed runtime state |
 | [#161](https://github.com/dark-trench/squid_mesh/issues/161) | Closed | Defines the durable dispatch protocol over Jido thread journals |
 | [#162](https://github.com/dark-trench/squid_mesh/issues/162) | Closed | Adds the `Jido.Storage` journal and checkpoint boundary |
 | [#164](https://github.com/dark-trench/squid_mesh/issues/164) | Closed | Adds rebuildable workflow and dispatch agents |
 | [#165](https://github.com/dark-trench/squid_mesh/issues/165) | Closed | Compiles Spark workflow specs into Runic planner state |
-| [#170](https://github.com/dark-trench/squid_mesh/issues/170) | Open | Adds IntentLedger-backed leases, heartbeats, and fencing for running attempts |
+| [#170](https://github.com/dark-trench/squid_mesh/issues/170) | Closed | Adds backend-owned leases, heartbeats, and fencing for running attempts |
 | [#163](https://github.com/dark-trench/squid_mesh/issues/163) | Closed | Rebuilds inspection and explanation as projections over journals and checkpoints |
-| [#140](https://github.com/dark-trench/squid_mesh/issues/140) | Open | Adds conditional and deferred continuation through durable planner facts |
+| [#140](https://github.com/dark-trench/squid_mesh/issues/140) | Closed | Adds conditional and deferred continuation through durable planner facts |
 | [#141](https://github.com/dark-trench/squid_mesh/issues/141) | Open | Adds dynamic graph expansion after the static Jido-native core is proven |
 | [#109](https://github.com/dark-trench/squid_mesh/issues/109) | Open | Adds reference workflows that demonstrate the target product surface |
 
@@ -47,7 +44,7 @@ flowchart TB
     subgraph HostApp[Host application]
         Workflow[Workflow modules]
         Repo[Host Repo]
-        Executor[Executor or IntentLedger adapter]
+        Backend[Optional lease backend]
         Workers[Worker processes]
     end
 
@@ -78,14 +75,14 @@ flowchart TB
     Journal --> WorkflowAgent
     Journal --> DispatchAgent
     WorkflowAgent --> DispatchAgent
-    DispatchAgent --> Executor
-    Executor --> Workers
+    DispatchAgent --> Backend
+    Backend --> Workers
     Workers --> Actions
     Actions --> DispatchAgent
     DispatchAgent --> WorkflowAgent
     WorkflowAgent --> Policies
     Policies --> Inspector
-    Repo -. current stable tables .- Core
+    Repo -. default Ecto storage .- Journal
     AgentModel -. agent process shape .- WorkflowAgent
     AgentModel -. agent process shape .- DispatchAgent
 ```
@@ -103,7 +100,7 @@ crash and restart because their projections can be rebuilt from durable facts.
 | Runtime journal | Append-only facts, thread revisions, checkpoints through `Jido.Storage` | Business decisions hidden outside entries |
 | `WorkflowAgent` | Per-run coordination projection, planned runnables, applied results, manual state, terminal state | Executing step code directly |
 | `DispatchAgent` | Queue projection, visible attempts, claims, leases, heartbeats, completions, failures | Choosing the workflow graph |
-| Executor adapter | Waking workers and integrating a delivery backend such as IntentLedger | Rewriting Squid Mesh workflow semantics |
+| Optional lease backend | Waking workers and integrating durable delivery, claim, heartbeat, retry, and recovery mechanics | Rewriting Squid Mesh workflow semantics |
 | Jido actions | Step callback contract and action execution boundary | Whole-workflow orchestration |
 | Host app | Domain code, repo, deployment, external APIs, permissions | Squid Mesh runtime invariants |
 
@@ -124,13 +121,43 @@ flowchart LR
     Decide -- no --> Terminal[Append run_terminal]
 ```
 
-The target runtime uses two different kinds of durable state:
+The current runtime uses two different kinds of durable state:
 
 - journal entries: the source of truth for lifecycle facts
 - checkpoints: cached projections that speed up rebuilds
 
 Checkpoints are always disposable. If a checkpoint is missing or stale, the
 agent can replay entries from the thread and reconstruct the same projection.
+
+## Execution Ordering
+
+The runtime is careful about which durable fact is written before the next
+effect becomes visible. The ordering below is the core safety model for normal
+step execution, retry, and successor dispatch.
+
+```mermaid
+sequenceDiagram
+    participant API as Public API
+    participant Run as Run thread
+    participant Dispatch as Dispatch thread
+    participant Worker as Worker loop
+    participant Step as Step module
+
+    API->>Run: append run_started
+    Run->>Run: append runnable_planned
+    Run->>Dispatch: append attempt_scheduled
+    Worker->>Dispatch: append attempt_claimed
+    Dispatch-->>Worker: claim fence
+    Worker->>Step: execute input
+    Step-->>Worker: ok or error
+    Worker->>Dispatch: append attempt_completed or attempt_failed
+    Dispatch->>Run: append runnable_applied
+    Run->>Run: append successor plan or terminal fact
+    Run->>Dispatch: append successor attempt if needed
+```
+
+The worker never becomes the authority for workflow progress. It only holds a
+claim fence long enough to execute a visible attempt and report the result.
 
 ## Journal Threads
 
@@ -181,6 +208,40 @@ Each append uses the current thread revision as an optimistic fence. A stale
 caller that tries to append based on an old projection receives a conflict
 instead of silently overwriting runtime state.
 
+## Projection Rebuild Map
+
+The read model is intentionally rebuildable from journal threads. Checkpoints
+only shorten replay; deleting them must not change the resulting state.
+
+```mermaid
+flowchart TD
+    subgraph Storage[Jido storage]
+        RunThread[Run thread entries]
+        DispatchThread[Dispatch thread entries]
+        IndexThread[Run index entries]
+        CatalogThread[Run catalog entries]
+        Checkpoints[Projection checkpoints]
+    end
+
+    RunThread --> WorkflowAgent[WorkflowAgent projection]
+    DispatchThread --> DispatchAgent[DispatchAgent projection]
+    IndexThread --> RunIndex[Workflow run index]
+    CatalogThread --> RunCatalog[Global run catalog]
+    Checkpoints -. accelerate replay .-> WorkflowAgent
+    Checkpoints -. accelerate replay .-> DispatchAgent
+
+    WorkflowAgent --> Inspection[inspect_run snapshot]
+    DispatchAgent --> Inspection
+    RunIndex --> Listing[list_runs by workflow]
+    RunCatalog --> Listing
+    Inspection --> Explanation[explain_run details]
+    Inspection --> Graph[inspect_run_graph nodes and edges]
+```
+
+This is the boundary SquidSonar and visual editors should depend on: listing
+comes from catalog or index projections, while run detail and graph views come
+from inspection projections.
+
 ## Agents
 
 Squid Mesh uses Jido agents as rebuildable runtime coordinators, not as a new
@@ -210,9 +271,8 @@ flowchart TD
 | `DispatchAgent` | One per queue | Dispatch thread and checkpoint | Which attempts are visible, claimed, expired, completed, failed, or retryable? |
 | Future step agent | Optional, per long-running step or sub-agent | A step-owned thread or parent run thread | What state belongs inside one long-running autonomous step? |
 
-The phrase "a workflow is an agent" is directionally correct for the target
-runtime, with one important nuance: the workflow run is coordinated by a
-`WorkflowAgent`. The workflow definition remains declarative data, and each
+The phrase "a workflow run is coordinated by an agent" is useful with one
+important nuance: the workflow definition remains declarative data, and each
 step remains a business action or built-in step.
 
 ## Heartbeats And Leases
@@ -254,11 +314,10 @@ Heartbeat rules:
 | Completion and failure use the same claim fence | Prevents stale workers from reporting final results after losing the lease |
 | Expired claims remain visible to projection rebuilds | Allows recovery after worker death or node restart |
 
-For long-running steps, this heartbeat path is the missing durability piece
-tracked by #170. It lets the runtime distinguish "still alive" from "needs
-recovery". The durable executor adapter should own the concrete lease mechanics
-once IntentLedger is plugged in, with Squid Mesh translating the resulting
-lifecycle facts into its dispatch projection.
+For long-running steps, this heartbeat path lets the runtime distinguish "still
+alive" from "needs recovery". A lease-capable backend should own the concrete
+lease mechanics when a host needs backend-owned worker fencing, with Squid Mesh
+translating the resulting lifecycle facts into its dispatch projection.
 
 ## Recovery Flow
 
@@ -296,41 +355,42 @@ projection.
 | Run reaches terminal state while dispatch work exists | Run thread has `run_terminal` | Rebuilt dispatch views exclude terminal-run attempts from redelivery |
 | Stale projection writes | Append uses old thread revision | `Jido.Storage` returns conflict; caller rebuilds |
 
-## Where IntentLedger Fits
+## Where Backend Leases Fit
 
-IntentLedger is expected to be the preferred durable executor integration after
-the core Jido-native protocol is proven. It is not the place where Squid Mesh
-workflow semantics move.
+Backend leases are optional runtime infrastructure. They are not the place
+where Squid Mesh workflow semantics move.
 
 ```mermaid
 flowchart LR
-    DispatchAgent --> Adapter[IntentLedger dispatcher adapter]
-    Adapter --> Intent[IntentLedger intent]
-    Intent --> BedrockQueue[bedrock_job_queue]
-    BedrockQueue --> Worker[Worker process]
+    DispatchAgent --> Adapter[Lease adapter]
+    Adapter --> Backend[Durable queue or lease backend]
+    Backend --> Worker[Worker process]
     Worker --> Adapter
     Adapter --> DispatchAgent
 ```
 
-| Squid Mesh concept | IntentLedger-facing concept |
+| Squid Mesh concept | Backend-facing concept |
 | --- | --- |
-| Runnable intent | Intent |
-| `runnable_key` | Intent key or lineage |
-| Claim and heartbeat | Executor lease lifecycle |
+| Runnable intent | Durable work item, job, or intent |
+| `runnable_key` | Backend key, idempotency key, or lineage metadata |
+| Claim and heartbeat | Backend lease lifecycle |
 | Completion or failure | Intent result translated back to dispatch facts |
-| Retry visibility | Durable rescheduling of the intent |
+| Retry visibility | Durable rescheduling or delayed visibility |
 
 This keeps setup friction low for most users while preserving an escape hatch:
-advanced host applications can still implement a custom executor adapter if
-they need a different backend. That adapter boundary should come after the core
-protocol is trustworthy, matching the sequencing in #160 and #170.
+basic hosts can use a simple `execute_next/1` worker loop, while advanced hosts
+can connect a backend lease adapter when they need stronger distributed worker
+ownership. Bedrock is the recommended reference backend today because the
+example app exercises queueing, delayed visibility, claims, heartbeats,
+completion, retry, and dead-letter behavior without coupling workflow modules
+to Bedrock APIs.
 
 ## AI-Backed Steps
 
-In the target runtime, the workflow run is already coordinated by a
-`WorkflowAgent`. That means Squid Mesh does not need a separate step kind just
-because a step implementation uses an LLM, calls tools, or delegates some local
-decision-making to Jido.
+In the current runtime, the workflow run is coordinated by a `WorkflowAgent`.
+That means Squid Mesh does not need a separate step kind just because a step
+implementation uses an LLM, calls tools, or delegates some local decision-making
+to Jido.
 
 AI-backed work should usually be modeled as an ordinary step:
 
@@ -351,8 +411,8 @@ That keeps the important contract visible:
 
 The closed `agent_step/3` issue
 [#138](https://github.com/dark-trench/squid_mesh/issues/138) explored an
-explicit metadata marker for agentic steps. With the workflow run itself moving
-to a Jido-agent coordinator, that separate DSL construct is not currently part
+explicit metadata marker for agentic steps. With the workflow run itself now
+coordinated by a Jido agent, that separate DSL construct is not currently part
 of the core runtime roadmap.
 
 A new construct would only be worth adding later if it has different lifecycle
@@ -382,31 +442,30 @@ Design questions before adding such a construct:
 | Can child work be replayed safely? | Require explicit replay contracts and side-effect idempotency |
 | Can child work outlive its parent run? | Default no; terminal parent runs should fence child work |
 
-## Current Versus Target
+## Runtime Shape
 
-| Area | Current stable path | Intended Jido-native path |
+| Area | Current path | Notes |
 | --- | --- | --- |
-| Workflow authoring | Squid Mesh DSL | Same DSL |
-| Step execution | `SquidMesh.Step` and `Jido.Action` interop | Same, with stronger Jido-native contracts |
-| Durable run state | Postgres run, step, attempt tables | Jido-backed run threads plus projections |
-| Dispatch | Host-provided `SquidMesh.Executor` | Dispatch agent plus default IntentLedger adapter |
-| Long-running recovery | Host executor redelivery and stale-step timeout | Lease heartbeat, expired claim recovery, journal rebuild |
-| Inspection | Tables, audit events, explanation model | Projection-backed snapshots, explanation views, richer agent history |
-| Storage | Host Repo and current migrations | `Jido.Storage` adapters, likely Postgres and Bedrock options |
+| Workflow authoring | Squid Mesh DSL | Workflow authors do not need to write Jido agents directly |
+| Step execution | `SquidMesh.Step` and `Jido.Action` interop | Workers claim visible attempts with `SquidMesh.execute_next/1` |
+| Durable run state | Jido-backed run threads plus projections | The default Ecto adapter stores threads, entries, and checkpoints in the host repo |
+| Dispatch | Dispatch agent plus journal attempts | Backend-owned leases can be layered through `SquidMesh.Executor.Leases` |
+| Long-running recovery | Lease heartbeat, expired claim recovery, journal rebuild | Timeout-based step reclaim is not part of the public config |
+| Inspection | Projection-backed snapshots and explanations | Inspection rebuilds from journal facts |
+| Storage | `Jido.Storage` adapters | Postgres-compatible Ecto storage is the default supported path |
 
-## Later Runtime Features
+## Runtime Feature Map
 
-These are intentionally not first-slice requirements. The first
-projection-backed inspection snapshot already rebuilds workflow and dispatch
-agent projections into a read-only view of pending dispatches, unapplied
-results, scheduled attempts, visible attempts, expired claims, manual pause or
-approval state, terminal state, and projection anomalies. Run-index projections
-rebuild workflow-scoped run lookup state from durable index entries, while the
-global run-catalog projection rebuilds all-run lookup state without scanning
-adapter internals. Both facts retain the queue each run was dispatched through
-and keep malformed or conflicting facts visible as anomalies. The first
-projected explanation layer derives deterministic reason-specific details and
-next actions from the inspection snapshot. The public `SquidMesh.inspect_run/2`,
+Projection-backed inspection rebuilds workflow and dispatch agent projections
+into a read-only view of pending dispatches, unapplied results, scheduled
+attempts, visible attempts, expired claims, manual pause or approval state,
+terminal state, and projection anomalies. Run-index projections rebuild
+workflow-scoped run lookup state from durable index entries, while the global
+run-catalog projection rebuilds all-run lookup state without scanning adapter
+internals. Both facts retain the queue each run was dispatched through and keep
+malformed or conflicting facts visible as anomalies. The projected explanation
+layer derives deterministic reason-specific details and next actions from the
+inspection snapshot. The public `SquidMesh.inspect_run/2`,
 `SquidMesh.list_runs/2`, and `SquidMesh.explain_run/2` APIs expose this read
 model by default and infer Ecto storage from the configured repo. Host apps can
 still pass explicit `journal_storage:` or `queue:` overrides when a test or
@@ -440,5 +499,5 @@ After this overview, read:
 2. [Durable dispatch protocol](durable_dispatch_protocol.md) for exact journal
    entry semantics.
 3. [Operations guide](operations.md) for current production boundaries.
-4. [Workflow authoring](workflow_authoring.md) for the DSL that should remain
-   stable through the runtime transition.
+4. [Workflow authoring](workflow_authoring.md) for the DSL that remains stable
+   while backend execution choices evolve.
