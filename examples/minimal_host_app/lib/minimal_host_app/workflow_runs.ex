@@ -126,7 +126,7 @@ defmodule MinimalHostApp.WorkflowRuns do
     SquidMesh.explain_run(run_id)
   end
 
-  @spec cancel_run(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}
+  @spec cancel_run(Ecto.UUID.t()) :: {:ok, run_result()} | {:error, term()}
   def cancel_run(run_id) do
     SquidMesh.cancel_run(run_id)
   end

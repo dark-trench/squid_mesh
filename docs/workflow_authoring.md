@@ -426,11 +426,12 @@ With those settings, workflow code can use the same public calls without
 threading journal options through every boundary:
 
 ```elixir
-{:ok, snapshot} = SquidMesh.start_run(MyWorkflow, %{account_id: "acct_123"})
-{:ok, snapshot} = SquidMesh.inspect_run(snapshot.run_id)
+{:ok, started} = SquidMesh.start_run(MyWorkflow, %{account_id: "acct_123"})
+{:ok, snapshot} = SquidMesh.inspect_run(started.run_id)
 {:ok, snapshot} = SquidMesh.execute_next(owner_id: "worker-1")
 {:ok, summaries} = SquidMesh.list_runs([])
 {:ok, workflow_summaries} = SquidMesh.list_runs(workflow: MyWorkflow)
+{:ok, cancelled} = SquidMesh.cancel_run(started.run_id)
 ```
 
 When no `journal_storage` is configured, Squid Mesh infers
@@ -451,6 +452,12 @@ when a caller only needs one workflow. Listing returns redacted summaries; call
 `inspect_run/2` or `inspect_run_graph/2` with the selected summary's `run_id`
 and `queue` when the caller needs full inputs, outputs, attempts, history, or
 claim metadata.
+
+Journal cancellation appends a terminal run fact, clears any manual pause state
+from the rebuilt projection, and fences stale dispatch claims before they can
+complete after cancellation. The `queue` option selects the returned dispatch
+projection for inspection; the cancellation boundary is the globally unique
+`run_id`.
 
 ## Graph Inspection
 

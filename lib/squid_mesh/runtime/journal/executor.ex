@@ -35,6 +35,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
            | {:owner_id, term()}
            | {:claim_id, term()}
            | {:claim_token, term()}
+           | {:test_after_claim, term()}
            | {:option, atom()}}
           | Definition.load_error()
           | {:unknown_step, atom()}
@@ -104,22 +105,73 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          claim_token: claim_token
        })
        when is_list(opts) do
-    with {:ok, workflow_agent} <- WorkflowAgent.rebuild(storage, attempt.run_id),
-         {:ok, workflow, definition, step_name, step} <-
-           executable_step(storage, workflow_agent, attempt) do
-      context = step_context(attempt, workflow, step_name)
-      finished_at = lifecycle_time(opts, claim_now)
-      runtime = %{storage: storage, queue: queue, now: finished_at}
+    with :ok <- run_test_after_claim_hook(opts, attempt),
+         {:ok, workflow_agent} <- WorkflowAgent.rebuild(storage, attempt.run_id) do
       claim = claim_context(dispatch_agent, workflow_agent, attempt, claim_id, claim_token)
-
-      case run_step(step, attempt.input, context) do
-        {:ok, output, execution_opts} ->
-          complete_attempt(runtime, claim, definition, step_name, output, execution_opts)
-
-        {:error, reason} ->
-          fail_attempt(runtime, claim, workflow, definition, step_name, reason)
-      end
+      execute_claimed_attempt(storage, queue, claim_now, opts, claim)
     else
+      {:error, reason} ->
+        finished_at = lifecycle_time(opts, claim_now)
+
+        fail_incompatible_attempt(
+          storage,
+          queue,
+          finished_at,
+          dispatch_agent,
+          attempt,
+          claim_id,
+          claim_token,
+          reason
+        )
+    end
+  end
+
+  defp execute_claimed_attempt(
+         storage,
+         queue,
+         %DateTime{} = claim_now,
+         opts,
+         %{
+           workflow_agent: workflow_agent,
+           attempt: %ActionAttempt{} = attempt
+         } = claim
+       )
+       when is_list(opts) do
+    if Projection.terminal?(workflow_agent.state.projection) do
+      Inspection.snapshot(storage, attempt.run_id, queue: queue, now: claim_now)
+    else
+      run_active_claimed_attempt(storage, queue, claim_now, opts, claim)
+    end
+  end
+
+  defp run_active_claimed_attempt(
+         storage,
+         queue,
+         %DateTime{} = claim_now,
+         opts,
+         %{
+           dispatch_agent: dispatch_agent,
+           workflow_agent: workflow_agent,
+           attempt: %ActionAttempt{} = attempt,
+           claim_id: claim_id,
+           claim_token: claim_token
+         } = claim
+       )
+       when is_list(opts) do
+    case executable_step(storage, workflow_agent, attempt) do
+      {:ok, workflow, definition, step_name, step} ->
+        context = step_context(attempt, workflow, step_name)
+        finished_at = lifecycle_time(opts, claim_now)
+        runtime = %{storage: storage, queue: queue, now: finished_at}
+
+        case run_step(step, attempt.input, context) do
+          {:ok, output, execution_opts} ->
+            complete_attempt(runtime, claim, definition, step_name, output, execution_opts)
+
+          {:error, reason} ->
+            fail_attempt(runtime, claim, workflow, definition, step_name, reason)
+        end
+
       {:error, reason} ->
         finished_at = lifecycle_time(opts, claim_now)
 
@@ -1900,6 +1952,9 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       Keyword.has_key?(opts, :finished_at) and not match?(%DateTime{}, opts[:finished_at]) ->
         invalid_option(:finished_at)
 
+      Keyword.has_key?(opts, :test_after_claim) and not is_function(opts[:test_after_claim], 1) ->
+        invalid_option(:test_after_claim)
+
       Keyword.get(opts, :runtime) != :journal ->
         invalid_option(:runtime)
 
@@ -1918,8 +1973,16 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       :claim_token,
       :lease_for,
       :now,
-      :finished_at
+      :finished_at,
+      :test_after_claim
     ]
+  end
+
+  defp run_test_after_claim_hook(opts, %ActionAttempt{} = attempt) do
+    case Keyword.get(opts, :test_after_claim) do
+      nil -> :ok
+      hook when is_function(hook, 1) -> hook.(attempt)
+    end
   end
 
   defp journal_storage(opts) do

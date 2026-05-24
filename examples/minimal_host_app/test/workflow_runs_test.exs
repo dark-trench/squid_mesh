@@ -258,6 +258,47 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     )
   end
 
+  test "cancels a dependency workflow through inferred Ecto journal defaults" do
+    queue = "minimal-host-app-default-journal-cancel-#{System.unique_integer([:positive])}"
+
+    with_squid_mesh_env(
+      [
+        repo: Repo,
+        queue: queue
+      ],
+      fn ->
+        attrs = %{
+          account_id: "acct_default_journal_cancel",
+          invoice_id: "inv_default_journal_cancel",
+          attempt_id: "attempt_default_journal_cancel"
+        }
+
+        assert {:ok, %Snapshot{} = started_run} =
+                 WorkflowRuns.start_dependency_recovery(attrs)
+
+        assert started_run.queue == queue
+        assert started_run.status == :running
+        assert [_attempt | _] = started_run.visible_attempts
+
+        assert {:ok, %Snapshot{} = cancelled_run} = WorkflowRuns.cancel_run(started_run.run_id)
+
+        assert cancelled_run.run_id == started_run.run_id
+        assert cancelled_run.queue == queue
+        assert cancelled_run.status == :cancelled
+        assert cancelled_run.terminal?
+        assert cancelled_run.terminal_status == :cancelled
+        assert cancelled_run.visible_attempts == []
+
+        assert {:ok, %Snapshot{} = inspected_run} = WorkflowRuns.inspect_run(started_run.run_id)
+        assert inspected_run.status == :cancelled
+        assert inspected_run.queue == queue
+
+        assert {:ok, :none} =
+                 SquidMesh.execute_next(owner_id: "minimal-host-app-default-journal-cancel-test")
+      end
+    )
+  end
+
   test "commits local repo transaction groups through the host boundary" do
     assert {:ok, run} =
              WorkflowRuns.start_local_ledger_checkout(%{
@@ -496,6 +537,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              local_ledger_rollback: local_ledger_rollback,
              journal_executor: journal_executor,
              journal_recovery: journal_recovery,
+             journal_cancellation: journal_cancellation,
              daily_digest: daily_digest
            } =
              Smoke.run_all!()
@@ -524,6 +566,9 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert journal_recovery.status == :completed
     assert journal_recovery.applied_runnable_keys == journal_recovery.planned_runnable_keys
+
+    assert journal_cancellation.status == :cancelled
+    assert journal_cancellation.visible_attempts == []
 
     assert daily_digest.status == :completed
     assert daily_digest.trigger == :daily_digest
@@ -562,6 +607,14 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert run.status == :completed
     assert run.workflow == "Elixir.MinimalHostApp.Workflows.DependencyRecovery"
     assert run.applied_runnable_keys == run.planned_runnable_keys
+  end
+
+  test "runs the journal cancellation smoke path" do
+    assert %SquidMesh.ReadModel.Inspection.Snapshot{} = run = Smoke.run_journal_cancellation!()
+
+    assert run.status == :cancelled
+    assert run.terminal?
+    assert run.visible_attempts == []
   end
 
   test "runs the cancellation smoke path" do

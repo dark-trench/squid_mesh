@@ -15,6 +15,7 @@ defmodule SquidMesh do
   alias SquidMesh.Runs.Explanation
   alias SquidMesh.Runs.GraphInspection
   alias SquidMesh.Runtime.Dispatcher
+  alias SquidMesh.Runtime.Journal.Cancellation
   alias SquidMesh.Runtime.Journal.Executor
   alias SquidMesh.Runtime.Journal.ManualControl
   alias SquidMesh.Runtime.Journal.Options
@@ -313,12 +314,13 @@ defmodule SquidMesh do
   Requests cancellation for an eligible workflow run.
   """
   @spec cancel_run(Ecto.UUID.t(), keyword()) ::
-          {:ok, Run.t()}
+          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
              | Runs.Store.transition_error()
+             | Cancellation.cancel_error()
              | unsupported_runtime_error()}
   def cancel_run(run_id, overrides \\ []) do
     with {:ok, runtime} <- runtime(overrides) do
@@ -604,8 +606,8 @@ defmodule SquidMesh do
     end
   end
 
-  defp cancel_run_with_runtime(:journal, _run_id, _overrides) do
-    unsupported_journal_runtime(:cancel_run)
+  defp cancel_run_with_runtime(:journal, run_id, overrides) do
+    Cancellation.cancel(run_id, journal_control_options(overrides))
   end
 
   defp unblock_runtime_table_run(run_id, attrs, overrides) do
