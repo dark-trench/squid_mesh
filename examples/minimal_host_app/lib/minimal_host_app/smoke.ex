@@ -16,9 +16,9 @@ defmodule MinimalHostApp.Smoke do
   alias SquidMesh.Runtime.Runner
 
   @poll_attempts 20
-  @journal_executor_attempts 10
-  @journal_executor_queue_prefix "minimal-host-app-journal-smoke"
-  @journal_executor_storage {SquidMesh.Runtime.Journal.Storage.Ecto, repo: Repo}
+  @journal_run_attempts 10
+  @journal_run_queue_prefix "minimal-host-app-journal-smoke"
+  @journal_run_storage {SquidMesh.Runtime.Journal.Storage.Ecto, repo: Repo}
 
   @spec run!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   def run! do
@@ -64,7 +64,7 @@ defmodule MinimalHostApp.Smoke do
           local_ledger_checkout: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           local_ledger_rollback: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           saga_checkout: SquidMesh.ReadModel.Inspection.Snapshot.t(),
-          journal_executor: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          journal_run: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_recovery: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_cancellation: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_replay: SquidMesh.ReadModel.Inspection.Snapshot.t(),
@@ -78,7 +78,7 @@ defmodule MinimalHostApp.Smoke do
     manual_digest = run_manual_digest!()
     {local_ledger_checkout, local_ledger_rollback} = run_local_ledger_checkout!()
     saga_checkout = run_saga_checkout!()
-    journal_executor = run_journal_executor!()
+    journal_run = run_journal_run!()
     journal_recovery = run_journal_recovery!()
     journal_cancellation = run_journal_cancellation!()
     journal_replay = run_journal_replay!()
@@ -100,7 +100,7 @@ defmodule MinimalHostApp.Smoke do
         local_ledger_checkout: local_ledger_checkout,
         local_ledger_rollback: local_ledger_rollback,
         saga_checkout: saga_checkout,
-        journal_executor: journal_executor,
+        journal_run: journal_run,
         journal_recovery: journal_recovery,
         journal_cancellation: journal_cancellation,
         journal_replay: journal_replay,
@@ -150,12 +150,12 @@ defmodule MinimalHostApp.Smoke do
   end
 
   @doc """
-  Runs the dependency-based example workflow through the journal executor.
+  Runs the dependency-based example workflow through the journal run loop.
   """
-  @spec run_journal_executor!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
-  def run_journal_executor! do
+  @spec run_journal_run!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
+  def run_journal_run! do
     RuntimeHarness.ensure_runtime_started()
-    queue = journal_executor_queue()
+    queue = journal_run_queue()
 
     attrs = %{
       account_id: "acct_journal_demo",
@@ -171,28 +171,28 @@ defmodule MinimalHostApp.Smoke do
                attrs
              ),
            {:ok, inspected_run} <-
-             drain_journal_executor(started_run.run_id, @journal_executor_attempts),
+             drain_journal_run(started_run.run_id, @journal_run_attempts),
            {:ok, explanation} <- SquidMesh.explain_run(started_run.run_id) do
         unless started_run.queue == queue and
                  inspected_run.queue == queue and
                  explanation.queue == queue do
-          raise "unexpected journal executor queue"
+          raise "unexpected journal run queue"
         end
 
         unless inspected_run.status == :completed do
-          raise "unexpected journal executor smoke result"
+          raise "unexpected journal run smoke result"
         end
 
         inspected_run
       else
         {:error, reason} ->
-          raise "journal executor smoke test failed: #{inspect(reason)}"
+          raise "journal run smoke test failed: #{inspect(reason)}"
       end
     end)
   end
 
   @doc """
-  Runs a journal executor smoke path after dropping checkpoints.
+  Runs a journal run smoke path after dropping checkpoints.
 
   The append-only Jido thread log remains the source of truth, so inspection and
   execution must recover from persisted entries when checkpoint accelerators are
@@ -201,7 +201,7 @@ defmodule MinimalHostApp.Smoke do
   @spec run_journal_recovery!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   def run_journal_recovery! do
     RuntimeHarness.ensure_runtime_started()
-    queue = journal_executor_queue()
+    queue = journal_run_queue()
 
     attrs = %{
       account_id: "acct_journal_recovery_demo",
@@ -219,7 +219,7 @@ defmodule MinimalHostApp.Smoke do
            :ok <- delete_journal_checkpoints(started_run.run_id, queue),
            {:ok, recovered_run} <- SquidMesh.inspect_run(started_run.run_id),
            {:ok, completed_run} <-
-             drain_journal_executor(started_run.run_id, @journal_executor_attempts) do
+             drain_journal_run(started_run.run_id, @journal_run_attempts) do
         unless recovered_run.run_id == started_run.run_id and recovered_run.queue == queue do
           raise "unexpected recovered journal run"
         end
@@ -231,7 +231,7 @@ defmodule MinimalHostApp.Smoke do
         completed_run
       else
         {:error, reason} ->
-          raise "journal recovery smoke test failed: #{inspect(reason)}"
+          raise "journal run recovery smoke test failed: #{inspect(reason)}"
       end
     end)
   end
@@ -242,7 +242,7 @@ defmodule MinimalHostApp.Smoke do
   @spec run_journal_cancellation!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   def run_journal_cancellation! do
     RuntimeHarness.ensure_runtime_started()
-    queue = journal_executor_queue()
+    queue = journal_run_queue()
 
     attrs = %{
       account_id: "acct_journal_cancel_demo",
@@ -259,7 +259,7 @@ defmodule MinimalHostApp.Smoke do
              ),
            {:ok, cancelled_run} <- SquidMesh.cancel_run(started_run.run_id),
            {:ok, inspected_run} <- SquidMesh.inspect_run(started_run.run_id),
-           {:ok, :none} <- SquidMesh.execute_next(journal_executor_execute_options()) do
+           {:ok, :none} <- SquidMesh.execute_next(journal_run_execute_options()) do
         unless started_run.queue == queue and
                  cancelled_run.queue == queue and
                  inspected_run.queue == queue do
@@ -285,7 +285,7 @@ defmodule MinimalHostApp.Smoke do
   @spec run_journal_replay!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   def run_journal_replay! do
     RuntimeHarness.ensure_runtime_started()
-    queue = journal_executor_queue()
+    queue = journal_run_queue()
 
     attrs = %{
       account_id: "acct_journal_replay_demo",
@@ -301,10 +301,10 @@ defmodule MinimalHostApp.Smoke do
                attrs
              ),
            {:ok, completed_run} <-
-             drain_journal_executor(started_run.run_id, @journal_executor_attempts),
+             drain_journal_run(started_run.run_id, @journal_run_attempts),
            {:ok, replayed_run} <- SquidMesh.replay_run(completed_run.run_id),
            {:ok, completed_replay} <-
-             drain_journal_executor(replayed_run.run_id, @journal_executor_attempts) do
+             drain_journal_run(replayed_run.run_id, @journal_run_attempts) do
         unless completed_run.status == :completed and completed_replay.status == :completed do
           raise "unexpected journal replay smoke result"
         end
@@ -328,7 +328,7 @@ defmodule MinimalHostApp.Smoke do
   @spec run_journal_cron_digest!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   def run_journal_cron_digest! do
     RuntimeHarness.ensure_runtime_started()
-    queue = journal_executor_queue()
+    queue = journal_run_queue()
     signal_id = "minimal-host-app:journal:daily_digest:#{System.unique_integer([:positive])}"
 
     payload =
@@ -341,7 +341,7 @@ defmodule MinimalHostApp.Smoke do
     with_journal_runtime_config(queue, fn ->
       with :ok <- Runner.perform(payload),
            {:ok, run_id} <- journal_daily_digest_run_id(queue),
-           {:ok, completed_run} <- drain_journal_executor(run_id, @journal_executor_attempts) do
+           {:ok, completed_run} <- drain_journal_run(run_id, @journal_run_attempts) do
         unless completed_run.status == :completed and completed_run.trigger == "daily_digest" do
           raise "unexpected journal cron smoke result"
         end
@@ -364,7 +364,7 @@ defmodule MinimalHostApp.Smoke do
   @spec run_journal_cron_duplicate_digest!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   def run_journal_cron_duplicate_digest! do
     RuntimeHarness.ensure_runtime_started()
-    queue = journal_executor_queue()
+    queue = journal_run_queue()
     signal_id = "minimal-host-app:journal:daily_digest:duplicate"
 
     payload =
@@ -379,7 +379,7 @@ defmodule MinimalHostApp.Smoke do
            {:ok, run_id} <- journal_daily_digest_run_id(queue),
            {:ok, {:duplicate_schedule_start, ^run_id}} <-
              Runner.start_cron_trigger(payload["workflow"], payload["trigger"], payload, []),
-           {:ok, completed_run} <- drain_journal_executor(run_id, @journal_executor_attempts) do
+           {:ok, completed_run} <- drain_journal_run(run_id, @journal_run_attempts) do
         unless completed_run.context.schedule.signal_id == signal_id do
           raise "unexpected journal cron duplicate schedule context"
         end
@@ -666,26 +666,26 @@ defmodule MinimalHostApp.Smoke do
   defp ensure_resumed(%SquidMesh.ReadModel.Inspection.Snapshot{}),
     do: {:error, :unexpected_resumed_status}
 
-  @spec drain_journal_executor(String.t(), non_neg_integer()) ::
+  @spec drain_journal_run(String.t(), non_neg_integer()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()} | {:error, :timeout | term()}
-  defp drain_journal_executor(_run_id, 0), do: {:error, :timeout}
+  defp drain_journal_run(_run_id, 0), do: {:error, :timeout}
 
-  defp drain_journal_executor(run_id, attempts_remaining) when attempts_remaining > 0 do
+  defp drain_journal_run(run_id, attempts_remaining) when attempts_remaining > 0 do
     case SquidMesh.inspect_run(run_id) do
       {:ok, %SquidMesh.ReadModel.Inspection.Snapshot{terminal?: true} = run} ->
         {:ok, run}
 
       {:ok, %SquidMesh.ReadModel.Inspection.Snapshot{}} ->
-        case SquidMesh.execute_next(journal_executor_execute_options()) do
+        case SquidMesh.execute_next(journal_run_execute_options()) do
           {:ok, %SquidMesh.ReadModel.Inspection.Snapshot{terminal?: true} = run} ->
             {:ok, run}
 
           {:ok, %SquidMesh.ReadModel.Inspection.Snapshot{}} ->
-            drain_journal_executor(run_id, attempts_remaining - 1)
+            drain_journal_run(run_id, attempts_remaining - 1)
 
           {:ok, :none} ->
             Process.sleep(50)
-            drain_journal_executor(run_id, attempts_remaining - 1)
+            drain_journal_run(run_id, attempts_remaining - 1)
 
           {:error, reason} ->
             {:error, reason}
@@ -696,14 +696,14 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
-  defp journal_executor_execute_options do
+  defp journal_run_execute_options do
     [
       owner_id: "minimal-host-app-smoke"
     ]
   end
 
-  defp journal_executor_queue do
-    "#{@journal_executor_queue_prefix}-#{System.unique_integer([:positive])}"
+  defp journal_run_queue do
+    "#{@journal_run_queue_prefix}-#{System.unique_integer([:positive])}"
   end
 
   defp delete_journal_checkpoints(run_id, queue) when is_binary(run_id) and is_binary(queue) do
@@ -727,7 +727,7 @@ defmodule MinimalHostApp.Smoke do
     try do
       Application.put_env(:squid_mesh, :runtime, :journal)
       Application.put_env(:squid_mesh, :read_model, :read_model)
-      Application.put_env(:squid_mesh, :journal_storage, @journal_executor_storage)
+      Application.put_env(:squid_mesh, :journal_storage, @journal_run_storage)
       Application.put_env(:squid_mesh, :queue, queue)
 
       fun.()
