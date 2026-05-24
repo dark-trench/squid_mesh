@@ -6,6 +6,7 @@ defmodule SquidMesh.Runtime.JournalTest do
   alias SquidMesh.Runtime.DispatchProtocol.Projection
   alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.Journal.Checkpoint
+  alias SquidMesh.Runtime.Journal.Storage
   alias SquidMesh.Runtime.RunIndexProjection
 
   @storage {ETS, table: :squid_mesh_journal_test}
@@ -45,6 +46,37 @@ defmodule SquidMesh.Runtime.JournalTest do
 
     assert [%{runnable_key: @runnable_key, status: :available}] =
              Projection.visible_attempts(projection, @visible_at)
+  end
+
+  test "normalizes journal storage behind a Squid Mesh-owned boundary" do
+    assert {:ok, %Storage{adapter: ETS, opts: [table: :squid_mesh_journal_test]}} =
+             Storage.normalize(@storage)
+
+    assert {:ok, %Storage{} = storage} = Storage.normalize(@storage)
+
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(storage, [scheduled_entry])
+    assert {:ok, [^scheduled_entry]} = Journal.load_entries(storage, {:dispatch, "default"})
+  end
+
+  test "revalidates normalized journal storage structs" do
+    malformed_storage = %Storage{adapter: String, opts: [], config: String}
+
+    assert {:error, {:invalid_option, {:journal_storage, String}}} =
+             Storage.normalize(malformed_storage)
+
+    caller_config = %{path: "/tmp/ignored", token: "not-canonical"}
+
+    storage = %Storage{
+      adapter: ETS,
+      opts: [table: :squid_mesh_journal_test],
+      config: caller_config
+    }
+
+    assert {:ok, %Storage{config: {ETS, [table: :squid_mesh_journal_test]}}} =
+             Storage.normalize(storage)
   end
 
   test "replays multiple dispatch entries in order and rebuilds final projection state" do
