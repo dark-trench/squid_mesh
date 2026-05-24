@@ -23,6 +23,7 @@ defmodule MinimalHostApp.Smoke do
   @spec run!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   def run! do
     RuntimeHarness.ensure_runtime_started()
+    reset_runtime_state!()
 
     {server_pid, port} =
       RuntimeHarness.start_gateway_server(
@@ -852,5 +853,15 @@ defmodule MinimalHostApp.Smoke do
       {:ok, config} -> Keyword.get(config, :testing) == :manual
       :error -> false
     end
+  end
+
+  defp reset_runtime_state! do
+    Repo.delete_all("squid_mesh_journal_entries")
+    Repo.delete_all("squid_mesh_journal_checkpoints")
+    Repo.delete_all("squid_mesh_journal_threads")
+    Repo.delete_all("local_ledger_entries")
+    Repo.delete_all("oban_jobs")
+    Repo.delete_all("oban_peers")
+    :ok
   end
 end

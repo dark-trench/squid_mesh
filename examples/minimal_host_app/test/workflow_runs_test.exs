@@ -583,6 +583,38 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert daily_digest.trigger == "daily_digest"
   end
 
+  test "smoke run clears stale journal rows before starting" do
+    now = DateTime.utc_now(:microsecond)
+    thread_id = "squid_mesh:dispatch:stale-smoke-#{System.unique_integer([:positive])}"
+    unknown_atom_name = "squid_mesh_unknown_atom_#{System.unique_integer([:positive])}"
+
+    Repo.insert_all("squid_mesh_journal_threads", [
+      %{
+        id: thread_id,
+        rev: 1,
+        metadata: %{},
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        inserted_at: now,
+        updated_at: now
+      }
+    ])
+
+    Repo.insert_all("squid_mesh_journal_entries", [
+      %{
+        id: Ecto.UUID.dump!(Ecto.UUID.generate()),
+        thread_id: thread_id,
+        seq: 0,
+        entry: :erlang.term_to_binary({:squid_mesh_ecto_term_v1, {:atom, unknown_atom_name}}),
+        inserted_at: now,
+        updated_at: now
+      }
+    ])
+
+    assert %Snapshot{} = run = Smoke.run!()
+    assert run.status == :completed
+  end
+
   test "runs the journal executor smoke path" do
     assert %SquidMesh.ReadModel.Inspection.Snapshot{} = run = Smoke.run_journal_executor!()
 
