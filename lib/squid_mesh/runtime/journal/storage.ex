@@ -115,6 +115,20 @@ defmodule SquidMesh.Runtime.Journal.Storage do
     end
   end
 
+  defp validate_storage_options(SquidMesh.Runtime.Journal.Storage.Ecto, opts) do
+    case Keyword.get(opts, :repo) do
+      repo when is_atom(repo) and not is_nil(repo) ->
+        if Code.ensure_loaded?(repo) and function_exported?(repo, :transaction, 1) do
+          :ok
+        else
+          :error
+        end
+
+      _invalid ->
+        :error
+    end
+  end
+
   defp validate_storage_options(_module, _opts), do: :ok
 
   defp invalid_storage(%__MODULE__{adapter: module}) when is_atom(module) do

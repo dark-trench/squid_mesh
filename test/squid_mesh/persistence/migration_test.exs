@@ -33,17 +33,26 @@ defmodule SquidMesh.Persistence.MigrationTest do
     assert table_exists?("squid_mesh_runs")
     assert table_exists?("squid_mesh_step_runs")
     assert table_exists?("squid_mesh_step_attempts")
+    assert table_exists?("squid_mesh_journal_threads")
+    assert table_exists?("squid_mesh_journal_entries")
+    assert table_exists?("squid_mesh_journal_checkpoints")
 
     assert [_version] = run_migrations_without_module_conflict_warning(migrations_path, :down)
 
     refute table_exists?("squid_mesh_runs")
     refute table_exists?("squid_mesh_step_runs")
     refute table_exists?("squid_mesh_step_attempts")
+    refute table_exists?("squid_mesh_journal_threads")
+    refute table_exists?("squid_mesh_journal_entries")
+    refute table_exists?("squid_mesh_journal_checkpoints")
   end
 
   defp repo_config do
     SquidMesh.Test.Repo.config()
-    |> Keyword.put(:database, "squid_mesh_migration_test_#{System.unique_integer([:positive])}")
+    |> Keyword.put(
+      :database,
+      "squid_mesh_migration_test_#{System.system_time(:millisecond)}_#{System.unique_integer([:positive])}"
+    )
     |> Keyword.delete(:pool)
   end
 

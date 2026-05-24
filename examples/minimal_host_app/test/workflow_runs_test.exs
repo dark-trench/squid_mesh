@@ -416,6 +416,8 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              manual_digest: manual_digest,
              local_ledger_checkout: local_ledger_checkout,
              local_ledger_rollback: local_ledger_rollback,
+             journal_executor: journal_executor,
+             journal_recovery: journal_recovery,
              daily_digest: daily_digest
            } =
              Smoke.run_all!()
@@ -438,6 +440,12 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert local_ledger_rollback.status == :failed
     assert local_ledger_rollback.current_step == :post_local_ledger_entries
+
+    assert journal_executor.status == :completed
+    assert journal_executor.applied_runnable_keys == journal_executor.planned_runnable_keys
+
+    assert journal_recovery.status == :completed
+    assert journal_recovery.applied_runnable_keys == journal_recovery.planned_runnable_keys
 
     assert daily_digest.status == :completed
     assert daily_digest.trigger == :daily_digest
@@ -468,6 +476,14 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              channel: "email",
              invoice_id: "inv_journal_demo"
            }
+  end
+
+  test "recovers the journal executor smoke path from persisted entries" do
+    assert %SquidMesh.ReadModel.Inspection.Snapshot{} = run = Smoke.run_journal_recovery!()
+
+    assert run.status == :completed
+    assert run.workflow == "Elixir.MinimalHostApp.Workflows.DependencyRecovery"
+    assert run.applied_runnable_keys == run.planned_runnable_keys
   end
 
   test "runs the cancellation smoke path" do
