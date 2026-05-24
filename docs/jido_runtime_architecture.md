@@ -139,6 +139,7 @@ erDiagram
     RUN_THREAD ||--o{ RUN_ENTRY : contains
     DISPATCH_THREAD ||--o{ DISPATCH_ENTRY : contains
     RUN_INDEX_THREAD ||--o{ INDEX_ENTRY : contains
+    RUN_CATALOG_THREAD ||--o{ CATALOG_ENTRY : contains
     RUN_ENTRY {
         string type
         string run_id
@@ -156,6 +157,14 @@ erDiagram
     INDEX_ENTRY {
         string type
         string workflow
+        string queue
+        string run_id
+        datetime occurred_at
+    }
+    CATALOG_ENTRY {
+        string type
+        string workflow
+        string queue
         string run_id
         datetime occurred_at
     }
@@ -166,6 +175,7 @@ erDiagram
 | Run thread | `squid_mesh:run:<run-id>` | Workflow lifecycle facts for one run |
 | Dispatch thread | `squid_mesh:dispatch:<queue>` | Queue-visible attempts, claims, heartbeats, retries, completions, and failures |
 | Run index thread | `squid_mesh:run_index:<workflow>` | Rebuildable lookup facts for host-facing run discovery |
+| Run catalog thread | `squid_mesh:run_catalog:all` | Global lookup facts for all-run discovery |
 
 Each append uses the current thread revision as an optimistic fence. A stale
 caller that tries to append based on an old projection receives a conflict
@@ -391,20 +401,22 @@ projection-backed inspection snapshot already rebuilds workflow and dispatch
 agent projections into a read-only view of pending dispatches, unapplied
 results, scheduled attempts, visible attempts, expired claims, manual pause or
 approval state, terminal state, and projection anomalies. Run-index projections
-now rebuild workflow-scoped run lookup state from durable index entries and keep
-malformed or conflicting index facts visible as anomalies. The first projected
-explanation layer derives deterministic reason-specific details and next
-actions from the inspection snapshot. The public `SquidMesh.inspect_run/2` and
-`SquidMesh.explain_run/2` APIs expose this read model by default and infer Ecto
-storage from the configured repo. Host apps can still pass explicit
-`journal_storage:` or `queue:` overrides when a test or integration boundary
-needs a non-default journal boundary. Public start, execution, inspection,
-explanation, and manual-control APIs pick up the configured defaults without
-repeating journal options at every call site.
+rebuild workflow-scoped run lookup state from durable index entries, while the
+global run-catalog projection rebuilds all-run lookup state without scanning
+adapter internals. Both facts retain the queue each run was dispatched through
+and keep malformed or conflicting facts visible as anomalies. The first
+projected explanation layer derives deterministic reason-specific details and
+next actions from the inspection snapshot. The public `SquidMesh.inspect_run/2`,
+`SquidMesh.list_runs/2`, and `SquidMesh.explain_run/2` APIs expose this read
+model by default and infer Ecto storage from the configured repo. Host apps can
+still pass explicit `journal_storage:` or `queue:` overrides when a test or
+integration boundary needs a non-default journal boundary. Public start,
+listing, execution, inspection, explanation, and manual-control APIs pick up
+the configured defaults without repeating journal options at every call site.
 
-The journal start path appends run and run-index facts to `Jido.Storage`,
-rebuilds the workflow and dispatch agents, schedules the initial dispatch
-attempts from the journal, and returns the projection-backed inspection
+The journal start path appends run, run-index, and run-catalog facts to
+`Jido.Storage`, rebuilds the workflow and dispatch agents, schedules the initial
+dispatch attempts from the journal, and returns the projection-backed inspection
 snapshot. Journal execution currently supports normal action steps, immediate
 built-in `:log` steps, built-in `:wait` steps in transition and dependency
 workflows, and manual `:pause` or `:approval` boundaries. Manual boundaries

@@ -12,6 +12,7 @@ defmodule SquidMesh.Runtime.Journal do
   alias SquidMesh.Runtime.DispatchProtocol.Projection
   alias SquidMesh.Runtime.Journal.Checkpoint
   alias SquidMesh.Runtime.Journal.Storage
+  alias SquidMesh.Runtime.RunCatalogProjection
   alias SquidMesh.Runtime.RunIndexProjection
 
   @type storage_config :: Storage.config() | Storage.t()
@@ -90,8 +91,24 @@ defmodule SquidMesh.Runtime.Journal do
     workflow = to_string(workflow)
 
     case load_entries(storage, {:run_index, workflow}) do
-      {:ok, entries} -> {:ok, RunIndexProjection.rebuild(entries)}
-      {:error, :not_found} -> {:ok, RunIndexProjection.new(workflow)}
+      {:ok, entries} ->
+        {:ok, RunIndexProjection.replay(RunIndexProjection.new(workflow), entries)}
+
+      {:error, :not_found} ->
+        {:ok, RunIndexProjection.new(workflow)}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc false
+  @spec rebuild_run_catalog_projection(storage_config()) ::
+          {:ok, RunCatalogProjection.t()} | {:error, term()}
+  def rebuild_run_catalog_projection(storage) do
+    case load_entries(storage, {:run_catalog, "all"}) do
+      {:ok, entries} -> {:ok, RunCatalogProjection.rebuild(entries)}
+      {:error, :not_found} -> {:ok, RunCatalogProjection.new()}
       {:error, _reason} = error -> error
     end
   end
@@ -126,6 +143,7 @@ defmodule SquidMesh.Runtime.Journal do
   def thread_id({:run, run_id}), do: encode_thread_id("run", run_id)
   def thread_id({:dispatch, queue}), do: encode_thread_id("dispatch", queue)
   def thread_id({:run_index, workflow}), do: encode_thread_id("run_index", workflow)
+  def thread_id({:run_catalog, catalog}), do: encode_thread_id("run_catalog", catalog)
 
   defp entry_thread(entries) do
     threads =

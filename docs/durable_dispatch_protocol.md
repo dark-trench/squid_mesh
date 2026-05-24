@@ -55,7 +55,11 @@ and optional checkpoints:
 - Dispatch threads record queue-visible facts, including scheduled attempts,
   claims, heartbeats, completions, failures, and wakeup emissions.
 - Run-index threads keep workflow-scoped lookup projections rebuildable without
-  reading legacy runtime tables.
+  reading legacy runtime tables. Index facts carry the dispatch queue used by
+  the run.
+- The global run-catalog thread keeps all-run listing rebuildable without
+  scanning storage-adapter internals. Catalog facts carry the workflow and queue
+  needed to rebuild redacted listing summaries from each run thread.
 - Checkpoints store compact projections at a covered thread revision. They are
   rebuild accelerators; missing or stale checkpoints must not become the source
   of truth.

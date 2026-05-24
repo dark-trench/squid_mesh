@@ -8,6 +8,7 @@ defmodule SquidMesh.Runtime.RunIndexProjectionTest do
   @workflow "BillingWorkflow"
   @run_id "run_123"
   @second_run_id "run_456"
+  @queue "critical"
   @started_at ~U[2026-05-14 00:00:00Z]
   @later_started_at ~U[2026-05-14 00:00:10Z]
 
@@ -22,8 +23,13 @@ defmodule SquidMesh.Runtime.RunIndexProjectionTest do
     assert RunIndexProjection.run_ids(projection) == [@run_id, @second_run_id]
 
     assert RunIndexProjection.runs(projection) == [
-             %{run_id: @run_id, workflow: @workflow, indexed_at: @started_at},
-             %{run_id: @second_run_id, workflow: @workflow, indexed_at: @later_started_at}
+             %{run_id: @run_id, workflow: @workflow, queue: @queue, indexed_at: @started_at},
+             %{
+               run_id: @second_run_id,
+               workflow: @workflow,
+               queue: @queue,
+               indexed_at: @later_started_at
+             }
            ]
 
     assert RunIndexProjection.anomalies(projection) == []
@@ -48,7 +54,7 @@ defmodule SquidMesh.Runtime.RunIndexProjectionTest do
       ])
 
     assert RunIndexProjection.runs(projection) == [
-             %{run_id: @run_id, workflow: @workflow, indexed_at: @started_at}
+             %{run_id: @run_id, workflow: @workflow, queue: @queue, indexed_at: @started_at}
            ]
 
     assert [
@@ -86,7 +92,7 @@ defmodule SquidMesh.Runtime.RunIndexProjectionTest do
     conflicting_entry = %Entry{
       type: :run_indexed,
       thread: {:run_index, @workflow},
-      data: %{run_id: @second_run_id, workflow: "OtherWorkflow"},
+      data: %{run_id: @second_run_id, workflow: "OtherWorkflow", queue: @queue},
       occurred_at: @later_started_at
     }
 
@@ -109,7 +115,8 @@ defmodule SquidMesh.Runtime.RunIndexProjectionTest do
   end
 
   defp entry!(type, attrs) do
-    attrs = Map.merge(%{workflow: @workflow, occurred_at: @started_at}, Map.new(attrs))
+    attrs =
+      Map.merge(%{workflow: @workflow, queue: @queue, occurred_at: @started_at}, Map.new(attrs))
 
     assert {:ok, entry} = DispatchProtocol.new_entry(type, attrs)
     entry

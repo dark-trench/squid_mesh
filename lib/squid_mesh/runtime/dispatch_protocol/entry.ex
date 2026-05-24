@@ -6,7 +6,11 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Entry do
   wakeups are derived from replaying entries; they are not the source of truth.
   """
 
-  @type thread :: {:run, String.t()} | {:dispatch, String.t()} | {:run_index, String.t()}
+  @type thread ::
+          {:run, String.t()}
+          | {:dispatch, String.t()}
+          | {:run_index, String.t()}
+          | {:run_catalog, String.t()}
 
   @type t :: %__MODULE__{
           type: atom(),
