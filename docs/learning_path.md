@@ -115,9 +115,7 @@ SquidMesh.execute_next(owner_id: "worker-1")
 
 A host app usually wraps that call in a supervised worker loop. The loop can be
 simple at first: call `execute_next/1`, back off when it returns `{:ok, :none}`,
-and add metrics or capacity controls as the integration matures.
-
-Important: `:executor` is not a required Squid Mesh config key. Step execution
+and add metrics or capacity controls as the integration matures. Step execution
 is pulled from the journal with `execute_next/1`. The remaining
 `SquidMesh.Executor` behavior is for optional cron payload enqueueing.
 
