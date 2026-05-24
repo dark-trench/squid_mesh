@@ -11,7 +11,7 @@ defmodule SquidMesh.Runtime.Runner do
   alias SquidMesh.Runtime.ScheduleMetadata
 
   @doc """
-  Executes one queued executor payload.
+  Executes one queued runtime payload.
 
   Host job backends should store payloads produced by
   `SquidMesh.Executor.Payload` and pass the payload back here when the job is
@@ -34,7 +34,7 @@ defmodule SquidMesh.Runtime.Runner do
   end
 
   def perform(args, _overrides) do
-    {:error, {:invalid_executor_payload, args}}
+    {:error, {:invalid_runtime_payload, args}}
   end
 
   @doc """
