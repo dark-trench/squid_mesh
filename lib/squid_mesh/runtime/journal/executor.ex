@@ -516,33 +516,81 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          result,
          progression
        ) do
-    if Definition.dependency_mode?(definition) do
-      with {:ok, progression_entries} <-
-             dependency_success_progression_entries(
-               workflow_agent,
-               attempt,
-               definition,
-               step_name,
-               result,
-               progression
-             ) do
-        {:ok, nil, progression_entries}
-      end
-    else
-      context = journal_context(workflow_agent, attempt, result)
+    cond do
+      manual_pause_execution?(definition, step_name, progression) ->
+        with {:ok, progression_entries} <-
+               manual_pause_progression_entries(
+                 attempt,
+                 definition,
+                 step_name,
+                 result,
+                 progression
+               ) do
+          {:ok, nil, progression_entries}
+        end
 
-      with {:ok, %{to: target} = transition} <-
-             Definition.transition(definition, step_name, :ok, context),
-           {:ok, progression_entries} <-
-             success_progression_entries(
-               attempt,
-               definition,
-               target,
-               context,
-               progression
-             ) do
-        {:ok, Definition.serialize_transition_decision(transition), progression_entries}
-      end
+      Definition.dependency_mode?(definition) ->
+        with {:ok, progression_entries} <-
+               dependency_success_progression_entries(
+                 workflow_agent,
+                 attempt,
+                 definition,
+                 step_name,
+                 result,
+                 progression
+               ) do
+          {:ok, nil, progression_entries}
+        end
+
+      true ->
+        context = journal_context(workflow_agent, attempt, result)
+
+        with {:ok, %{to: target} = transition} <-
+               Definition.transition(definition, step_name, :ok, context),
+             {:ok, progression_entries} <-
+               success_progression_entries(
+                 attempt,
+                 definition,
+                 target,
+                 context,
+                 progression
+               ) do
+          {:ok, Definition.serialize_transition_decision(transition), progression_entries}
+        end
+    end
+  end
+
+  defp manual_pause_execution?(definition, step_name, %{execution_opts: execution_opts})
+       when is_list(execution_opts) do
+    with true <- Keyword.get(execution_opts, :pause, false),
+         {:ok, %{module: :pause}} <- Definition.step(definition, step_name) do
+      true
+    else
+      _not_pause -> false
+    end
+  end
+
+  defp manual_pause_execution?(_definition, _step_name, _progression), do: false
+
+  defp manual_pause_progression_entries(
+         %ActionAttempt{} = attempt,
+         definition,
+         step_name,
+         result,
+         %{now: now, schedule_base_at: paused_at}
+       ) do
+    with {:ok, target} <- Definition.transition_target(definition, step_name, :ok) do
+      {:ok,
+       [
+         manual_step_paused_entry!(
+           attempt.run_id,
+           step_name,
+           :pause,
+           %{output: result || %{}, target: serialize_manual_target(target)},
+           now,
+           paused_at
+         )
+       ]}
     end
   end
 
@@ -1213,6 +1261,25 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     })
   end
 
+  defp manual_step_paused_entry!(
+         run_id,
+         step_name,
+         kind,
+         metadata,
+         %DateTime{} = now,
+         %DateTime{} = paused_at
+       )
+       when is_binary(run_id) and is_atom(step_name) and is_atom(kind) and is_map(metadata) do
+    entry!(:manual_step_paused, %{
+      run_id: run_id,
+      step: Definition.serialize_step(step_name),
+      kind: Atom.to_string(kind),
+      metadata: metadata,
+      paused_at: paused_at,
+      occurred_at: now
+    })
+  end
+
   defp runnables_planned_entry!(run_id, runnables, %DateTime{} = now) do
     entry!(:runnables_planned, %{
       run_id: run_id,
@@ -1644,6 +1711,8 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     execution_opts
   end
 
+  defp recovered_execution_opts(%{module: :pause}), do: [pause: true]
+
   defp recovered_execution_opts(_step), do: []
 
   defp attempt_completion_at(%ActionAttempt{} = attempt, %DateTime{} = fallback) do
@@ -1663,11 +1732,15 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     {:ok, output, []}
   end
 
+  defp run_step(%{module: :pause}, _input, _context) do
+    {:ok, %{}, [pause: true]}
+  end
+
   defp run_step(%{module: module}, input, context) do
-    if module in [:pause, :approval] do
+    if module == :approval do
       {:error,
        %{
-         message: "journal executor cannot execute manual built-in steps yet",
+         message: "journal executor cannot execute approval built-in steps yet",
          retryable?: false,
          step_kind: module
        }}
@@ -1675,6 +1748,9 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       run_action_step(module, input, context)
     end
   end
+
+  defp serialize_manual_target(:complete), do: "__complete__"
+  defp serialize_manual_target(target) when is_atom(target), do: Definition.serialize_step(target)
 
   defp run_action_step(action, input, context) do
     {action, input} = action_input(action, input)

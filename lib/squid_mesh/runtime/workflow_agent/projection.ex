@@ -288,7 +288,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
     manual_state = %{
       step: data.step,
       kind: data.kind,
-      paused_at: entry.occurred_at,
+      paused_at: manual_paused_at(data, entry),
       metadata: Map.get(data, :metadata, %{})
     }
 
@@ -306,7 +306,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
     duplicate_state = %{
       step: data.step,
       kind: data.kind,
-      paused_at: entry.occurred_at,
+      paused_at: manual_paused_at(data, entry),
       metadata: Map.get(data, :metadata, %{})
     }
 
@@ -362,6 +362,13 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   defp effective_applied_at(data, entry) when is_map(data) do
     case Map.get(data, :applied_at) do
       %DateTime{} = applied_at -> applied_at
+      _missing_or_invalid -> entry.occurred_at
+    end
+  end
+
+  defp manual_paused_at(data, entry) when is_map(data) do
+    case Map.get(data, :paused_at) do
+      %DateTime{} = paused_at -> paused_at
       _missing_or_invalid -> entry.occurred_at
     end
   end
