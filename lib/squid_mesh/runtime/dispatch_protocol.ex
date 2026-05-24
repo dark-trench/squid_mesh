@@ -7,7 +7,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
   - run-thread entries record workflow lifecycle facts
   - dispatch-thread entries record runnable intent, claims, leases, heartbeats,
     completions, failures, retries, and live wakeups
-  - run-index entries support rebuildable lookup projections
+  - run-index and run-catalog entries support rebuildable lookup projections
 
   A live wakeup or action execution is valid only after the runnable intent is
   appended. Claims are fenced by `claim_id` and `claim_token_hash`;
@@ -25,6 +25,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
           | :manual_step_resolved
           | :run_terminal
           | :run_indexed
+          | :run_cataloged
           | :run_queued
           | :attempt_scheduled
           | :attempt_claimed
@@ -55,6 +56,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
   ]
 
   @run_index_entry_types [:run_indexed]
+  @run_catalog_entry_types [:run_cataloged]
 
   @required_fields %{
     run_started: [:run_id, :workflow, :occurred_at],
@@ -63,7 +65,8 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
     manual_step_paused: [:run_id, :step, :kind, :occurred_at],
     manual_step_resolved: [:run_id, :step, :action, :occurred_at],
     run_terminal: [:run_id, :status, :occurred_at],
-    run_indexed: [:run_id, :workflow, :occurred_at],
+    run_indexed: [:run_id, :workflow, :queue, :occurred_at],
+    run_cataloged: [:run_id, :workflow, :queue, :occurred_at],
     run_queued: [:run_id, :queue, :occurred_at],
     attempt_scheduled: [
       :run_id,
@@ -116,7 +119,10 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
     live_wakeup_emitted: [:run_id, :runnable_key, :queue, :occurred_at]
   }
 
-  @entry_types @run_entry_types ++ @dispatch_entry_types ++ @run_index_entry_types
+  @entry_types @run_entry_types ++
+                 @dispatch_entry_types ++
+                 @run_index_entry_types ++
+                 @run_catalog_entry_types
 
   @doc false
   @spec new_entry(entry_type(), map() | keyword()) ::
@@ -154,7 +160,15 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
   end
 
   defp normalize_attrs(attrs, type) when type in @run_index_entry_types do
-    Map.update(attrs, :workflow, nil, &normalize_workflow/1)
+    attrs
+    |> Map.update(:workflow, nil, &normalize_workflow/1)
+    |> Map.update(:queue, nil, &normalize_queue/1)
+  end
+
+  defp normalize_attrs(attrs, type) when type in @run_catalog_entry_types do
+    attrs
+    |> Map.update(:workflow, nil, &normalize_workflow/1)
+    |> Map.update(:queue, nil, &normalize_queue/1)
   end
 
   defp normalize_attrs(attrs, _type), do: attrs
@@ -175,6 +189,9 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
 
   defp thread_for(type, attrs) when type in @run_index_entry_types,
     do: {:run_index, attrs.workflow}
+
+  defp thread_for(type, _attrs) when type in @run_catalog_entry_types,
+    do: {:run_catalog, "all"}
 
   defp thread_for(type, attrs) when type in @dispatch_entry_types do
     {:dispatch, attrs.queue}

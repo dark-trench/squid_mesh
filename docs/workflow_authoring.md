@@ -429,6 +429,8 @@ threading journal options through every boundary:
 {:ok, snapshot} = SquidMesh.start_run(MyWorkflow, %{account_id: "acct_123"})
 {:ok, snapshot} = SquidMesh.inspect_run(snapshot.run_id)
 {:ok, snapshot} = SquidMesh.execute_next(owner_id: "worker-1")
+{:ok, summaries} = SquidMesh.list_runs([])
+{:ok, workflow_summaries} = SquidMesh.list_runs(workflow: MyWorkflow)
 ```
 
 When no `journal_storage` is configured, Squid Mesh infers
@@ -442,6 +444,13 @@ production adapters should provide ordered per-thread appends, optimistic
 conflict detection, and durable checkpoint reads; not every database can provide
 those properties without extra coordination. Use `Jido.Storage.ETS` only for
 tests and local demos because it is process-local and ephemeral.
+
+Journal-backed `list_runs/2` uses a durable run catalog to list all known runs
+without scanning adapter-specific storage internals. Add a `workflow:` filter
+when a caller only needs one workflow. Listing returns redacted summaries; call
+`inspect_run/2` or `inspect_run_graph/2` with the selected summary's `run_id`
+and `queue` when the caller needs full inputs, outputs, attempts, history, or
+claim metadata.
 
 ## Graph Inspection
 

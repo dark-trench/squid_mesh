@@ -9,6 +9,7 @@ defmodule SquidMesh do
 
   alias SquidMesh.Config
   alias SquidMesh.ReadModel.Inspection
+  alias SquidMesh.ReadModel.Listing
   alias SquidMesh.Run
   alias SquidMesh.Runs
   alias SquidMesh.Runs.Explanation
@@ -25,6 +26,7 @@ defmodule SquidMesh do
   @runtimes [:runtime_tables, :journal]
   @projection_read_options [:journal_storage, :queue, :now]
   @projection_snapshot_options [:queue, :now]
+  @projection_list_options [:queue, :now]
   @journal_start_options [:runtime, :journal_storage, :queue, :now, :run_id]
   @journal_control_options [:runtime, :journal_storage, :queue, :now]
   @journal_execute_options [:runtime, :journal_storage, :queue, :owner_id, :lease_for, :now]
@@ -293,9 +295,14 @@ defmodule SquidMesh do
 
   @doc """
   Lists workflow runs with optional filters.
+
+  Journal-backed runtime calls return redacted listing summaries. Use
+  `inspect_run/2` or `inspect_run_graph/2` with a run id when callers need
+  detailed runtime state for one run.
   """
   @spec list_runs(Runs.Store.list_filters(), keyword()) ::
-          {:ok, [Run.t()]} | {:error, Config.config_error() | unsupported_runtime_error()}
+          {:ok, [Run.t() | Listing.Summary.t()]}
+          | {:error, Config.config_error() | unsupported_runtime_error() | Listing.list_error()}
   def list_runs(filters \\ [], overrides \\ []) do
     with {:ok, runtime} <- runtime(overrides) do
       list_runs_with_runtime(runtime, filters, overrides)
@@ -585,8 +592,10 @@ defmodule SquidMesh do
     end
   end
 
-  defp list_runs_with_runtime(:journal, _filters, _overrides) do
-    unsupported_journal_runtime(:list_runs)
+  defp list_runs_with_runtime(:journal, filters, overrides) do
+    with {:ok, storage} <- journal_storage(overrides) do
+      Listing.list(storage, filters, journal_list_options(overrides))
+    end
   end
 
   defp cancel_run_with_runtime(:runtime_tables, run_id, overrides) do
@@ -832,6 +841,10 @@ defmodule SquidMesh do
 
   defp journal_execute_options(overrides) do
     configured_journal_options(overrides, @journal_execute_options)
+  end
+
+  defp journal_list_options(overrides) do
+    configured_journal_options(overrides, @projection_list_options)
   end
 
   defp configured_journal_options(overrides, keys) do

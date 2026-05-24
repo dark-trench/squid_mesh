@@ -19,7 +19,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
   @lease_until ~U[2026-05-14 00:01:00Z]
   @expired_at ~U[2026-05-14 00:02:00Z]
 
-  test "classifies run, dispatch, and run index thread entries" do
+  test "classifies run, dispatch, run index, and run catalog thread entries" do
     assert {:ok, run_entry} =
              DispatchProtocol.new_entry(:run_started, %{
                run_id: @run_id,
@@ -34,15 +34,25 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
              DispatchProtocol.new_entry(:run_indexed, %{
                run_id: @run_id,
                workflow: @workflow,
+               queue: "default",
+               occurred_at: @started_at
+             })
+
+    assert {:ok, catalog_entry} =
+             DispatchProtocol.new_entry(:run_cataloged, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               queue: "default",
                occurred_at: @started_at
              })
 
     assert run_entry.thread == {:run, @run_id}
     assert dispatch_entry.thread == {:dispatch, "default"}
     assert index_entry.thread == {:run_index, @workflow}
+    assert catalog_entry.thread == {:run_catalog, "all"}
   end
 
-  test "normalizes thread identifiers for workflow modules and atom queues" do
+  test "normalizes thread identifiers for workflow modules, atom queues, and catalog facts" do
     assert {:ok, dispatch_entry} =
              DispatchProtocol.new_entry(
                :attempt_scheduled,
@@ -53,6 +63,15 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
              DispatchProtocol.new_entry(:run_indexed, %{
                run_id: @run_id,
                workflow: __MODULE__,
+               queue: :squid_mesh,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, catalog_entry} =
+             DispatchProtocol.new_entry(:run_cataloged, %{
+               run_id: @run_id,
+               workflow: __MODULE__,
+               queue: :squid_mesh,
                occurred_at: @started_at
              })
 
@@ -60,6 +79,10 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
     assert dispatch_entry.data.queue == "squid_mesh"
     assert index_entry.thread == {:run_index, Atom.to_string(__MODULE__)}
     assert index_entry.data.workflow == Atom.to_string(__MODULE__)
+    assert index_entry.data.queue == "squid_mesh"
+    assert catalog_entry.thread == {:run_catalog, "all"}
+    assert catalog_entry.data.workflow == Atom.to_string(__MODULE__)
+    assert catalog_entry.data.queue == "squid_mesh"
   end
 
   test "normalizes manual step lifecycle entries on the run thread" do
@@ -111,10 +134,19 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
                scheduled_attrs(queue: nil)
              )
 
-    assert {:error, {:missing_fields, [:workflow]}} =
+    assert {:error, {:missing_fields, [:workflow, :queue]}} =
              DispatchProtocol.new_entry(:run_indexed, %{
                run_id: @run_id,
                workflow: nil,
+               queue: nil,
+               occurred_at: @started_at
+             })
+
+    assert {:error, {:missing_fields, [:workflow, :queue]}} =
+             DispatchProtocol.new_entry(:run_cataloged, %{
+               run_id: @run_id,
+               workflow: nil,
+               queue: nil,
                occurred_at: @started_at
              })
 

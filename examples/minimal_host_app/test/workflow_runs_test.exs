@@ -8,6 +8,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
   alias MinimalHostApp.Workflows.DailyDigest
   alias Oban.Job
   alias SquidMesh.ReadModel.Inspection.Snapshot
+  alias SquidMesh.ReadModel.Listing.Summary
 
   defmodule InvalidRecurringIdempotentCronWorkflow do
     use SquidMesh.Workflow
@@ -214,6 +215,39 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
         assert completed_run.status == :completed
         assert completed_run.applied_runnable_keys == completed_run.planned_runnable_keys
+
+        assert {:ok, listed_runs} = WorkflowRuns.list_runs(now: DateTime.utc_now())
+
+        listed_run = Enum.find(listed_runs, &(&1.run_id == started_run.run_id))
+        assert %Summary{} = listed_run
+
+        assert listed_run.run_id == started_run.run_id
+        assert listed_run.queue == queue
+        assert listed_run.status == :completed
+        refute Map.has_key?(Map.from_struct(listed_run), :attempts)
+        refute Map.has_key?(Map.from_struct(listed_run), :input)
+        refute Map.has_key?(Map.from_struct(listed_run), :result)
+
+        row = %{
+          id: listed_run.run_id,
+          workflow: listed_run.workflow,
+          queue: listed_run.queue,
+          status: listed_run.status,
+          inserted_at: listed_run.indexed_at
+        }
+
+        assert row.id == started_run.run_id
+        assert row.queue == queue
+
+        assert {:ok, %Snapshot{} = inspected_run} =
+                 WorkflowRuns.inspect_run(row.id,
+                   queue: row.queue,
+                   now: DateTime.utc_now(),
+                   include_history: true
+                 )
+
+        assert inspected_run.run_id == row.id
+        assert inspected_run.queue == row.queue
 
         assert Enum.map(completed_run.attempts, &{&1.step, &1.status, &1.applied?}) == [
                  {"load_account", :completed, true},

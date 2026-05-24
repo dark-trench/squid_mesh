@@ -6,6 +6,7 @@ defmodule SquidMeshTest do
   alias SquidMesh.Executor.Payload
   alias SquidMesh.ReadModel.Explanation.Diagnostic
   alias SquidMesh.ReadModel.Inspection.Snapshot
+  alias SquidMesh.ReadModel.Listing.Summary
   alias SquidMesh.Run
   alias SquidMesh.Runs
   alias SquidMesh.Runs.StepState
@@ -1248,8 +1249,8 @@ defmodule SquidMeshTest do
   end
 
   describe "journal default unsupported table-runtime operations" do
-    test "list_runs/2 returns an explicit unsupported runtime error" do
-      assert {:error, {:unsupported_runtime, {:journal, :list_runs}}} =
+    test "list_runs/2 returns an empty journal catalog when no runs exist" do
+      assert {:ok, []} =
                SquidMesh.list_runs([], repo: Repo)
     end
 
@@ -2722,6 +2723,370 @@ defmodule SquidMeshTest do
              ]
 
       assert legacy_runtime_counts() == legacy_counts_before
+    end
+
+    test "list_runs/2 lists journal runs for one workflow newest first" do
+      legacy_counts_before = legacy_runtime_counts()
+
+      assert {:ok, %Snapshot{} = older_run} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_older"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = newer_run} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_newer"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_started_at, 1, :second)
+               )
+
+      assert {:ok, [%Summary{} = first, %Summary{} = second]} =
+               SquidMesh.list_runs([workflow: PaymentRecoveryWorkflow],
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert [first.run_id, second.run_id] == [newer_run.run_id, older_run.run_id]
+      assert Enum.all?([first, second], &(&1.workflow == Atom.to_string(PaymentRecoveryWorkflow)))
+      assert Enum.all?([first, second], &(&1.queue == @read_model_queue))
+      assert Enum.all?([first, second], &(&1.status == :running))
+      assert legacy_runtime_counts() == legacy_counts_before
+    end
+
+    test "list_runs/2 lists journal runs across workflows from the global catalog" do
+      assert {:ok, %Snapshot{} = payment_run} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_payment"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = approval_run} =
+               SquidMesh.start_run(
+                 ApprovalWorkflow,
+                 %{account_id: "acct_approval"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_started_at, 1, :second)
+               )
+
+      assert {:ok, [%Summary{} = first, %Summary{} = second]} =
+               SquidMesh.list_runs([],
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: "caller-default-queue",
+                 now: @read_model_visible_at
+               )
+
+      assert [first.run_id, second.run_id] == [approval_run.run_id, payment_run.run_id]
+
+      assert [first.workflow, second.workflow] == [
+               Atom.to_string(ApprovalWorkflow),
+               Atom.to_string(PaymentRecoveryWorkflow)
+             ]
+
+      assert {:ok, [%Summary{} = filtered]} =
+               SquidMesh.list_runs([workflow: PaymentRecoveryWorkflow],
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert filtered.run_id == payment_run.run_id
+      assert filtered.workflow == Atom.to_string(PaymentRecoveryWorkflow)
+    end
+
+    test "list_runs/2 applies journal status and limit filters after rebuilding snapshots" do
+      assert {:ok, %Snapshot{} = completed_run} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_completed"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{status: :completed}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "list_runs_worker",
+                 claim_id: "list_runs_claim",
+                 claim_token: "list_runs_token",
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, _running_run} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_running"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_started_at, 1, :second)
+               )
+
+      assert {:ok, [%Summary{} = listed_run]} =
+               SquidMesh.list_runs(
+                 [workflow: PaymentRecoveryWorkflow, status: :completed, limit: 1],
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert listed_run.run_id == completed_run.run_id
+      assert listed_run.status == :completed
+    end
+
+    test "list_runs/2 uses the queue recorded in each run catalog fact" do
+      first_queue = "journal-list-first-queue"
+      second_queue = "journal-list-second-queue"
+
+      assert {:ok, %Snapshot{} = first_run} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_first_queue"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: first_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = second_run} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_second_queue"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: second_queue,
+                 now: DateTime.add(@read_model_started_at, 1, :second)
+               )
+
+      assert {:ok, listed_runs} =
+               SquidMesh.list_runs([],
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: "caller-default-queue"
+               )
+
+      listed_payment_runs =
+        Enum.filter(listed_runs, &(&1.workflow == Atom.to_string(PaymentRecoveryWorkflow)))
+
+      assert [%Summary{} = listed_second, %Summary{} = listed_first | _older_runs] =
+               listed_payment_runs
+
+      assert {listed_second.run_id, listed_second.queue} == {second_run.run_id, second_queue}
+      assert {listed_first.run_id, listed_first.queue} == {first_run.run_id, first_queue}
+
+      assert {:ok, %Snapshot{} = inspected} =
+               SquidMesh.inspect_run(listed_second.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: listed_second.queue,
+                 now: @read_model_visible_at
+               )
+
+      assert inspected.run_id == listed_second.run_id
+      assert inspected.queue == listed_second.queue
+      assert [%{step: "check_gateway", status: :available}] = inspected.visible_attempts
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
+               SquidMesh.inspect_run_graph(listed_second.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: listed_second.queue,
+                 now: @read_model_visible_at
+               )
+
+      assert graph.run_id == listed_second.run_id
+      assert Enum.map(graph.nodes, &{&1.id, &1.status}) == [{"check_gateway", :pending}]
+    end
+
+    test "list_runs/2 surfaces malformed journal run catalog facts" do
+      workflow = Atom.to_string(PaymentRecoveryWorkflow)
+
+      malformed_entry = %SquidMesh.Runtime.DispatchProtocol.Entry{
+        type: :run_cataloged,
+        thread: {:run_catalog, "all"},
+        data: %{
+          run_id: Ecto.UUID.generate(),
+          workflow: workflow
+        },
+        occurred_at: @read_model_started_at
+      }
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [malformed_entry])
+
+      assert {:error, {:run_catalog_anomalies, anomalies}} =
+               SquidMesh.list_runs([],
+                 runtime: :journal,
+                 journal_storage: @read_model_storage
+               )
+
+      assert [%{entry_type: :run_cataloged, reason: :malformed_entry, workflow: ^workflow}] =
+               anomalies
+    end
+
+    test "list_runs/2 surfaces conflicting journal run catalog facts" do
+      run_id = Ecto.UUID.generate()
+      workflow = Atom.to_string(PaymentRecoveryWorkflow)
+
+      first_entry = %SquidMesh.Runtime.DispatchProtocol.Entry{
+        type: :run_cataloged,
+        thread: {:run_catalog, "all"},
+        data: %{
+          run_id: run_id,
+          workflow: workflow,
+          queue: "first-queue"
+        },
+        occurred_at: @read_model_started_at
+      }
+
+      second_entry = %SquidMesh.Runtime.DispatchProtocol.Entry{
+        type: :run_cataloged,
+        thread: {:run_catalog, "all"},
+        data: %{
+          run_id: run_id,
+          workflow: workflow,
+          queue: "second-queue"
+        },
+        occurred_at: @read_model_started_at
+      }
+
+      assert {:ok, _thread} =
+               Journal.append_entries(@read_model_storage, [first_entry, second_entry])
+
+      assert {:error, {:run_catalog_anomalies, anomalies}} =
+               SquidMesh.list_runs([],
+                 runtime: :journal,
+                 journal_storage: @read_model_storage
+               )
+
+      assert [
+               %{
+                 entry_type: :run_cataloged,
+                 reason: :conflicting_run_catalog,
+                 run_id: ^run_id,
+                 workflow: ^workflow,
+                 queue: "second-queue"
+               }
+             ] = anomalies
+    end
+
+    test "list_runs/2 rejects catalog facts that disagree with the run thread" do
+      run_id = Ecto.UUID.generate()
+      actual_workflow = Atom.to_string(PaymentRecoveryWorkflow)
+      catalog_workflow = Atom.to_string(ApprovalWorkflow)
+
+      assert {:ok, run_started} =
+               DispatchProtocol.new_entry(:run_started, %{
+                 run_id: run_id,
+                 workflow: actual_workflow,
+                 occurred_at: @read_model_started_at
+               })
+
+      assert {:ok, runnables_planned} =
+               DispatchProtocol.new_entry(:runnables_planned, %{
+                 run_id: run_id,
+                 runnables: [journal_start_runnable(run_id)],
+                 occurred_at: @read_model_started_at
+               })
+
+      assert {:ok, catalog_entry} =
+               DispatchProtocol.new_entry(:run_cataloged, %{
+                 run_id: run_id,
+                 workflow: catalog_workflow,
+                 queue: @read_model_queue,
+                 occurred_at: @read_model_started_at
+               })
+
+      assert {:ok, _thread} =
+               Journal.append_entries(@read_model_storage, [run_started, runnables_planned])
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [catalog_entry])
+
+      assert {:error,
+              {:run_catalog_summary_failed, ^run_id,
+               {:catalog_workflow_mismatch,
+                %{expected: ^catalog_workflow, actual: ^actual_workflow, run_id: ^run_id}}}} =
+               SquidMesh.list_runs([],
+                 runtime: :journal,
+                 journal_storage: @read_model_storage
+               )
+    end
+
+    test "start_run/3 rejects conflicting catalog facts before dispatch visibility" do
+      run_id = Ecto.UUID.generate()
+
+      assert {:ok, bad_catalog_entry} =
+               DispatchProtocol.new_entry(:run_cataloged, %{
+                 run_id: run_id,
+                 workflow: Atom.to_string(PaymentRecoveryWorkflow),
+                 queue: "wrong-queue",
+                 occurred_at: @read_model_started_at
+               })
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [bad_catalog_entry])
+
+      assert {:error, {:journal_start_committed, ^run_id, {:conflicting_run_catalog, ^run_id}}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert {:error, :not_found} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+    end
+
+    test "start_run/3 rejects conflicting run index facts before dispatch visibility" do
+      run_id = Ecto.UUID.generate()
+
+      assert {:ok, bad_index_entry} =
+               DispatchProtocol.new_entry(:run_indexed, %{
+                 run_id: run_id,
+                 workflow: Atom.to_string(PaymentRecoveryWorkflow),
+                 queue: "wrong-queue",
+                 occurred_at: @read_model_started_at
+               })
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [bad_index_entry])
+
+      assert {:error, {:journal_start_committed, ^run_id, {:conflicting_run_index, ^run_id}}} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert {:error, :not_found} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
     end
 
     test "configured journal runtime defaults start, inspect, explain, and execute calls" do
@@ -6829,6 +7194,7 @@ defmodule SquidMeshTest do
              DispatchProtocol.new_entry(:run_indexed, %{
                run_id: "storage_seed",
                workflow: "StorageSeedWorkflow",
+               queue: @read_model_queue,
                occurred_at: @read_model_started_at
              })
 

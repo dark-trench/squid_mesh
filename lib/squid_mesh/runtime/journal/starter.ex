@@ -26,6 +26,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.Journal.Options
+  alias SquidMesh.Runtime.RunCatalogProjection
   alias SquidMesh.Runtime.RunIndexProjection
   alias SquidMesh.Runtime.WorkflowAgent
   alias SquidMesh.Workflow.Definition
@@ -170,20 +171,39 @@ defmodule SquidMesh.Runtime.Journal.Starter do
     :ok
   end
 
-  defp ensure_run_indexed(storage, workflow, run_id, %DateTime{} = now) do
+  defp ensure_run_indexed(storage, workflow, run_id, queue, %DateTime{} = now) do
     workflow = Definition.serialize_workflow(workflow)
 
+    with :ok <- ensure_workflow_run_indexed(storage, workflow, run_id, queue, now) do
+      ensure_global_run_cataloged(storage, workflow, run_id, queue, now)
+    end
+  end
+
+  defp ensure_workflow_run_indexed(storage, workflow, run_id, queue, %DateTime{} = now) do
     with {:ok, entry} <-
            DispatchProtocol.new_entry(:run_indexed, %{
              run_id: run_id,
              workflow: workflow,
+             queue: queue,
              occurred_at: now
            }) do
-      ensure_run_indexed(storage, workflow, run_id, entry, @dispatch_schedule_retries)
+      ensure_run_index_entry(storage, workflow, run_id, entry, @dispatch_schedule_retries)
     end
   end
 
-  defp ensure_run_indexed(storage, workflow, run_id, entry, retries_left) do
+  defp ensure_global_run_cataloged(storage, workflow, run_id, queue, %DateTime{} = now) do
+    with {:ok, entry} <-
+           DispatchProtocol.new_entry(:run_cataloged, %{
+             run_id: run_id,
+             workflow: workflow,
+             queue: queue,
+             occurred_at: now
+           }) do
+      ensure_run_cataloged(storage, run_id, entry, @dispatch_schedule_retries)
+    end
+  end
+
+  defp ensure_run_index_entry(storage, workflow, run_id, entry, retries_left) do
     case load_run_index(storage, workflow) do
       {:ok, %{rev: rev, projection: projection}} ->
         append_missing_run_index(storage, workflow, run_id, entry, rev, projection, retries_left)
@@ -194,10 +214,15 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   end
 
   defp append_missing_run_index(storage, workflow, run_id, entry, rev, projection, retries_left) do
-    if run_indexed?(projection, run_id) do
-      :ok
-    else
-      append_run_index_entry(storage, workflow, run_id, entry, rev, retries_left)
+    case run_index_state(projection, run_id, workflow, entry.data.queue) do
+      :matching ->
+        :ok
+
+      :missing ->
+        append_run_index_entry(storage, workflow, run_id, entry, rev, retries_left)
+
+      {:conflicting, _summary} ->
+        {:error, {:conflicting_run_index, run_id}}
     end
   end
 
@@ -207,7 +232,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
         :ok
 
       {:error, :conflict} when retries_left > 0 ->
-        ensure_run_indexed(storage, workflow, run_id, entry, retries_left - 1)
+        ensure_run_index_entry(storage, workflow, run_id, entry, retries_left - 1)
 
       {:error, _reason} = error ->
         error
@@ -217,7 +242,12 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   defp load_run_index(storage, workflow) do
     case Journal.load_thread(storage, {:run_index, workflow}) do
       {:ok, %{rev: rev, entries: entries}} ->
-        {:ok, %{rev: rev, projection: RunIndexProjection.rebuild(entries)}}
+        projection =
+          workflow
+          |> RunIndexProjection.new()
+          |> RunIndexProjection.replay(entries)
+
+        {:ok, %{rev: rev, projection: projection}}
 
       {:error, :not_found} ->
         {:ok, %{rev: 0, projection: RunIndexProjection.new(workflow)}}
@@ -227,8 +257,85 @@ defmodule SquidMesh.Runtime.Journal.Starter do
     end
   end
 
-  defp run_indexed?(%RunIndexProjection{} = projection, run_id) do
-    run_id in RunIndexProjection.run_ids(projection)
+  defp run_index_state(%RunIndexProjection{} = projection, run_id, workflow, queue) do
+    projection
+    |> RunIndexProjection.runs()
+    |> Enum.find(&(&1.run_id == run_id))
+    |> case do
+      nil ->
+        :missing
+
+      %{workflow: ^workflow, queue: ^queue} ->
+        :matching
+
+      summary ->
+        {:conflicting, summary}
+    end
+  end
+
+  defp ensure_run_cataloged(storage, run_id, entry, retries_left) do
+    case load_run_catalog(storage) do
+      {:ok, %{rev: rev, projection: projection}} ->
+        append_missing_run_catalog(storage, run_id, entry, rev, projection, retries_left)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp append_missing_run_catalog(storage, run_id, entry, rev, projection, retries_left) do
+    case run_catalog_state(projection, run_id, entry.data.workflow, entry.data.queue) do
+      :matching ->
+        :ok
+
+      :missing ->
+        append_run_catalog_entry(storage, run_id, entry, rev, retries_left)
+
+      {:conflicting, _summary} ->
+        {:error, {:conflicting_run_catalog, run_id}}
+    end
+  end
+
+  defp append_run_catalog_entry(storage, run_id, entry, rev, retries_left) do
+    case Journal.append_entries(storage, [entry], expected_rev: rev) do
+      {:ok, _thread} ->
+        :ok
+
+      {:error, :conflict} when retries_left > 0 ->
+        ensure_run_cataloged(storage, run_id, entry, retries_left - 1)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp load_run_catalog(storage) do
+    case Journal.load_thread(storage, {:run_catalog, "all"}) do
+      {:ok, %{rev: rev, entries: entries}} ->
+        {:ok, %{rev: rev, projection: RunCatalogProjection.rebuild(entries)}}
+
+      {:error, :not_found} ->
+        {:ok, %{rev: 0, projection: RunCatalogProjection.new()}}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp run_catalog_state(%RunCatalogProjection{} = projection, run_id, workflow, queue) do
+    projection
+    |> RunCatalogProjection.runs()
+    |> Enum.find(&(&1.run_id == run_id))
+    |> case do
+      nil ->
+        :missing
+
+      %{workflow: ^workflow, queue: ^queue} ->
+        :matching
+
+      summary ->
+        {:conflicting, summary}
+    end
   end
 
   defp complete_started_run(storage, workflow, run_id, queue, %DateTime{} = now) do
@@ -239,8 +346,8 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   end
 
   defp do_complete_started_run(storage, workflow, run_id, queue, %DateTime{} = now) do
-    with :ok <- ensure_run_queued(storage, run_id, queue, now),
-         :ok <- ensure_run_indexed(storage, workflow, run_id, now),
+    with :ok <- ensure_run_indexed(storage, workflow, run_id, queue, now),
+         :ok <- ensure_run_queued(storage, run_id, queue, now),
          {:ok, %{workflow_agent: workflow_agent, dispatch_agent: dispatch_agent}} <-
            recover_or_continue(storage, run_id, queue, now),
          :ok <- put_checkpoints(storage, workflow_agent, dispatch_agent, now) do

@@ -52,6 +52,8 @@ defmodule MinimalHostApp.WorkflowRuns do
   @type explanation_result ::
           SquidMesh.Runs.Explanation.t() | SquidMesh.ReadModel.Explanation.Diagnostic.t()
 
+  @type listing_result :: SquidMesh.Run.t() | SquidMesh.ReadModel.Listing.Summary.t()
+
   @spec start_payment_recovery(payment_recovery_attrs()) ::
           {:ok, run_result()} | {:error, term()}
   def start_payment_recovery(attrs) when is_map(attrs) do
@@ -152,7 +154,17 @@ defmodule MinimalHostApp.WorkflowRuns do
     SquidMesh.replay_run(run_id)
   end
 
-  @spec list_daily_digest_runs() :: {:ok, [SquidMesh.Run.t()]} | {:error, term()}
+  @spec list_dependency_recovery_runs(keyword()) :: {:ok, [listing_result()]} | {:error, term()}
+  def list_dependency_recovery_runs(opts \\ []) do
+    SquidMesh.list_runs([workflow: MinimalHostApp.Workflows.DependencyRecovery], opts)
+  end
+
+  @spec list_runs(keyword()) :: {:ok, [listing_result()]} | {:error, term()}
+  def list_runs(opts \\ []) do
+    SquidMesh.list_runs([], opts)
+  end
+
+  @spec list_daily_digest_runs() :: {:ok, [listing_result()]} | {:error, term()}
   def list_daily_digest_runs do
     SquidMesh.list_runs(workflow: MinimalHostApp.Workflows.DailyDigest)
   end

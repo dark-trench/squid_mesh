@@ -7,6 +7,7 @@ defmodule SquidMesh.Runtime.JournalTest do
   alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.Journal.Checkpoint
   alias SquidMesh.Runtime.Journal.Storage
+  alias SquidMesh.Runtime.RunCatalogProjection
   alias SquidMesh.Runtime.RunIndexProjection
 
   @storage {ETS, table: :squid_mesh_journal_test}
@@ -18,6 +19,7 @@ defmodule SquidMesh.Runtime.JournalTest do
   @claim_id "claim_1"
   @claim_token_hash "token_hash_1"
   @owner_id "worker_1"
+  @queue "default"
   @started_at ~U[2026-05-14 00:00:00Z]
   @visible_at ~U[2026-05-14 00:00:10Z]
   @claimed_at ~U[2026-05-14 00:00:20Z]
@@ -132,6 +134,7 @@ defmodule SquidMesh.Runtime.JournalTest do
              DispatchProtocol.new_entry(:run_indexed, %{
                run_id: @run_id,
                workflow: @workflow,
+               queue: @queue,
                occurred_at: @started_at
              })
 
@@ -139,6 +142,7 @@ defmodule SquidMesh.Runtime.JournalTest do
              DispatchProtocol.new_entry(:run_indexed, %{
                run_id: @second_run_id,
                workflow: @workflow,
+               queue: @queue,
                occurred_at: @completed_at
              })
 
@@ -148,6 +152,92 @@ defmodule SquidMesh.Runtime.JournalTest do
              Journal.rebuild_run_index_projection(@storage, @workflow)
 
     assert RunIndexProjection.run_ids(projection) == [@run_id, @second_run_id]
+  end
+
+  test "anchors run index rebuilds to the requested workflow" do
+    misfiled_entry = %DispatchProtocol.Entry{
+      type: :run_indexed,
+      thread: {:run_index, @workflow},
+      data: %{
+        run_id: @second_run_id,
+        workflow: "OtherWorkflow",
+        queue: @queue
+      },
+      occurred_at: @started_at
+    }
+
+    assert {:ok, valid_entry} =
+             DispatchProtocol.new_entry(:run_indexed, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               queue: @queue,
+               occurred_at: @completed_at
+             })
+
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, [misfiled_entry, valid_entry])
+
+    assert {:ok, %RunIndexProjection{} = projection} =
+             Journal.rebuild_run_index_projection(@storage, @workflow)
+
+    assert RunIndexProjection.run_ids(projection) == [@run_id]
+
+    assert [
+             %{
+               entry_type: :run_indexed,
+               reason: :conflicting_workflow,
+               run_id: @second_run_id,
+               workflow: "OtherWorkflow",
+               queue: @queue
+             }
+           ] = RunIndexProjection.anomalies(projection)
+  end
+
+  test "appends run catalog entries and rebuilds the global run catalog projection" do
+    assert {:ok, first_entry} =
+             DispatchProtocol.new_entry(:run_cataloged, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               queue: @queue,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, second_entry} =
+             DispatchProtocol.new_entry(:run_cataloged, %{
+               run_id: @second_run_id,
+               workflow: "OtherWorkflow",
+               queue: "other",
+               occurred_at: @completed_at
+             })
+
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, [first_entry, second_entry])
+
+    assert {:ok, %RunCatalogProjection{} = projection} =
+             Journal.rebuild_run_catalog_projection(@storage)
+
+    assert RunCatalogProjection.run_ids(projection) == [@run_id, @second_run_id]
+
+    assert RunCatalogProjection.runs(projection) == [
+             %{
+               run_id: @run_id,
+               workflow: @workflow,
+               queue: @queue,
+               indexed_at: @started_at
+             },
+             %{
+               run_id: @second_run_id,
+               workflow: "OtherWorkflow",
+               queue: "other",
+               indexed_at: @completed_at
+             }
+           ]
+  end
+
+  test "returns an empty run catalog projection for absent catalog threads" do
+    assert {:ok, %RunCatalogProjection{} = projection} =
+             Journal.rebuild_run_catalog_projection(@storage)
+
+    assert RunCatalogProjection.run_ids(projection) == []
+    assert RunCatalogProjection.anomalies(projection) == []
   end
 
   test "returns an empty run index projection for absent index threads" do
@@ -166,6 +256,7 @@ defmodule SquidMesh.Runtime.JournalTest do
              DispatchProtocol.new_entry(:run_indexed, %{
                run_id: @run_id,
                workflow: __MODULE__,
+               queue: @queue,
                occurred_at: @started_at
              })
 

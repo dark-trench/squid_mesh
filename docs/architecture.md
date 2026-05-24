@@ -61,6 +61,12 @@ inside a host application's supervision tree and infrastructure.
   keeping duplicate index facts idempotent and surfacing malformed or
   conflicting index facts as anomalies
 
+`SquidMesh.Runtime.RunCatalogProjection`
+
+- rebuilds global run lookup state from run-catalog journal entries, so
+  host-facing tools can list all journal-backed runs without adapter-specific
+  storage scans
+
 `SquidMesh.ReadModel.Inspection`
 
 - rebuilds workflow and dispatch agent projections into a read-only inspection
