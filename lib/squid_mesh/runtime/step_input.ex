@@ -3,7 +3,7 @@ defmodule SquidMesh.Runtime.StepInput do
   Step-execution input normalization for the runtime.
 
   This module keeps payload/context merging and identifier normalization out of
-  the main executor flow.
+  the main runtime flow.
   """
 
   alias SquidMesh.Workflow.InputMapping

@@ -616,7 +616,7 @@ defmodule SquidMesh.Workflow.Definition do
   @doc """
   Returns a stable fingerprint for runtime-significant workflow semantics.
 
-  Journal-backed execution stores this value at start so later executors can
+  Journal-backed execution stores this value at start so later runtime workers can
   reject stale attempts when a deploy changes step modules, transitions,
   mappings, dependency declarations, or retry policy for already-planned work.
   """

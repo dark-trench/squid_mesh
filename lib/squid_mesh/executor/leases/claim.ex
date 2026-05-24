@@ -1,6 +1,6 @@
 defmodule SquidMesh.Executor.Leases.Claim do
   @moduledoc """
-  Backend-neutral worker claim returned by a lease executor.
+  Backend-neutral worker claim returned by a lease adapter.
 
   `backend_ref` is intentionally opaque. It lets an adapter keep the native
   backend lease data it needs to heartbeat, complete, or fail the claim without
