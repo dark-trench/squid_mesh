@@ -369,7 +369,7 @@ defmodule SquidMesh.Runtime.Journal.Storage.Ecto do
     # atoms fail closed instead of creating permanent atom table entries.
     case :erlang.binary_to_term(binary, [:safe]) do
       {@encoded_term_tag, encoded} -> decode_value(encoded)
-      _ -> {:error, :invalid_encoded_term}
+      _other -> {:error, :invalid_encoded_term}
     end
   rescue
     error -> {:error, {error.__struct__, Exception.message(error)}}

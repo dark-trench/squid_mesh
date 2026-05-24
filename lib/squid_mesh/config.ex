@@ -56,7 +56,8 @@ defmodule SquidMesh.Config do
       |> Application.get_all_env()
       |> Keyword.merge(overrides)
 
-    with :ok <- validate_required_keys(config),
+    with :ok <- validate_removed_keys(config),
+         :ok <- validate_required_keys(config),
          {:ok, runtime} <- validate_runtime(Keyword.get(config, :runtime, @default_runtime)),
          {:ok, read_model} <-
            validate_read_model(Keyword.get(config, :read_model, @default_read_model)),
@@ -103,6 +104,18 @@ defmodule SquidMesh.Config do
     case missing_keys do
       [] -> :ok
       keys -> {:error, {:missing_config, keys}}
+    end
+  end
+
+  defp validate_removed_keys(config) do
+    removed_keys =
+      config
+      |> Keyword.take([:executor, :stale_step_timeout])
+      |> Enum.map(fn {key, _value} -> {key, :removed} end)
+
+    case removed_keys do
+      [] -> :ok
+      keys -> {:error, {:invalid_config, keys}}
     end
   end
 
