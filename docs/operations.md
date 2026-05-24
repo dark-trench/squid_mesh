@@ -117,7 +117,7 @@ Operational boundary:
 - a crash after local commit but before Squid Mesh persists progress can still
   be redelivered, so local transaction groups should use natural keys,
   uniqueness, or other idempotency guards when duplicate local writes matter
-- this option does not cover external APIs, downstream steps, executor dispatch, or
+- this option does not cover external APIs, downstream steps, runtime dispatch, or
   saga compensation callbacks
 
 Keep this option for small local write groups. If a boundary crosses services,
