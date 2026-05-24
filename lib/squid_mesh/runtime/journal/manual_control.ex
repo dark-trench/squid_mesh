@@ -558,12 +558,22 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
       |> Map.merge(input || %{})
       |> Map.merge(result)
 
-    with {:ok, input} <- successor_input(context, definition, next_step) do
+    with {:ok, input} <- successor_input(context, definition, next_step),
+         {:ok, runnable} <-
+           journal_runnable(
+             workflow_agent.state.run_id,
+             queue,
+             definition,
+             next_step,
+             input,
+             1,
+             now
+           ) do
       {:ok,
        [
          runnables_planned_entry!(
            workflow_agent.state.run_id,
-           [journal_runnable(workflow_agent.state.run_id, queue, next_step, input, 1, now)],
+           [runnable],
            now
          )
        ]}
@@ -739,20 +749,44 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
     entry
   end
 
-  defp journal_runnable(run_id, queue, step_name, input, attempt_number, %DateTime{} = now) do
+  defp journal_runnable(
+         run_id,
+         queue,
+         definition,
+         step_name,
+         input,
+         attempt_number,
+         %DateTime{} = now
+       ) do
     step = Definition.serialize_step(step_name)
     runnable_key = "#{run_id}:#{step}:#{attempt_number}"
 
-    %{
-      run_id: run_id,
-      runnable_key: runnable_key,
-      idempotency_key: runnable_key,
-      attempt_number: attempt_number,
-      queue: queue,
-      step: step,
-      input: input,
-      visible_at: now
-    }
+    with {:ok, recovery} <- replay_recovery_policy(definition, step_name) do
+      {:ok,
+       %{
+         run_id: run_id,
+         runnable_key: runnable_key,
+         idempotency_key: runnable_key,
+         attempt_number: attempt_number,
+         queue: queue,
+         step: step,
+         input: input,
+         recovery: recovery,
+         visible_at: now
+       }}
+    end
+  end
+
+  defp replay_recovery_policy(definition, step_name) do
+    with {:ok, recovery} <- Definition.step_recovery_policy(definition, step_name) do
+      {:ok,
+       %{
+         "irreversible?" => recovery.irreversible?,
+         "compensatable?" => recovery.compensatable?,
+         "replay" => Atom.to_string(recovery.replay),
+         "recovery" => Atom.to_string(recovery.recovery)
+       }}
+    end
   end
 
   defp run_id(run_id) do

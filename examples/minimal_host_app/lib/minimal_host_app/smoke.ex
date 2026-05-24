@@ -64,6 +64,7 @@ defmodule MinimalHostApp.Smoke do
           journal_executor: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_recovery: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_cancellation: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          journal_replay: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           daily_digest: SquidMesh.Run.t()
         }
   def run_all! do
@@ -76,6 +77,7 @@ defmodule MinimalHostApp.Smoke do
     journal_executor = run_journal_executor!()
     journal_recovery = run_journal_recovery!()
     journal_cancellation = run_journal_cancellation!()
+    journal_replay = run_journal_replay!()
     existing_daily_digest_run_ids = daily_digest_run_ids()
 
     with :ok <- run_cron_digest(),
@@ -96,6 +98,7 @@ defmodule MinimalHostApp.Smoke do
         journal_executor: journal_executor,
         journal_recovery: journal_recovery,
         journal_cancellation: journal_cancellation,
+        journal_replay: journal_replay,
         daily_digest: cron_run
       }
     else
@@ -266,6 +269,49 @@ defmodule MinimalHostApp.Smoke do
       else
         {:error, reason} ->
           raise "journal cancellation smoke test failed: #{inspect(reason)}"
+      end
+    end)
+  end
+
+  @doc """
+  Runs journal replay through the example app's configured Ecto storage.
+  """
+  @spec run_journal_replay!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
+  def run_journal_replay! do
+    RuntimeHarness.ensure_runtime_started()
+    queue = journal_executor_queue()
+
+    attrs = %{
+      account_id: "acct_journal_replay_demo",
+      invoice_id: "inv_journal_replay_demo",
+      attempt_id: "attempt_journal_replay_demo"
+    }
+
+    with_journal_runtime_config(queue, fn ->
+      with {:ok, started_run} <-
+             SquidMesh.start_run(
+               MinimalHostApp.Workflows.DependencyRecovery,
+               :dependency_recovery,
+               attrs
+             ),
+           {:ok, completed_run} <-
+             drain_journal_executor(started_run.run_id, @journal_executor_attempts),
+           {:ok, replayed_run} <- SquidMesh.replay_run(completed_run.run_id),
+           {:ok, completed_replay} <-
+             drain_journal_executor(replayed_run.run_id, @journal_executor_attempts) do
+        unless completed_run.status == :completed and completed_replay.status == :completed do
+          raise "unexpected journal replay smoke result"
+        end
+
+        unless replayed_run.replayed_from_run_id == completed_run.run_id and
+                 replayed_run.input == attrs do
+          raise "unexpected journal replay lineage"
+        end
+
+        completed_replay
+      else
+        {:error, reason} ->
+          raise "journal replay smoke test failed: #{inspect(reason)}"
       end
     end)
   end

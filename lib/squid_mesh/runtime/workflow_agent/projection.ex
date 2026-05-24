@@ -29,6 +29,10 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   @type t :: %__MODULE__{
           run_id: String.t() | nil,
           workflow: String.t() | nil,
+          trigger: String.t() | nil,
+          input: map() | nil,
+          replayed_from_run_id: String.t() | nil,
+          definition_fingerprint: String.t() | nil,
           status: atom(),
           planned_runnables: %{optional(String.t()) => map()},
           applied_runnable_keys: string_set(),
@@ -42,6 +46,10 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
 
   defstruct run_id: nil,
             workflow: nil,
+            trigger: nil,
+            input: nil,
+            replayed_from_run_id: nil,
+            definition_fingerprint: nil,
             status: :new,
             planned_runnables: %{},
             applied_runnable_keys: MapSet.new(),
@@ -176,6 +184,10 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
       projection
       |> Map.put(:run_id, Map.fetch!(data, :run_id))
       |> Map.put(:workflow, Map.fetch!(data, :workflow))
+      |> Map.put(:trigger, Map.get(data, :trigger))
+      |> Map.put(:input, Map.get(data, :input))
+      |> Map.put(:replayed_from_run_id, Map.get(data, :replayed_from_run_id))
+      |> Map.put(:definition_fingerprint, Map.get(data, :definition_fingerprint))
       |> refresh_status()
     else
       add_anomaly(projection, entry, :malformed_entry)

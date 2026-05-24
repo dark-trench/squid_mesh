@@ -102,7 +102,7 @@ boundary remains adapter-shaped, so other Jido-compatible stores can be used
 later, but production stores must still provide ordered per-thread appends,
 durable checkpoint reads, and conflict detection for `:expected_rev`.
 
-The current journal default covers start, cancellation, global and
+The current journal default covers start, cancellation, replay, global and
 workflow-filtered `list_runs/2`, inspect, explain, graph inspection, manual
 resume/approval controls, and `SquidMesh.execute_next/1`. Journal listing is
 backed by a durable run catalog fact rather than a storage-adapter scan, and
@@ -110,11 +110,10 @@ returns redacted summaries; use `inspect_run/2` for one run when a caller needs
 inputs, outputs, attempts, or claim metadata. Dashboards can call `list_runs([])`
 for the index view, then pass the selected summary's `run_id` and `queue` to
 `inspect_run(run_id, queue: queue, include_history: true)` or
-`inspect_run_graph(run_id, queue: queue)` for detail views. The remaining
-table-only APIs return explicit
-`{:unsupported_runtime, {:journal, operation}}` errors under the journal default
-until their journal implementations land: `replay_run/2` and cron starts
-delivered through `SquidMesh.Runtime.Runner`.
+`inspect_run_graph(run_id, queue: queue)` for detail views. Cron starts
+delivered through `SquidMesh.Runtime.Runner` are still table-only and return
+explicit `{:unsupported_runtime, {:journal, operation}}` errors under the
+journal default.
 
 ## Executor Contract
 

@@ -61,8 +61,21 @@ defmodule SquidMesh.Runtime.Journal.Starter do
          {:ok, planner} <- RunicPlanner.new(workflow),
          {:ok, _planned, runnables} <- RunicPlanner.plan(planner, resolved_payload),
          {:ok, run_id} <- run_id(opts),
-         {:ok, journal_runnables} <- journal_runnables(run_id, queue, runnables, now),
-         :ok <- ensure_run_started(storage, workflow, definition, run_id, journal_runnables, now) do
+         {:ok, journal_runnables} <- journal_runnables(definition, run_id, queue, runnables, now),
+         :ok <-
+           ensure_run_started(
+             storage,
+             %{
+               workflow: workflow,
+               definition: definition,
+               trigger: trigger,
+               input: resolved_payload,
+               run_id: run_id
+             },
+             journal_runnables,
+             now,
+             opts
+           ) do
       complete_started_run(storage, workflow, run_id, queue, now)
     end
   end
@@ -72,13 +85,28 @@ defmodule SquidMesh.Runtime.Journal.Starter do
 
   defp trigger(definition, trigger_name), do: Definition.trigger(definition, trigger_name)
 
-  defp ensure_run_started(storage, workflow, definition, run_id, runnables, %DateTime{} = now) do
+  defp ensure_run_started(
+         storage,
+         %{
+           workflow: workflow,
+           definition: definition,
+           trigger: trigger,
+           input: input,
+           run_id: run_id
+         },
+         runnables,
+         %DateTime{} = now,
+         opts
+       ) do
     expected_fingerprint = Definition.fingerprint(definition)
 
     with {:ok, run_started} <-
            DispatchProtocol.new_entry(:run_started, %{
              run_id: run_id,
              workflow: Definition.serialize_workflow(workflow),
+             trigger: Atom.to_string(Map.fetch!(trigger, :name)),
+             input: input,
+             replayed_from_run_id: replayed_from_run_id(opts),
              definition_fingerprint: expected_fingerprint,
              occurred_at: now
            }),
@@ -121,10 +149,10 @@ defmodule SquidMesh.Runtime.Journal.Starter do
     end
   end
 
-  defp journal_runnables(run_id, queue, runnables, %DateTime{} = now) do
+  defp journal_runnables(definition, run_id, queue, runnables, %DateTime{} = now) do
     result =
       Enum.reduce_while(runnables, {:ok, []}, fn runnable, {:ok, acc} ->
-        case journal_runnable(run_id, queue, runnable, now) do
+        case journal_runnable(definition, run_id, queue, runnable, now) do
           {:ok, journal_runnable} -> {:cont, {:ok, [journal_runnable | acc]}}
           {:error, _reason} = error -> {:halt, error}
         end
@@ -137,6 +165,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   end
 
   defp journal_runnable(
+         definition,
          run_id,
          queue,
          %{step: step, input: input},
@@ -147,21 +176,36 @@ defmodule SquidMesh.Runtime.Journal.Starter do
     step_name = Definition.serialize_step(step)
     runnable_key = "#{run_id}:#{step_name}:#{attempt_number}"
 
-    {:ok,
-     %{
-       run_id: run_id,
-       runnable_key: runnable_key,
-       idempotency_key: runnable_key,
-       attempt_number: attempt_number,
-       queue: queue,
-       step: step_name,
-       input: input || %{},
-       visible_at: now
-     }}
+    with {:ok, recovery} <- replay_recovery_policy(definition, step) do
+      {:ok,
+       %{
+         run_id: run_id,
+         runnable_key: runnable_key,
+         idempotency_key: runnable_key,
+         attempt_number: attempt_number,
+         queue: queue,
+         step: step_name,
+         input: input || %{},
+         recovery: recovery,
+         visible_at: now
+       }}
+    end
   end
 
-  defp journal_runnable(_run_id, _queue, runnable, %DateTime{}) do
+  defp journal_runnable(_definition, _run_id, _queue, runnable, %DateTime{}) do
     {:error, {:invalid_runnable, runnable}}
+  end
+
+  defp replay_recovery_policy(definition, step) do
+    with {:ok, recovery} <- Definition.step_recovery_policy(definition, step) do
+      {:ok,
+       %{
+         "irreversible?" => recovery.irreversible?,
+         "compensatable?" => recovery.compensatable?,
+         "replay" => Atom.to_string(recovery.replay),
+         "recovery" => Atom.to_string(recovery.recovery)
+       }}
+    end
   end
 
   defp put_checkpoints(storage, workflow_agent, dispatch_agent, %DateTime{} = now) do
@@ -494,6 +538,13 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   defp run_id(opts) do
     case Keyword.get(opts, :run_id, Ecto.UUID.generate()) do
       run_id -> Options.uuid(run_id)
+    end
+  end
+
+  defp replayed_from_run_id(opts) do
+    case Keyword.get(opts, :replayed_from_run_id) do
+      nil -> nil
+      run_id -> run_id
     end
   end
 

@@ -431,7 +431,11 @@ threading journal options through every boundary:
 {:ok, snapshot} = SquidMesh.execute_next(owner_id: "worker-1")
 {:ok, summaries} = SquidMesh.list_runs([])
 {:ok, workflow_summaries} = SquidMesh.list_runs(workflow: MyWorkflow)
-{:ok, cancelled} = SquidMesh.cancel_run(started.run_id)
+
+{:ok, replayed} = SquidMesh.replay_run(completed_run_id)
+
+{:ok, cancellable} = SquidMesh.start_run(MyWorkflow, %{account_id: "acct_456"})
+{:ok, cancelled} = SquidMesh.cancel_run(cancellable.run_id)
 ```
 
 When no `journal_storage` is configured, Squid Mesh infers
@@ -458,6 +462,17 @@ from the rebuilt projection, and fences stale dispatch claims before they can
 complete after cancellation. The `queue` option selects the returned dispatch
 projection for inspection; the cancellation boundary is the globally unique
 `run_id`.
+
+Journal replay rebuilds the source run from durable journal facts, starts a
+fresh journal run with the same trigger and resolved input, and stores
+`replayed_from_run_id` on the replayed run's projection. Replay keeps the same
+irreversible-step safety gate as the table runtime: completed steps marked
+`irreversible: true` or `compensatable: false` require
+`allow_irreversible: true`.
+
+Journal snapshots are full-detail operator views. `inspect_run/2` includes the
+resolved trigger input on `snapshot.input`; keep secrets out of workflow inputs
+or redact them at the host app UI/API boundary.
 
 ## Graph Inspection
 
@@ -612,13 +627,12 @@ Both markers produce the same replay safety behavior:
 
 - `inspect_run(..., include_history: true)` includes each step's `recovery`
   policy
-- in the table runtime, `explain_run/2` removes `:replay_run` from terminal
-  next actions after a completed marked step and reports the blocking step in
-  `details.replay`
-- in the table runtime, `replay_run/2` returns
+- `explain_run/2` removes `:replay_run` from terminal next actions after a
+  completed marked step and reports the blocking step in `details.replay`
+- `replay_run/2` returns
   `{:error, {:unsafe_replay, details}}` by default after a completed marked step
-- in the table runtime, `replay_run(run_id, allow_irreversible: true)` is the
-  explicit operator override when re-execution has been reviewed and accepted
+- `replay_run(run_id, allow_irreversible: true)` is the explicit operator
+  override when re-execution has been reviewed and accepted
 
 These markers do not provide exactly-once delivery or external compensation.
 They keep Squid Mesh honest about recovery policy so a replay cannot silently

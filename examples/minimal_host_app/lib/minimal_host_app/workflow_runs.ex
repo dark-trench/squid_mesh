@@ -149,7 +149,7 @@ defmodule MinimalHostApp.WorkflowRuns do
     SquidMesh.reject_run(run_id, attrs)
   end
 
-  @spec replay_run(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}
+  @spec replay_run(Ecto.UUID.t()) :: {:ok, run_result()} | {:error, term()}
   def replay_run(run_id) do
     SquidMesh.replay_run(run_id)
   end
