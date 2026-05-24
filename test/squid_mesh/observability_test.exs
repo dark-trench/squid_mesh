@@ -3,6 +3,8 @@ defmodule SquidMesh.ObservabilityTest do
 
   import ExUnit.CaptureLog
 
+  @moduletag :runtime_tables
+
   alias SquidMesh.AttemptStore
   alias SquidMesh.Config
   alias SquidMesh.Runs

@@ -7,6 +7,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
   alias MinimalHostApp.WorkflowRuns
   alias MinimalHostApp.Workflows.DailyDigest
   alias Oban.Job
+  alias SquidMesh.ReadModel.Inspection.Snapshot
 
   defmodule InvalidRecurringIdempotentCronWorkflow do
     use SquidMesh.Workflow
@@ -178,6 +179,49 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              invoice_id: "inv_456",
              account_tier: "standard"
            }
+  end
+
+  test "executes a dependency workflow through inferred Ecto journal defaults" do
+    queue = "minimal-host-app-default-journal-#{System.unique_integer([:positive])}"
+
+    with_squid_mesh_env(
+      [
+        repo: Repo,
+        queue: queue
+      ],
+      fn ->
+        assert {:ok, config} = SquidMesh.config()
+        assert config.runtime == :journal
+        assert config.read_model == :read_model
+        assert config.journal_storage.adapter == SquidMesh.Runtime.Journal.Storage.Ecto
+        assert config.journal_storage.opts == [repo: Repo]
+
+        attrs = %{
+          account_id: "acct_default_journal",
+          invoice_id: "inv_default_journal",
+          attempt_id: "attempt_default_journal"
+        }
+
+        assert {:ok, %Snapshot{} = started_run} =
+                 WorkflowRuns.start_dependency_recovery(attrs)
+
+        assert started_run.queue == queue
+        assert started_run.workflow == "Elixir.MinimalHostApp.Workflows.DependencyRecovery"
+        assert started_run.status == :running
+
+        assert {:ok, %Snapshot{} = completed_run} =
+                 drain_default_journal_run(started_run.run_id, queue, 10)
+
+        assert completed_run.status == :completed
+        assert completed_run.applied_runnable_keys == completed_run.planned_runnable_keys
+
+        assert Enum.map(completed_run.attempts, &{&1.step, &1.status, &1.applied?}) == [
+                 {"load_account", :completed, true},
+                 {"load_invoice", :completed, true},
+                 {"prepare_notification", :completed, true}
+               ]
+      end
+    )
   end
 
   test "commits local repo transaction groups through the host boundary" do
@@ -527,5 +571,60 @@ defmodule MinimalHostApp.WorkflowRunsTest do
         select: entry.entry
       )
     )
+  end
+
+  defp with_squid_mesh_env(config, fun) when is_list(config) and is_function(fun, 0) do
+    original_config = Application.get_all_env(:squid_mesh)
+
+    try do
+      :squid_mesh
+      |> Application.get_all_env()
+      |> Keyword.keys()
+      |> Enum.each(&Application.delete_env(:squid_mesh, &1))
+
+      Enum.each(config, fn {key, value} -> Application.put_env(:squid_mesh, key, value) end)
+
+      fun.()
+    after
+      :squid_mesh
+      |> Application.get_all_env()
+      |> Keyword.keys()
+      |> Enum.each(&Application.delete_env(:squid_mesh, &1))
+
+      Enum.each(original_config, fn {key, value} ->
+        Application.put_env(:squid_mesh, key, value)
+      end)
+    end
+  end
+
+  defp drain_default_journal_run(_run_id, _queue, 0), do: {:error, :timeout}
+
+  defp drain_default_journal_run(run_id, queue, attempts_remaining) when attempts_remaining > 0 do
+    case SquidMesh.inspect_run(run_id) do
+      {:ok, %Snapshot{terminal?: true} = run} ->
+        {:ok, run}
+
+      {:ok, %Snapshot{}} ->
+        case SquidMesh.execute_next(
+               owner_id: "minimal-host-app-default-journal-test",
+               queue: queue
+             ) do
+          {:ok, %Snapshot{terminal?: true} = run} ->
+            {:ok, run}
+
+          {:ok, %Snapshot{}} ->
+            drain_default_journal_run(run_id, queue, attempts_remaining - 1)
+
+          {:ok, :none} ->
+            Process.sleep(50)
+            drain_default_journal_run(run_id, queue, attempts_remaining - 1)
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 end

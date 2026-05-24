@@ -3,6 +3,8 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
   import Ecto.Query
 
+  @moduletag :runtime_tables
+
   alias __MODULE__.ApprovalWorkflow
   alias __MODULE__.BackoffWorkflow
   alias __MODULE__.BuiltInWorkflow

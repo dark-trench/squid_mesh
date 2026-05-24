@@ -57,55 +57,57 @@ migrations for the host application's job backend.
 
 Start with three pieces:
 
-1. Squid Mesh config points at the host repo, executor, and runtime boundary.
-2. The executor config owns the legacy host queue name; the journal runtime owns
-   its dispatch queue through Squid Mesh config.
-3. The host job calls `SquidMesh.Runtime.Runner.perform/1`.
+1. Squid Mesh config points at the host repo and runtime boundary.
+2. The journal runtime owns its dispatch queue through Squid Mesh config; the
+   executor config only matters for hosts still exercising the table runtime.
+3. Journal workers call `SquidMesh.execute_next/1` to claim and execute visible
+   attempts.
 
 The host application configures Squid Mesh under the `:squid_mesh` application:
 
 ```elixir
 config :squid_mesh,
   repo: MyApp.Repo,
-  executor: MyApp.SquidMeshExecutor,
-  runtime: :journal,
-  read_model: :read_model,
-  journal_storage: {SquidMesh.Runtime.Journal.Storage.Ecto, repo: MyApp.Repo},
   queue: "default"
-
-config :my_app, MyApp.SquidMeshExecutor,
-  queue: :squid_mesh
 ```
 
 Required keys:
 
 - `:repo` - the Ecto repo Squid Mesh uses for persisted runtime state
-- `:executor` - the host module that implements `SquidMesh.Executor`
 
 Optional keys:
 
-- `:stale_step_timeout` - `:disabled` by default; set a non-negative
-  millisecond timeout to let redelivered jobs reclaim stale `running` steps
-  after worker interruption
-- `:runtime` - `:runtime_tables` by default; set `:journal` to route public
-  start, execution, and manual-control APIs through the Jido-native journal
-  runtime
-- `:read_model` - `:runtime_tables` by default; set `:read_model` to route
-  inspection, graph inspection, and explanation through journal projections
-- `:journal_storage` - required when `:runtime` is `:journal` or `:read_model`
-  is `:read_model`; this is a `Jido.Storage` adapter config validated through
-  Squid Mesh's storage boundary
+- `:runtime` - `:journal` by default; routes public start, execution, and
+  manual-control APIs through the Jido-native journal runtime
+- `:read_model` - `:read_model` by default; routes inspection, graph
+  inspection, and explanation through journal projections
+- `:journal_storage` - optional for the default Ecto-backed setup; when omitted,
+  Squid Mesh uses `{SquidMesh.Runtime.Journal.Storage.Ecto, repo: MyApp.Repo}`.
+  Set it only to override the storage adapter. Explicit `nil` is rejected for
+  journal-backed runtime or read-model paths.
 - `:queue` - `"default"` by default; selects the journal dispatch queue used by
   the configured journal runtime and read model
+- `:executor` - required only when `:runtime` is explicitly
+  `:runtime_tables`; this host module implements `SquidMesh.Executor`
+- `:stale_step_timeout` - table-runtime-only; `:disabled` by default. Set a
+  non-negative millisecond timeout only when using legacy runtime tables and
+  redelivered jobs need to reclaim stale `running` steps after worker
+  interruption
 
-For most host apps, start with
-`{SquidMesh.Runtime.Journal.Storage.Ecto, repo: MyApp.Repo}` when `MyApp.Repo`
-uses Postgres or a Postgres-compatible Ecto adapter. It persists Jido threads
-and checkpoints in Squid Mesh's installed tables and keeps journal storage in
-the same transactional database boundary as the host app. The boundary remains
-adapter-shaped, so other Jido-compatible stores can be used later, but
-production stores must still provide ordered per-thread appends, durable
-checkpoint reads, and conflict detection for `:expected_rev`.
+For most host apps, the inferred Ecto storage is the recommended starting point
+when `MyApp.Repo` uses Postgres or a Postgres-compatible Ecto adapter. It
+persists Jido threads and checkpoints in Squid Mesh's installed tables and keeps
+journal storage in the same transactional database boundary as the host app. The
+boundary remains adapter-shaped, so other Jido-compatible stores can be used
+later, but production stores must still provide ordered per-thread appends,
+durable checkpoint reads, and conflict detection for `:expected_rev`.
+
+The current journal default covers start, inspect, explain, graph inspection,
+manual resume/approval controls, and `SquidMesh.execute_next/1`. The remaining
+table-only APIs return explicit `{:unsupported_runtime, {:journal, operation}}`
+errors under the journal default until their journal implementations land:
+`list_runs/2`, `cancel_run/2`, `replay_run/2`, and cron starts delivered through
+`SquidMesh.Runtime.Runner`.
 
 ## Executor Contract
 
@@ -307,14 +309,15 @@ For a new integration, the shortest path to a successful first run is:
 
 1. Add `:squid_mesh` to the host app's dependencies.
 2. Add or confirm a working Postgres-backed `Repo`.
-3. Add or confirm a working job system for the host executor.
-4. Add the host app's job-system migrations, if needed.
-5. Run `mix squid_mesh.install`.
-6. Run `mix ecto.migrate`.
-7. Configure `:squid_mesh` with the host app's `Repo` and executor module.
-8. Configure the host executor's queue, worker, and scheduler.
-9. Start the host app's `Repo` and job system under supervision.
-10. Start one workflow through the public API and inspect it with history enabled.
+3. Run `mix squid_mesh.install`.
+4. Run `mix ecto.migrate`.
+5. Configure `:squid_mesh` with the host app's `Repo`.
+6. Start the host app's `Repo` under supervision.
+7. Start one workflow through the public API, execute visible attempts with
+   `SquidMesh.execute_next/1`, and inspect it with history enabled.
+
+Add a host executor and job system only when explicitly using
+`runtime: :runtime_tables` or validating a legacy executor scenario.
 
 ## Existing Application Setup
 
@@ -322,33 +325,32 @@ For an existing Phoenix or OTP application:
 
 1. Add the `:squid_mesh` dependency.
 2. Configure `:repo` to point at the app's existing repo.
-3. Configure `:executor` to point at the app's executor module.
-4. Call `SquidMesh.config!/0` during boot or integration setup to verify the
+3. Call `SquidMesh.config!/0` during boot or integration setup to verify the
    required contract is present.
-5. Integrate Squid Mesh from the host application's contexts, services,
+4. Integrate Squid Mesh from the host application's contexts, services,
    controllers, or internal APIs.
 
 The host application is responsible for:
 
 - database setup and migrations
-- executor and background job infrastructure lifecycle
+- journal worker lifecycle for `SquidMesh.execute_next/1`
 - any HTTP or internal API endpoints exposed to end users
 
 That means the embedded install path assumes:
 
 - the host app already owns its `Repo`
-- the host app already owns its executor and job-system configuration
-- the host app already manages its job-system tables, if any
+- the host app starts workers that call `SquidMesh.execute_next/1`
+- the host app adds executor and job-system tables only for explicit table-runtime
+  integrations
 
 ## Minimal OTP Host Skeleton
 
 For a plain OTP application, the minimum moving pieces are:
 
 - a `Repo` module
-- an executor module implementing `SquidMesh.Executor`
-- a worker or equivalent delivery adapter that calls `SquidMesh.Runtime.Runner.perform/1`
-- `Repo` and the chosen job system in the application supervision tree
-- `:squid_mesh` configuration pointing at that `Repo` and executor
+- `Repo` in the application supervision tree
+- a supervised worker that periodically calls `SquidMesh.execute_next/1`
+- `:squid_mesh` configuration pointing at that `Repo`
 - one host-facing module that calls `SquidMesh`
 
 Dependency shape:
@@ -438,10 +440,10 @@ that Squid Mesh usually sits behind a context or controller boundary.
 
 Typical shape:
 
-- add `:squid_mesh`, `:jido`, and the chosen job backend to the Phoenix app
+- add `:squid_mesh` and `:jido` to the Phoenix app
 - keep using the Phoenix app's existing `Repo`
-- start the job backend in the application supervision tree
-- configure `:squid_mesh` to use that `Repo` and executor
+- start a supervised worker that calls `SquidMesh.execute_next/1`
+- configure `:squid_mesh` to use that `Repo`
 - expose workflow operations through a context or controller
 
 Context boundary:
@@ -467,10 +469,6 @@ defmodule MyApp.WorkflowRuns do
   def reject_run(run_id, attrs) do
     SquidMesh.reject_run(run_id, attrs)
   end
-
-  def list_runs(opts \\ []) do
-    SquidMesh.list_runs(opts)
-  end
 end
 ```
 
@@ -479,7 +477,7 @@ Controller shape:
 ```elixir
 def create(conn, params) do
   with {:ok, run} <- MyApp.WorkflowRuns.start_payment_recovery(params) do
-    json(conn, %{id: run.id, status: run.status})
+    json(conn, %{id: run.run_id, status: run.status})
   end
 end
 ```
@@ -533,8 +531,10 @@ Fast verification path:
 The example app wires:
 
 - its own `MinimalHostApp.Repo`
-- `MinimalHostApp.SquidMeshExecutor` as the host-owned executor
-- one generic worker that calls `SquidMesh.Runtime.Runner.perform/1`
+- journal runtime smoke paths that use inferred Ecto storage and
+  `SquidMesh.execute_next/1`
+- explicit table-runtime smoke paths that use `MinimalHostApp.SquidMeshExecutor`
+  and one generic worker calling `SquidMesh.Runtime.Runner.perform/1`
 - Squid Mesh through `MinimalHostApp.WorkflowRuns`
 
 ## Inspecting History

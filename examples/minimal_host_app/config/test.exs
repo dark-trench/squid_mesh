@@ -26,6 +26,8 @@ config :minimal_host_app, MinimalHostApp.SquidMeshExecutor,
 
 config :squid_mesh,
   repo: MinimalHostApp.Repo,
-  executor: MinimalHostApp.SquidMeshExecutor
+  executor: MinimalHostApp.SquidMeshExecutor,
+  runtime: :runtime_tables,
+  read_model: :runtime_tables
 
 config :logger, level: :warning

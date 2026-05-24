@@ -19,8 +19,10 @@ Squid Mesh sits between a job backend and a standalone workflow service.
 - It is more than a job queue: Squid Mesh owns workflow structure, step state,
   attempts, retries, waits, approvals, replay policy, and inspection.
 - It is less than a separate workflow platform: Squid Mesh runs inside the host
-  app and delegates queueing, delayed scheduling, redelivery, and cron
-  activation to the host's chosen executor.
+  app and keeps durable journal execution inside the host repo. Explicit
+  table-runtime integrations can still delegate queueing, delayed scheduling,
+  redelivery, and cron activation to the host's chosen executor while that path
+  is being retired.
 - Jido, Runic, and Spark are foundation layers in the current architecture.
 - Reactor, Ash Reactor, Sage, and FlowStone solve adjacent workflow and
   orchestration problems at different abstraction layers.
@@ -49,10 +51,9 @@ The long-term runtime shape is:
 The current implementation is partway through that transition. Squid Mesh
 already uses Spark and Jido-compatible step execution, and it now has a durable
 dispatch protocol plus rebuildable workflow and dispatch agents for the
-Jido-native core. Host applications can configure the journal runtime,
-projection read model, storage adapter, and queue at the Squid Mesh boundary so
-public start, execution, inspection, explanation, and manual-control APIs use
-the Jido-native path without repeating runtime options at every call site.
+Jido-native core. Host applications get the journal runtime, projection read
+model, and inferred Ecto storage by default; storage and queue remain explicit
+boundary options when a host needs a non-default journal setup.
 
 ## Status Terms
 
@@ -71,15 +72,15 @@ the Jido-native path without repeating runtime options at every call site.
 | Spark-backed workflow DSL | Supported | Triggers, payload contracts, steps, transitions, retries, dependency edges, and formatter support. |
 | Native step contract | Supported | `SquidMesh.Step` is the preferred authoring path. Raw `Jido.Action` modules remain an explicit interop path. |
 | Durable run history | Supported | Runs, step runs, attempts, and audit events are persisted in the host app's Postgres database. |
-| Host executor boundary | Supported | Squid Mesh delegates queueing, delayed scheduling, redelivery, and cron activation to `SquidMesh.Executor`. |
+| Host executor boundary | Supported, legacy | Explicit table-runtime integrations delegate queueing, delayed scheduling, redelivery, and cron activation to `SquidMesh.Executor`. The journal default does not require a host executor. |
 | Human approval workflows | Supported | Pause and approval flows are durable for transition-based workflows. |
-| Replay and cancellation | Supported | Replay respects irreversible and non-compensatable steps; cancellation converges through persisted run state. |
-| Inspection and explanation | Supported, evolving | Runtime-table inspection remains available. Host apps can configure journal-backed inspection and explanation with `read_model: :read_model` and `journal_storage:`; [#163](https://github.com/dark-trench/squid_mesh/issues/163) delivered the durable projection foundation. |
+| Replay and cancellation | Supported, legacy | Replay and cancellation remain table-runtime APIs until their journal implementations land. Under the journal default they return explicit unsupported-runtime errors instead of reading legacy tables. |
+| Inspection and explanation | Supported, evolving | Journal-backed inspection and explanation are the default and infer Ecto storage from the configured repo; [#163](https://github.com/dark-trench/squid_mesh/issues/163) delivered the durable projection foundation. |
 | Durable dispatch protocol | Supported, evolving | The pure protocol, projection, and `Jido.Storage` journal boundary define runnable intent, claims, leases, heartbeats, completion, failure, retries, terminal-run fencing, and checkpoint pointers for the journal runtime. |
-| Jido.Storage-backed core | Supported, evolving | Start, execution, inspection, explanation, pause, and approval controls can run through configured `Jido.Storage` without writing legacy runtime rows for the covered journal path. |
+| Jido.Storage-backed core | Supported, evolving | Start, execution, inspection, explanation, pause, and approval controls run through the Jido journal runtime by default and do not write legacy runtime rows for the covered journal path. |
 | Jido-native runtime agents | Supported, evolving | Workflow and dispatch agents rebuild from durable journals and checkpoints; [#164](https://github.com/dark-trench/squid_mesh/issues/164) covers the completed agent foundation. |
 | IntentLedger executor | Planned | IntentLedger is the preferred durable executor direction for leases, retries, queue delivery, and worker recovery while Squid Mesh keeps custom executor support. |
-| Scheduled-start metadata | Supported | Intended schedule windows are stored in durable run context for cron starts. Cron triggers can opt into duplicate-start protection with stable scheduler signal ids or complete intended windows. |
+| Scheduled-start metadata | Supported, legacy | Intended schedule windows are stored in durable run context for table-runtime cron starts. Journal cron starts are deferred until the journal start boundary supports initial context. |
 | Conditional and deferred continuation | Planned | Durable planner facts and deferred wakeups are tracked in [#140](https://github.com/dark-trench/squid_mesh/issues/140). |
 | Fan-out and fan-in contract | Supported, evolving | Runic-backed dependency ordering and join semantics are defined for the current static workflow graph; [#142](https://github.com/dark-trench/squid_mesh/issues/142) captured the closed design clarification. |
 | Dynamic graph expansion | Planned | Runtime-safe dynamic subflows are deferred until after the core runtime and tracked in [#141](https://github.com/dark-trench/squid_mesh/issues/141). |

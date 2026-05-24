@@ -395,13 +395,12 @@ now rebuild workflow-scoped run lookup state from durable index entries and keep
 malformed or conflicting index facts visible as anomalies. The first projected
 explanation layer derives deterministic reason-specific details and next
 actions from the inspection snapshot. The public `SquidMesh.inspect_run/2` and
-`SquidMesh.explain_run/2` APIs expose this read model through host configuration
-or explicit `read_model: :read_model` and `journal_storage:` overrides, while
-the stable runtime-table read model remains available. Host apps moving to the
-Jido-native path configure `runtime: :journal`, `read_model: :read_model`,
-`journal_storage:`, and `queue:` once at the Squid Mesh boundary. Public start,
-execution, inspection, explanation, and manual-control APIs then pick up those
-defaults without repeating journal options at every call site.
+`SquidMesh.explain_run/2` APIs expose this read model by default and infer Ecto
+storage from the configured repo. Host apps can still pass explicit
+`journal_storage:` or `queue:` overrides when a test or integration boundary
+needs a non-default journal boundary. Public start, execution, inspection,
+explanation, and manual-control APIs pick up the configured defaults without
+repeating journal options at every call site.
 
 The journal start path appends run and run-index facts to `Jido.Storage`,
 rebuilds the workflow and dispatch agents, schedules the initial dispatch

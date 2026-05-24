@@ -37,6 +37,10 @@ defmodule SquidMesh.DataCase do
   setup tags do
     Executor.reset!()
 
+    if tags[:runtime_tables] do
+      use_runtime_tables()
+    end
+
     pid = Sandbox.start_owner!(SquidMesh.Test.Repo, shared: not tags[:async])
     on_exit(fn -> Sandbox.stop_owner(pid) end)
     :ok
@@ -78,5 +82,23 @@ defmodule SquidMesh.DataCase do
     module
     |> Atom.to_string()
     |> String.trim_leading("Elixir.")
+  end
+
+  defp use_runtime_tables do
+    preserved_config =
+      for key <- [:runtime, :read_model, :journal_storage], into: %{} do
+        {key, Application.fetch_env(:squid_mesh, key)}
+      end
+
+    Application.put_env(:squid_mesh, :runtime, :runtime_tables)
+    Application.put_env(:squid_mesh, :read_model, :runtime_tables)
+    Application.delete_env(:squid_mesh, :journal_storage)
+
+    on_exit(fn ->
+      Enum.each(preserved_config, fn
+        {key, {:ok, value}} -> Application.put_env(:squid_mesh, key, value)
+        {key, :error} -> Application.delete_env(:squid_mesh, key)
+      end)
+    end)
   end
 end
