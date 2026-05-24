@@ -250,7 +250,7 @@ backend the scheduler uses.
 ## Optional Lease Contract
 
 Backends that expose worker leases can also implement
-`SquidMesh.Executor.Leases`. This is separate from the queue executor: it claims
+`SquidMesh.Executor.Leases`. This is separate from the queue delivery adapter: it claims
 visible work, heartbeats active claims, completes delivered work, and returns
 failed work to the backend's retry or dead-letter policy.
 
@@ -310,9 +310,9 @@ mix setup
 MIX_ENV=test mix test test/bedrock_job_queue_stress_test.exs test/bedrock_minimal_host_app/squid_mesh_lease_executor_test.exs
 ```
 
-That test path covers Bedrock queue behavior plus the lease executor contract.
+That test path covers Bedrock queue behavior plus the lease adapter contract.
 It does not make Bedrock a required Squid Mesh dependency; another durable
-executor can use the same Squid Mesh boundaries if it provides equivalent
+delivery adapter can use the same Squid Mesh boundaries if it provides equivalent
 delivery, lease, heartbeat, retry, and recovery semantics.
 
 For background on why durable workflow systems often benefit from queueing close

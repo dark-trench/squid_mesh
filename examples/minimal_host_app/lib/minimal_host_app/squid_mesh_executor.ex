@@ -1,6 +1,6 @@
 defmodule MinimalHostApp.SquidMeshExecutor do
   @moduledoc """
-  Oban-backed Squid Mesh executor owned by the host app.
+  Oban-backed Squid Mesh delivery adapter owned by the host app.
   """
 
   @behaviour SquidMesh.Executor
@@ -21,7 +21,7 @@ defmodule MinimalHostApp.SquidMeshExecutor do
   end
 
   def queue do
-    executor_config()
+    delivery_config()
     |> Keyword.get(:queue, :squid_mesh)
   end
 
@@ -31,11 +31,11 @@ defmodule MinimalHostApp.SquidMeshExecutor do
   end
 
   defp oban_name do
-    executor_config()
+    delivery_config()
     |> Keyword.get(:oban_name, Oban)
   end
 
-  defp executor_config do
+  defp delivery_config do
     Application.get_env(:minimal_host_app, __MODULE__, [])
   end
 
@@ -53,7 +53,7 @@ defmodule MinimalHostApp.SquidMeshExecutor do
   defp metadata(%Oban.Job{} = job) do
     %{
       job_id: job.id,
-      executor: __MODULE__,
+      adapter: __MODULE__,
       queue: queue(),
       worker: job.worker,
       scheduled_at: job.scheduled_at
