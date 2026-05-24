@@ -11,13 +11,11 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   This is an incremental cutover gate, not a long-term compatibility layer. The
   table-backed runtime remains in place only while the rest of execution,
   controls, and recovery move onto the journal-backed path. The journal runtime
-  can execute normal action steps, immediate built-in `:log` steps, and
-  built-in `:wait` steps in transition and dependency workflows, where waits
-  delay downstream runnable visibility. Built-in `:pause` steps persist
-  inspectable manual intervention state and can be resumed through journal
-  manual controls. Approval steps remain rejected until their decision semantics
-  are represented in journal facts. Callers enter this path explicitly with
-  `runtime: :journal`,
+  can execute normal action steps, immediate built-in `:log` steps, built-in
+  `:wait` steps in transition and dependency workflows, and manual `:pause` or
+  `:approval` boundaries. Manual boundaries persist inspectable intervention
+  state and can be resumed or reviewed through journal manual controls. Callers
+  enter this path explicitly with `runtime: :journal`,
   `journal_storage:`, and optional queue or clock overrides. No Jido primitive
   is required in workflow authoring.
   """
@@ -39,7 +37,6 @@ defmodule SquidMesh.Runtime.Journal.Starter do
           {:invalid_payload, Definition.payload_error_details()}
           | Definition.load_error()
           | Definition.trigger_error()
-          | {:unsupported_journal_step, atom(), Definition.built_in_step_kind()}
           | {:invalid_option,
              {:journal_storage, nil} | {:now, term()} | {:queue, term()} | {:run_id, term()}}
           | term()
@@ -58,7 +55,6 @@ defmodule SquidMesh.Runtime.Journal.Starter do
          {:ok, queue} <- queue(opts),
          {:ok, now} <- now(opts),
          {:ok, definition} <- Definition.load(workflow),
-         :ok <- reject_unsupported_built_ins(definition),
          {:ok, trigger} <- trigger(definition, trigger_name),
          {:ok, resolved_payload} <- Definition.resolve_payload(trigger, payload),
          {:ok, planner} <- RunicPlanner.new(workflow),
@@ -74,16 +70,6 @@ defmodule SquidMesh.Runtime.Journal.Starter do
     do: Definition.trigger(definition, Definition.default_trigger(definition))
 
   defp trigger(definition, trigger_name), do: Definition.trigger(definition, trigger_name)
-
-  defp reject_unsupported_built_ins(definition) do
-    case Enum.find(definition.steps, &unsupported_built_in_step?/1) do
-      %{name: step_name, module: kind} -> {:error, {:unsupported_journal_step, step_name, kind}}
-      nil -> :ok
-    end
-  end
-
-  defp unsupported_built_in_step?(%{module: :approval}), do: true
-  defp unsupported_built_in_step?(_step), do: false
 
   defp ensure_run_started(storage, workflow, definition, run_id, runnables, %DateTime{} = now) do
     expected_fingerprint = Definition.fingerprint(definition)

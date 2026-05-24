@@ -2936,22 +2936,340 @@ defmodule SquidMeshTest do
       refute Enum.any?(run_entries, &(&1.type == :manual_step_resolved))
     end
 
-    test "journal runtime rejects approval controls while decision semantics remain unsupported" do
-      assert {:error, {:unsupported_journal_control, :approval}} =
-               SquidMesh.approve_run(Ecto.UUID.generate(), %{},
+    test "journal runtime approves built-in approval steps through durable manual resolution" do
+      run_id = Ecto.UUID.generate()
+      approved_at = DateTime.add(@read_model_visible_at, 1, :second)
+      approved_at_iso = DateTime.to_iso8601(approved_at)
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 ApprovalWorkflow,
+                 %{account_id: "acct_123"},
                  runtime: :journal,
-                 journal_storage: @read_model_storage
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
                )
 
-      assert {:error, {:unsupported_journal_control, :rejection}} =
-               SquidMesh.reject_run(Ecto.UUID.generate(), %{},
+      assert [%{step: "wait_for_review", status: :available}] = snapshot.visible_attempts
+
+      assert {:ok, %Snapshot{} = paused_snapshot} =
+               execute_journal_next(
                  runtime: :journal,
-                 journal_storage: @read_model_storage
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-approval-test",
+                 claim_id: "claim_approval",
+                 claim_token: "token_approval",
+                 now: @read_model_visible_at,
+                 finished_at: @read_model_visible_at
                )
 
+      assert paused_snapshot.status == :paused
+      assert paused_snapshot.reason == :manual_intervention_required
+
+      assert paused_snapshot.manual_state == %{
+               step: "wait_for_review",
+               kind: "approval",
+               paused_at: @read_model_visible_at,
+               metadata: %{
+                 ok_target: "record_approval",
+                 error_target: "record_rejection",
+                 output_key: "approval"
+               }
+             }
+
+      assert {:ok, %Snapshot{} = approved_snapshot} =
+               SquidMesh.approve_run(
+                 run_id,
+                 %{actor: "ops_123", comment: "approved"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: approved_at
+               )
+
+      assert approved_snapshot.status == :running
+      assert approved_snapshot.reason == :attempt_visible
+      assert approved_snapshot.manual_state == nil
+
+      assert [
+               %{
+                 step: "record_approval",
+                 status: :available,
+                 input: %{
+                   account_id: "acct_123",
+                   approval: %{
+                     decision: "approved",
+                     actor: "ops_123",
+                     comment: "approved",
+                     decided_at: ^approved_at_iso
+                   }
+                 }
+               }
+             ] = approved_snapshot.visible_attempts
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :manual_step_paused,
+               :manual_step_resolved,
+               :runnables_planned
+             ]
+
+      assert %{
+               type: :manual_step_resolved,
+               data: %{
+                 step: "wait_for_review",
+                 action: "approved",
+                 result: %{
+                   approval: %{
+                     decision: "approved",
+                     actor: "ops_123",
+                     comment: "approved",
+                     decided_at: ^approved_at_iso
+                   }
+                 },
+                 metadata: %{
+                   "event" => "approved",
+                   "actor" => "ops_123",
+                   "comment" => "approved",
+                   "at" => ^approved_at_iso
+                 }
+               }
+             } = Enum.at(run_entries, 4)
+    end
+
+    test "journal runtime rejects built-in approval steps through durable manual resolution" do
+      run_id = Ecto.UUID.generate()
+      rejected_at = DateTime.add(@read_model_visible_at, 1, :second)
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 ApprovalWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert [%{step: "wait_for_review", status: :available}] = snapshot.visible_attempts
+
+      assert {:ok, %Snapshot{status: :paused}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-rejection-test",
+                 claim_id: "claim_rejection",
+                 claim_token: "token_rejection",
+                 now: @read_model_visible_at,
+                 finished_at: @read_model_visible_at
+               )
+
+      assert {:ok, %Snapshot{} = rejected_snapshot} =
+               SquidMesh.reject_run(
+                 run_id,
+                 %{actor: "ops_456", comment: "rejected"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: rejected_at
+               )
+
+      assert rejected_snapshot.status == :running
+
+      assert [
+               %{
+                 step: "record_rejection",
+                 status: :available,
+                 input: %{approval: %{decision: "rejected", actor: "ops_456"}}
+               }
+             ] = rejected_snapshot.visible_attempts
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert Enum.count(run_entries, &(&1.type == :manual_step_resolved)) == 1
+      assert Enum.at(run_entries, 4).data.action == "rejected"
+    end
+
+    test "journal runtime repairs pending dispatch after approval resolution was already committed" do
+      run_id = Ecto.UUID.generate()
+      approved_at = DateTime.add(@read_model_visible_at, 1, :second)
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 ApprovalWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert [%{step: "wait_for_review"}] = snapshot.visible_attempts
+
+      assert {:ok, %Snapshot{status: :paused}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-approval-resolution-crash-test",
+                 claim_id: "claim_approval_resolution_crash",
+                 claim_token: "token_approval_resolution_crash",
+                 now: @read_model_visible_at,
+                 finished_at: @read_model_visible_at
+               )
+
+      result = %{
+        approval: %{
+          decision: "approved",
+          actor: "ops_123",
+          decided_at: DateTime.to_iso8601(approved_at)
+        }
+      }
+
+      successor_runnable = %{
+        run_id: run_id,
+        runnable_key: "#{run_id}:record_approval:1",
+        idempotency_key: "#{run_id}:record_approval:1",
+        attempt_number: 1,
+        queue: @read_model_queue,
+        step: "record_approval",
+        input: Map.merge(%{account_id: "acct_123"}, result),
+        visible_at: approved_at
+      }
+
+      append_read_model_run_entries([
+        read_model_entry!(:manual_step_resolved, %{
+          run_id: run_id,
+          step: "wait_for_review",
+          action: "approved",
+          result: result,
+          metadata: %{"event" => "approved", "at" => DateTime.to_iso8601(approved_at)},
+          occurred_at: approved_at
+        }),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [successor_runnable],
+          occurred_at: approved_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = approved_snapshot} =
+               SquidMesh.approve_run(
+                 run_id,
+                 %{actor: "ops_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: approved_at
+               )
+
+      assert [
+               %{
+                 step: "record_approval",
+                 status: :available,
+                 input: %{approval: %{decision: "approved"}}
+               }
+             ] = approved_snapshot.visible_attempts
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert Enum.count(run_entries, &(&1.type == :manual_step_resolved)) == 1
+
+      assert {:ok, dispatch_entries} =
+               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
+
+      assert Enum.count(dispatch_entries, &(&1.type == :attempt_scheduled)) == 2
+    end
+
+    test "journal runtime does not approve after terminal transition" do
+      run_id = Ecto.UUID.generate()
+      terminal_at = DateTime.add(@read_model_visible_at, 1, :second)
+
+      assert {:ok, %Snapshot{}} =
+               SquidMesh.start_run(
+                 ApprovalWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert {:ok, %Snapshot{status: :paused}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-terminal-approval-resolution-test",
+                 now: @read_model_visible_at,
+                 finished_at: @read_model_visible_at
+               )
+
+      append_read_model_run_entries([
+        read_model_entry!(:run_terminal, %{
+          run_id: run_id,
+          status: :cancelled,
+          occurred_at: terminal_at
+        })
+      ])
+
+      assert {:error, {:invalid_transition, :cancelled, :running}} =
+               SquidMesh.approve_run(
+                 run_id,
+                 %{actor: "ops_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: terminal_at
+               )
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      refute Enum.any?(run_entries, &(&1.type == :manual_step_resolved))
+    end
+
+    test "journal runtime returns structured errors for invalid approval controls" do
       assert {:error, {:invalid_option, {:runtime_tables, [:journal_storage]}}} =
                SquidMesh.approve_run(Ecto.UUID.generate(), %{},
                  journal_storage: @read_model_storage
+               )
+
+      assert {:error, :invalid_run_id} =
+               SquidMesh.approve_run(
+                 "not-a-uuid",
+                 %{actor: "ops_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert {:error, :not_found} =
+               SquidMesh.reject_run(
+                 Ecto.UUID.generate(),
+                 %{actor: "ops_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert {:error, {:invalid_review, %{actor: :required}}} =
+               SquidMesh.approve_run(
+                 Ecto.UUID.generate(),
+                 %{actor: ""},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
                )
     end
 
@@ -3172,6 +3490,89 @@ defmodule SquidMeshTest do
                Journal.load_entries(@read_model_storage, {:run, run_id})
 
       assert Enum.count(replayed_run_entries, &(&1.type == :manual_step_paused)) == 1
+    end
+
+    test "journal runtime recovers built-in approval manual state after dispatch completion" do
+      run_id = Ecto.UUID.generate()
+      recovery_at = DateTime.add(@read_model_visible_at, 1, :second)
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 ApprovalWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert [%{runnable_key: runnable_key, step: "wait_for_review"}] =
+               snapshot.visible_attempts
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:attempt_claimed, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          claim_id: "approval_claim",
+          claim_token_hash: claim_token_hash("approval_token"),
+          owner_id: "worker_1",
+          queue: @read_model_queue,
+          lease_until: DateTime.add(@read_model_visible_at, 30, :second),
+          occurred_at: @read_model_visible_at
+        }),
+        read_model_entry!(:attempt_completed, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          claim_id: "approval_claim",
+          claim_token_hash: claim_token_hash("approval_token"),
+          queue: @read_model_queue,
+          result: %{},
+          occurred_at: @read_model_visible_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = recovered_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-approval-recovery-test",
+                 now: recovery_at
+               )
+
+      assert recovered_snapshot.status == :paused
+      assert recovered_snapshot.reason == :manual_intervention_required
+      assert recovered_snapshot.visible_attempts == []
+      assert recovered_snapshot.pending_results == []
+
+      assert recovered_snapshot.manual_state == %{
+               step: "wait_for_review",
+               kind: "approval",
+               paused_at: @read_model_visible_at,
+               metadata: %{
+                 ok_target: "record_approval",
+                 error_target: "record_rejection",
+                 output_key: "approval"
+               }
+             }
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :manual_step_paused
+             ]
+
+      refute Enum.any?(
+               run_entries,
+               &(&1.type == :runnables_planned and
+                   Enum.any?(&1.data.runnables, fn runnable ->
+                     runnable.step == "record_approval"
+                   end))
+             )
     end
 
     test "journal runtime recovers built-in wait successor delay after dispatch completion" do
@@ -3894,30 +4295,6 @@ defmodule SquidMeshTest do
                  now: @read_model_started_at,
                  run_id: run_id
                )
-
-      assert {:error, :not_found} =
-               Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
-    end
-
-    test "journal runtime start rejects unsupported built-in steps before persisting runnables" do
-      cases = [{ApprovalWorkflow, %{account_id: "acct_123"}, :wait_for_review, :approval}]
-
-      for {workflow, payload, step_name, step_kind} <- cases do
-        run_id = Ecto.UUID.generate()
-
-        assert {:error, {:unsupported_journal_step, ^step_name, ^step_kind}} =
-                 SquidMesh.start_run(
-                   workflow,
-                   payload,
-                   runtime: :journal,
-                   journal_storage: @read_model_storage,
-                   queue: @read_model_queue,
-                   now: @read_model_started_at,
-                   run_id: run_id
-                 )
-
-        assert {:error, :not_found} = Journal.load_entries(@read_model_storage, {:run, run_id})
-      end
 
       assert {:error, :not_found} =
                Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})

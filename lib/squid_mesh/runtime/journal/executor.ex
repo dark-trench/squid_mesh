@@ -517,9 +517,9 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          progression
        ) do
     cond do
-      manual_pause_execution?(definition, step_name, progression) ->
+      manual_intervention_execution?(definition, step_name, progression) ->
         with {:ok, progression_entries} <-
-               manual_pause_progression_entries(
+               manual_intervention_progression_entries(
                  attempt,
                  definition,
                  step_name,
@@ -560,25 +560,38 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     end
   end
 
-  defp manual_pause_execution?(definition, step_name, %{execution_opts: execution_opts})
+  defp manual_intervention_execution?(definition, step_name, %{execution_opts: execution_opts})
        when is_list(execution_opts) do
     with true <- Keyword.get(execution_opts, :pause, false),
-         {:ok, %{module: :pause}} <- Definition.step(definition, step_name) do
+         {:ok, %{module: module}} when module in [:pause, :approval] <-
+           Definition.step(definition, step_name) do
       true
     else
-      _not_pause -> false
+      _not_manual -> false
     end
   end
 
-  defp manual_pause_execution?(_definition, _step_name, _progression), do: false
+  defp manual_intervention_execution?(_definition, _step_name, _progression), do: false
 
-  defp manual_pause_progression_entries(
+  defp manual_intervention_progression_entries(
          %ActionAttempt{} = attempt,
          definition,
          step_name,
          result,
          %{now: now, schedule_base_at: paused_at}
        ) do
+    with {:ok, step} <- Definition.step(definition, step_name) do
+      case step do
+        %{module: :pause} ->
+          pause_progression_entries(attempt, definition, step_name, result, now, paused_at)
+
+        %{module: :approval} ->
+          approval_progression_entries(attempt, definition, step_name, now, paused_at)
+      end
+    end
+  end
+
+  defp pause_progression_entries(attempt, definition, step_name, result, now, paused_at) do
     with {:ok, target} <- Definition.transition_target(definition, step_name, :ok) do
       {:ok,
        [
@@ -587,6 +600,33 @@ defmodule SquidMesh.Runtime.Journal.Executor do
            step_name,
            :pause,
            %{output: result || %{}, target: serialize_manual_target(target)},
+           now,
+           paused_at
+         )
+       ]}
+    end
+  end
+
+  defp approval_progression_entries(attempt, definition, step_name, now, paused_at) do
+    with {:ok, targets} <- Definition.approval_transition_targets(definition, step_name),
+         {:ok, output_key} <- Definition.step_output_mapping(definition, step_name) do
+      metadata =
+        maybe_put(
+          %{
+            ok_target: serialize_manual_target(Map.fetch!(targets, :ok)),
+            error_target: serialize_manual_target(Map.fetch!(targets, :error))
+          },
+          :output_key,
+          serialize_output_key(output_key)
+        )
+
+      {:ok,
+       [
+         manual_step_paused_entry!(
+           attempt.run_id,
+           step_name,
+           :approval,
+           metadata,
            now,
            paused_at
          )
@@ -1711,7 +1751,8 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     execution_opts
   end
 
-  defp recovered_execution_opts(%{module: :pause}), do: [pause: true]
+  defp recovered_execution_opts(%{module: module}) when module in [:pause, :approval],
+    do: [pause: true]
 
   defp recovered_execution_opts(_step), do: []
 
@@ -1736,21 +1777,19 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     {:ok, %{}, [pause: true]}
   end
 
+  defp run_step(%{module: :approval}, _input, _context) do
+    {:ok, %{}, [pause: true]}
+  end
+
   defp run_step(%{module: module}, input, context) do
-    if module == :approval do
-      {:error,
-       %{
-         message: "journal executor cannot execute approval built-in steps yet",
-         retryable?: false,
-         step_kind: module
-       }}
-    else
-      run_action_step(module, input, context)
-    end
+    run_action_step(module, input, context)
   end
 
   defp serialize_manual_target(:complete), do: "__complete__"
   defp serialize_manual_target(target) when is_atom(target), do: Definition.serialize_step(target)
+
+  defp serialize_output_key(nil), do: nil
+  defp serialize_output_key(output_key) when is_atom(output_key), do: Atom.to_string(output_key)
 
   defp run_action_step(action, input, context) do
     {action, input} = action_input(action, input)
@@ -1822,6 +1861,9 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   end
 
   defp maybe_put_safe(acc, _key, _value), do: acc
+
+  defp maybe_put(acc, _key, nil), do: acc
+  defp maybe_put(acc, key, value), do: Map.put(acc, key, value)
 
   defp incompatible_error_code(%{code: code}) when is_binary(code), do: code
   defp incompatible_error_code(_reason), do: "incompatible_journal_attempt"

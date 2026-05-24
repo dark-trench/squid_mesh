@@ -407,13 +407,12 @@ That path appends run and run-index facts to `Jido.Storage`, rebuilds the
 workflow and dispatch agents, schedules the initial dispatch attempts from the
 journal, and returns the projection-backed inspection snapshot. Journal
 execution currently supports normal action steps, immediate built-in `:log`
-steps, and built-in `:wait` steps in transition and dependency workflows, where
-waits delay downstream runnable visibility. Built-in `:pause` steps now persist
-manual intervention state; `:approval` remains unsupported until decision
-semantics are journal facts. Journal pause resolution is available through
-`unblock_run/3` with `runtime: :journal`; approve and reject controls still use
-the table-backed runtime. The current table-backed start path remains the
-default until the remaining runtime cutover lands.
+steps, built-in `:wait` steps in transition and dependency workflows, and manual
+`:pause` or `:approval` boundaries. Manual boundaries persist intervention
+state: `unblock_run/3` resumes `:pause` steps, while `approve_run/3` and
+`reject_run/3` resolve `:approval` decisions when called with
+`runtime: :journal`. The current table-backed start path remains the default
+until the remaining runtime cutover lands.
 
 | Feature | Issue | Runtime dependency |
 | --- | --- | --- |

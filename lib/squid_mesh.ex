@@ -51,8 +51,6 @@ defmodule SquidMesh do
            | {:now, term()}
            | {:run_id, term()}
            | {:runtime_tables, [atom()]}}
-          | {:unsupported_journal_step, atom(),
-             SquidMesh.Workflow.Definition.built_in_step_kind()}
 
   @doc """
   Loads Squid Mesh configuration from the application environment with optional
@@ -77,12 +75,10 @@ defmodule SquidMesh do
   enter the temporary Jido journal-backed cutover path. That path returns a
   projection-backed `SquidMesh.ReadModel.Inspection.Snapshot` and does not write
   the legacy runtime tables for the covered start flow. Journal execution
-  currently supports normal action steps, immediate built-in `:log` steps, and
-  built-in `:wait` steps in transition and dependency workflows, where waits
-  delay downstream runnable visibility. Built-in `:pause` steps persist
-  inspectable manual intervention state and can be resumed through
-  `unblock_run/3` with `runtime: :journal`. `:approval` remains rejected until
-  decision semantics are represented as journal facts.
+  currently supports normal action steps, immediate built-in `:log` steps,
+  built-in `:wait` steps in transition and dependency workflows, and manual
+  `:pause` or `:approval` boundaries. Manual boundaries persist inspectable
+  intervention state and can be resumed or reviewed through journal controls.
   """
   @spec start_run(module(), map()) ::
           {:ok, Run.t()}
@@ -133,12 +129,10 @@ defmodule SquidMesh do
 
   Pass `runtime: :journal` with explicit `journal_storage:` to use the temporary
   Jido journal-backed cutover path for the named trigger. Journal execution
-  currently supports normal action steps, immediate built-in `:log` steps, and
-  built-in `:wait` steps in transition and dependency workflows, where waits
-  delay downstream runnable visibility. Built-in `:pause` steps persist
-  inspectable manual intervention state and can be resumed through
-  `unblock_run/3` with `runtime: :journal`. `:approval` remains rejected until
-  decision semantics are represented as journal facts.
+  currently supports normal action steps, immediate built-in `:log` steps,
+  built-in `:wait` steps in transition and dependency workflows, and manual
+  `:pause` or `:approval` boundaries. Manual boundaries persist inspectable
+  intervention state and can be resumed or reviewed through journal controls.
   """
   @spec start_run(module(), atom(), map(), keyword()) ::
           {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
@@ -257,11 +251,10 @@ defmodule SquidMesh do
   Pass `runtime: :journal` with explicit `journal_storage:` to claim one visible
   Jido journal-backed attempt, run its declared step, and append durable attempt
   completion or failure facts. Journal execution currently supports normal
-  action steps, immediate built-in `:log` steps, and built-in `:wait` steps in
-  transition and dependency workflows, where waits delay downstream runnable
-  visibility. Built-in `:pause` steps persist inspectable manual intervention
-  state and can be resumed through `unblock_run/3` with `runtime: :journal`.
-  `:approval` attempts are not produced by journal start.
+  action steps, immediate built-in `:log` steps, built-in `:wait` steps in
+  transition and dependency workflows, and manual `:pause` or `:approval`
+  boundaries. Manual boundaries persist inspectable intervention state and can
+  be resumed or reviewed through journal controls.
   """
   @spec execute_next(keyword()) :: Executor.execute_result()
   def execute_next(overrides \\ [])
@@ -398,10 +391,12 @@ defmodule SquidMesh do
   @doc """
   Approves a paused approval step and resumes the run through its success path.
 
-  This control currently targets table-backed runtime runs.
+  Pass `runtime: :journal` with explicit `journal_storage:` to resolve an
+  inspectable journal approval boundary and persist the decision as journal
+  facts.
   """
   @spec approve_run(Ecto.UUID.t(), map(), keyword()) ::
-          {:ok, Run.t()}
+          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
@@ -409,21 +404,23 @@ defmodule SquidMesh do
              | Runs.Store.transition_error()
              | term()}
   def approve_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
-    with :ok <- reject_journal_review_options(overrides, :approval),
-         {:ok, config} <- Config.load(runtime_table_control_options(overrides)),
-         {:ok, run} <- Runs.Store.get_run(config.repo, run_id),
-         :ok <- Reviewer.review(config, run, :approved, attrs) do
-      Runs.Store.get_run(config.repo, run_id)
+    with {:ok, runtime} <- runtime(overrides) do
+      case runtime do
+        :runtime_tables -> review_runtime_table_run(run_id, :approved, attrs, overrides)
+        :journal -> ManualControl.approve(run_id, attrs, journal_control_options(overrides))
+      end
     end
   end
 
   @doc """
   Rejects a paused approval step and resumes the run through its rejection path.
 
-  This control currently targets table-backed runtime runs.
+  Pass `runtime: :journal` with explicit `journal_storage:` to resolve an
+  inspectable journal approval boundary and persist the decision as journal
+  facts.
   """
   @spec reject_run(Ecto.UUID.t(), map(), keyword()) ::
-          {:ok, Run.t()}
+          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
@@ -431,11 +428,11 @@ defmodule SquidMesh do
              | Runs.Store.transition_error()
              | term()}
   def reject_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
-    with :ok <- reject_journal_review_options(overrides, :rejection),
-         {:ok, config} <- Config.load(runtime_table_control_options(overrides)),
-         {:ok, run} <- Runs.Store.get_run(config.repo, run_id),
-         :ok <- Reviewer.review(config, run, :rejected, attrs) do
-      Runs.Store.get_run(config.repo, run_id)
+    with {:ok, runtime} <- runtime(overrides) do
+      case runtime do
+        :runtime_tables -> review_runtime_table_run(run_id, :rejected, attrs, overrides)
+        :journal -> ManualControl.reject(run_id, attrs, journal_control_options(overrides))
+      end
     end
   end
 
@@ -544,6 +541,16 @@ defmodule SquidMesh do
          {:ok, config} <- Config.load(runtime_table_control_options(overrides)),
          {:ok, run} <- Runs.Store.get_run(config.repo, run_id),
          :ok <- Unblocker.unblock(config, run, attrs) do
+      Runs.Store.get_run(config.repo, run_id)
+    end
+  end
+
+  defp review_runtime_table_run(run_id, decision, attrs, overrides)
+       when decision in [:approved, :rejected] do
+    with :ok <- reject_journal_control_options_for_runtime_tables(overrides),
+         {:ok, config} <- Config.load(runtime_table_control_options(overrides)),
+         {:ok, run} <- Runs.Store.get_run(config.repo, run_id),
+         :ok <- Reviewer.review(config, run, decision, attrs) do
       Runs.Store.get_run(config.repo, run_id)
     end
   end
@@ -723,15 +730,6 @@ defmodule SquidMesh do
     case journal_options do
       [] -> :ok
       options -> {:error, {:invalid_option, {:runtime_tables, options}}}
-    end
-  end
-
-  defp reject_journal_review_options(overrides, control) do
-    with {:ok, runtime} <- runtime(overrides) do
-      case runtime do
-        :journal -> {:error, {:unsupported_journal_control, control}}
-        :runtime_tables -> reject_journal_control_options_for_runtime_tables(overrides)
-      end
     end
   end
 end
