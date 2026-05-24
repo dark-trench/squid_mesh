@@ -9,6 +9,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   """
 
   alias SquidMesh.ReadModel.Inspection
+  alias SquidMesh.Runtime.BuiltInStep
   alias SquidMesh.Runtime.DispatchAgent
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.DispatchProtocol.ActionAttempt
@@ -1505,11 +1506,16 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   end
 
   @spec run_step(map(), map(), map()) :: {:ok, map()} | {:error, term()}
+  defp run_step(%{module: :log, opts: opts}, _input, _context) when is_list(opts) do
+    {:ok, output, _execution_opts} = BuiltInStep.execute_log(opts)
+    {:ok, output}
+  end
+
   defp run_step(%{module: module}, input, context) do
-    if module in [:wait, :log, :pause, :approval] do
+    if module in [:wait, :pause, :approval] do
       {:error,
        %{
-         message: "journal executor cannot execute built-in steps yet",
+         message: "journal executor cannot execute delayed or manual built-in steps yet",
          retryable?: false,
          step_kind: module
        }}

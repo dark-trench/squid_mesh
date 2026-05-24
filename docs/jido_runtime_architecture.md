@@ -405,9 +405,12 @@ The first live write path is also available behind a temporary cutover gate:
 `SquidMesh.start_run(workflow, payload, runtime: :journal, journal_storage: storage)`.
 That path appends run and run-index facts to `Jido.Storage`, rebuilds the
 workflow and dispatch agents, schedules the initial dispatch attempts from the
-journal, and returns the projection-backed inspection snapshot. The current
-table-backed start path remains the default until the remaining runtime cutover
-lands.
+journal, and returns the projection-backed inspection snapshot. Journal
+execution currently supports normal action steps and immediate built-in `:log`
+steps; delayed and manual built-ins (`:wait`, `:pause`, and `:approval`) remain
+unsupported until wakeup and intervention semantics are journal facts. The
+current table-backed start path remains the default until the remaining runtime
+cutover lands.
 
 | Feature | Issue | Runtime dependency |
 | --- | --- | --- |

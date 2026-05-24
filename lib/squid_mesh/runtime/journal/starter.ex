@@ -10,9 +10,12 @@ defmodule SquidMesh.Runtime.Journal.Starter do
 
   This is an incremental cutover gate, not a long-term compatibility layer. The
   table-backed runtime remains in place only while the rest of execution,
-  controls, and recovery move onto the journal-backed path. Callers enter this
-  path explicitly with `runtime: :journal`, `journal_storage:`, and optional
-  queue or clock overrides. No Jido primitive is required in workflow authoring.
+  controls, and recovery move onto the journal-backed path. The journal runtime
+  can execute normal action steps and immediate built-in `:log` steps; delayed
+  and manual built-ins remain rejected until wakeup and intervention semantics
+  are represented in journal facts. Callers enter this path explicitly with
+  `runtime: :journal`, `journal_storage:`, and optional queue or clock
+  overrides. No Jido primitive is required in workflow authoring.
   """
 
   alias SquidMesh.ReadModel.Inspection
@@ -51,7 +54,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
          {:ok, queue} <- queue(opts),
          {:ok, now} <- now(opts),
          {:ok, definition} <- Definition.load(workflow),
-         :ok <- reject_unsupported_steps(definition),
+         :ok <- reject_unsupported_built_ins(definition),
          {:ok, trigger} <- trigger(definition, trigger_name),
          {:ok, resolved_payload} <- Definition.resolve_payload(trigger, payload),
          {:ok, planner} <- RunicPlanner.new(workflow),
@@ -68,14 +71,14 @@ defmodule SquidMesh.Runtime.Journal.Starter do
 
   defp trigger(definition, trigger_name), do: Definition.trigger(definition, trigger_name)
 
-  defp reject_unsupported_steps(definition) do
-    case Enum.find(definition.steps, &built_in_step?/1) do
+  defp reject_unsupported_built_ins(definition) do
+    case Enum.find(definition.steps, &unsupported_built_in_step?/1) do
       %{name: step_name, module: kind} -> {:error, {:unsupported_journal_step, step_name, kind}}
       nil -> :ok
     end
   end
 
-  defp built_in_step?(%{module: module}), do: module in [:wait, :log, :pause, :approval]
+  defp unsupported_built_in_step?(%{module: module}), do: module in [:wait, :pause, :approval]
 
   defp ensure_run_started(storage, workflow, definition, run_id, runnables, %DateTime{} = now) do
     expected_fingerprint = Definition.fingerprint(definition)
