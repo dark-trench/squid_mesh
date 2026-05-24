@@ -10,8 +10,9 @@ defmodule Mix.Tasks.SquidMesh.Install do
   `priv/repo/migrations` so the host application can run it through its normal
   Ecto migration flow.
 
-  Executor-specific migrations are intentionally not copied. Squid Mesh assumes
-  the host application owns the queueing backend used by its executor.
+  Backend-specific migrations are intentionally not copied. Squid Mesh assumes
+  the host application owns the delivery backend and worker loop used to call
+  `SquidMesh.execute_next/1`.
   """
 
   @shortdoc "Installs Squid Mesh migrations into the host application"
@@ -65,9 +66,10 @@ defmodule Mix.Tasks.SquidMesh.Install do
             runtime: :journal,
             read_model: :read_model
 
-      3. Start your chosen executor and have workers call
-         `SquidMesh.execute_next(owner_id: "your-worker-id")` when capacity is
-         available. Bedrock is the recommended executor for distributed hosts.
+      3. Start your chosen worker loop or backend delivery path and have it
+         call `SquidMesh.execute_next(owner_id: "your-worker-id")` when
+         capacity is available. Bedrock is the recommended backend for
+         distributed hosts that need durable lease ownership.
 
     See docs/host_app_integration.md for a copy-paste host setup.
     """)

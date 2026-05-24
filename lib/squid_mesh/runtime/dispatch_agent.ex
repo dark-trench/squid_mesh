@@ -2,10 +2,9 @@ defmodule SquidMesh.Runtime.DispatchAgent do
   @moduledoc """
   Jido-native dispatch coordination state for one durable dispatch queue.
 
-  The agent is intentionally not wired into the current executor path yet. It
-  rebuilds from dispatch-thread journal entries and performs durable claim
-  appends so runtime slices can coordinate leases, retries, and workflow wakeups
-  from durable facts instead of in-memory state.
+  The agent rebuilds from dispatch-thread journal entries and performs durable
+  claim appends so the runtime can coordinate leases, retries, and workflow
+  wakeups from durable facts instead of in-memory state.
   """
 
   use Jido.Agent,
