@@ -1243,15 +1243,16 @@ defmodule SquidMeshTest do
   end
 
   describe "journal-only executor payloads" do
-    test "runner rejects removed step and compensation executor payloads" do
-      assert {:error, {:unsupported_executor_payload, "step"}} =
+    test "runner rejects non-cron payload kinds as invalid payloads" do
+      assert {:error, {:invalid_executor_payload, %{"kind" => "step", "run_id" => _run_id}}} =
                Runner.perform(%{
                  "kind" => "step",
                  "run_id" => Ecto.UUID.generate(),
                  "step" => "charge_card"
                })
 
-      assert {:error, {:unsupported_executor_payload, "compensation"}} =
+      assert {:error,
+              {:invalid_executor_payload, %{"kind" => "compensation", "run_id" => _run_id}}} =
                Runner.perform(%{
                  "kind" => "compensation",
                  "run_id" => Ecto.UUID.generate()

@@ -24,14 +24,6 @@ defmodule SquidMesh.Runtime.Runner do
   @spec perform(map(), keyword()) :: :ok | {:error, term()}
   def perform(args, overrides \\ [])
 
-  def perform(%{"kind" => kind}, _overrides) when kind in ["step", "compensation"] do
-    {:error, {:unsupported_executor_payload, kind}}
-  end
-
-  def perform(%{"kind" => kind}, _overrides) when kind in [:step, :compensation] do
-    {:error, {:unsupported_executor_payload, Atom.to_string(kind)}}
-  end
-
   def perform(%{"kind" => "cron", "workflow" => workflow, "trigger" => trigger} = args, overrides)
       when is_binary(workflow) and is_binary(trigger) do
     case start_cron_trigger(workflow, trigger, args, overrides) do
