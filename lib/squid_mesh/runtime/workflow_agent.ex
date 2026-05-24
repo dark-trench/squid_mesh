@@ -4,7 +4,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
 
   The agent rebuilds from run-thread journal entries and checkpoints. It does
   not execute workflow steps; it provides the restartable coordination state
-  needed by the Jido-native runtime path.
+  needed by the journal-backed runtime.
   """
 
   use Jido.Agent,

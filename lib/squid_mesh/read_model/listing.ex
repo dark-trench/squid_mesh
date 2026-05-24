@@ -1,6 +1,6 @@
 defmodule SquidMesh.ReadModel.Listing do
   @moduledoc """
-  Projection-backed run listing for the Jido-native runtime path.
+  Projection-backed run listing for the journal-backed runtime.
 
   The journal catalog is a global lookup projection, so this module can list all
   known journal-backed runs without adapter-specific storage scans.
