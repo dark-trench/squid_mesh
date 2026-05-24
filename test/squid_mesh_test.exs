@@ -1003,6 +1003,44 @@ defmodule SquidMeshTest do
     def enqueue_step(_config, _run, _step, _opts), do: {:ok, %{}}
   end
 
+  defp use_runtime_tables(_context) do
+    preserved_config =
+      for key <- [:runtime, :read_model, :journal_storage], into: %{} do
+        {key, Application.fetch_env(:squid_mesh, key)}
+      end
+
+    Application.put_env(:squid_mesh, :runtime, :runtime_tables)
+    Application.put_env(:squid_mesh, :read_model, :runtime_tables)
+    Application.delete_env(:squid_mesh, :journal_storage)
+
+    on_exit(fn ->
+      Enum.each(preserved_config, fn
+        {key, {:ok, value}} -> Application.put_env(:squid_mesh, key, value)
+        {key, :error} -> Application.delete_env(:squid_mesh, key)
+      end)
+    end)
+
+    :ok
+  end
+
+  defp without_squid_mesh_env(keys, fun) when is_list(keys) and is_function(fun, 0) do
+    preserved_config =
+      for key <- keys, into: %{} do
+        {key, Application.fetch_env(:squid_mesh, key)}
+      end
+
+    Enum.each(keys, &Application.delete_env(:squid_mesh, &1))
+
+    try do
+      fun.()
+    after
+      Enum.each(preserved_config, fn
+        {key, {:ok, value}} -> Application.put_env(:squid_mesh, key, value)
+        {key, :error} -> Application.delete_env(:squid_mesh, key)
+      end)
+    end
+  end
+
   test "configures an application supervisor" do
     assert Application.spec(:squid_mesh, :mod) == {SquidMesh.Application, []}
   end
@@ -1014,20 +1052,34 @@ defmodule SquidMeshTest do
   describe "config/1" do
     test "returns the validated host app contract with defaults" do
       assert {:ok, config} =
-               SquidMesh.config(repo: SquidMeshTest.Repo, executor: SquidMesh.Test.Executor)
+               SquidMesh.config(repo: SquidMesh.Test.Repo, executor: SquidMesh.Test.Executor)
 
-      assert config.repo == SquidMeshTest.Repo
+      assert config.repo == SquidMesh.Test.Repo
       assert config.executor == SquidMesh.Test.Executor
       assert config.stale_step_timeout == :disabled
-      assert config.runtime == :runtime_tables
-      assert config.read_model == :runtime_tables
-      assert config.journal_storage == nil
+      assert config.runtime == :journal
+      assert config.read_model == :read_model
+      assert config.journal_storage.adapter == SquidMesh.Runtime.Journal.Storage.Ecto
+      assert config.journal_storage.opts == [repo: SquidMesh.Test.Repo]
       assert config.queue == "default"
+    end
+
+    test "journal defaults do not require a host executor" do
+      without_squid_mesh_env([:executor], fn ->
+        assert {:ok, config} = SquidMesh.config(repo: SquidMesh.Test.Repo)
+
+        assert config.repo == SquidMesh.Test.Repo
+        assert config.executor == nil
+        assert config.runtime == :journal
+        assert config.read_model == :read_model
+        assert config.journal_storage.adapter == SquidMesh.Runtime.Journal.Storage.Ecto
+        assert config.journal_storage.opts == [repo: SquidMesh.Test.Repo]
+      end)
     end
 
     test "allows host applications to configure stale step timeout" do
       overrides = [
-        repo: SquidMeshTest.Repo,
+        repo: SquidMesh.Test.Repo,
         executor: SquidMesh.Test.Executor,
         stale_step_timeout: 60_000
       ]
@@ -1041,7 +1093,7 @@ defmodule SquidMeshTest do
       journal_storage = {Jido.Storage.ETS, table: :squid_mesh_config_test}
 
       overrides = [
-        repo: SquidMeshTest.Repo,
+        repo: SquidMesh.Test.Repo,
         executor: SquidMesh.Test.Executor,
         runtime: :journal,
         read_model: :read_model,
@@ -1058,10 +1110,37 @@ defmodule SquidMeshTest do
       assert config.queue == "configured_queue"
     end
 
-    test "requires journal storage when configured runtime or read model uses the journal" do
+    test "infers Ecto journal storage from the configured repo when runtime uses the journal" do
       required = [
-        repo: SquidMeshTest.Repo,
+        repo: SquidMesh.Test.Repo,
         executor: SquidMesh.Test.Executor
+      ]
+
+      assert {:ok, config} = SquidMesh.config(Keyword.put(required, :runtime, :journal))
+
+      assert config.runtime == :journal
+      assert config.journal_storage.adapter == SquidMesh.Runtime.Journal.Storage.Ecto
+      assert config.journal_storage.opts == [repo: SquidMesh.Test.Repo]
+    end
+
+    test "infers Ecto journal storage from the configured repo when read model uses the journal" do
+      required = [
+        repo: SquidMesh.Test.Repo,
+        executor: SquidMesh.Test.Executor
+      ]
+
+      assert {:ok, config} = SquidMesh.config(Keyword.put(required, :read_model, :read_model))
+
+      assert config.read_model == :read_model
+      assert config.journal_storage.adapter == SquidMesh.Runtime.Journal.Storage.Ecto
+      assert config.journal_storage.opts == [repo: SquidMesh.Test.Repo]
+    end
+
+    test "rejects explicit nil journal storage when configured runtime or read model uses the journal" do
+      required = [
+        repo: SquidMesh.Test.Repo,
+        executor: SquidMesh.Test.Executor,
+        journal_storage: nil
       ]
 
       assert {:error, {:missing_config, [:journal_storage]}} =
@@ -1071,11 +1150,13 @@ defmodule SquidMeshTest do
                SquidMesh.config(Keyword.put(required, :read_model, :read_model))
     end
 
-    test "ignores journal storage settings unless configured runtime or read model needs them" do
+    test "runtime-table configuration ignores journal storage settings" do
       assert {:ok, config} =
                SquidMesh.config(
-                 repo: SquidMeshTest.Repo,
+                 repo: SquidMesh.Test.Repo,
                  executor: SquidMesh.Test.Executor,
+                 runtime: :runtime_tables,
+                 read_model: :runtime_tables,
                  journal_storage: nil
                )
 
@@ -1085,8 +1166,10 @@ defmodule SquidMeshTest do
 
       assert {:ok, config} =
                SquidMesh.config(
-                 repo: SquidMeshTest.Repo,
+                 repo: SquidMesh.Test.Repo,
                  executor: SquidMesh.Test.Executor,
+                 runtime: :runtime_tables,
+                 read_model: :runtime_tables,
                  journal_storage: :not_used_by_runtime_tables
                )
 
@@ -1098,7 +1181,7 @@ defmodule SquidMeshTest do
 
       assert {:error, {:invalid_config, [queue: :invalid]} = reason} =
                SquidMesh.config(
-                 repo: SquidMeshTest.Repo,
+                 repo: SquidMesh.Test.Repo,
                  executor: SquidMesh.Test.Executor,
                  queue: secret_queue
                )
@@ -1107,7 +1190,7 @@ defmodule SquidMeshTest do
 
       assert_raise ArgumentError, ~r/queue=:invalid/, fn ->
         SquidMesh.config!(
-          repo: SquidMeshTest.Repo,
+          repo: SquidMesh.Test.Repo,
           executor: SquidMesh.Test.Executor,
           queue: secret_queue
         )
@@ -1126,12 +1209,19 @@ defmodule SquidMeshTest do
       Application.delete_env(:squid_mesh, :repo)
       Application.delete_env(:squid_mesh, :executor)
 
-      assert {:error, {:missing_config, [:repo, :executor]}} = SquidMesh.config()
+      assert {:error, {:missing_config, [:repo]}} = SquidMesh.config()
+    end
+
+    test "runtime-table configuration requires a host executor" do
+      without_squid_mesh_env([:executor], fn ->
+        assert {:error, {:missing_config, [:executor]}} =
+                 SquidMesh.config(repo: SquidMesh.Test.Repo, runtime: :runtime_tables)
+      end)
     end
 
     test "reports executor modules missing required callbacks" do
       assert {:error, {:invalid_config, [executor: {:missing_callbacks, missing}]}} =
-               SquidMesh.config(repo: SquidMeshTest.Repo, executor: IncompleteExecutor)
+               SquidMesh.config(repo: SquidMesh.Test.Repo, executor: IncompleteExecutor)
 
       assert :enqueue_steps in missing
       assert :enqueue_compensation in missing
@@ -1141,20 +1231,53 @@ defmodule SquidMeshTest do
     test "reports unloadable executor modules" do
       assert {:error,
               {:invalid_config, [executor: {:module_not_loaded, SquidMeshTest.UnknownExecutor}]}} =
-               SquidMesh.config(repo: SquidMeshTest.Repo, executor: SquidMeshTest.UnknownExecutor)
+               SquidMesh.config(
+                 repo: SquidMesh.Test.Repo,
+                 executor: SquidMeshTest.UnknownExecutor
+               )
     end
 
     test "reports invalid stale step timeout settings" do
       assert {:error, {:invalid_config, [stale_step_timeout: -1]}} =
                SquidMesh.config(
-                 repo: SquidMeshTest.Repo,
+                 repo: SquidMesh.Test.Repo,
                  executor: SquidMesh.Test.Executor,
                  stale_step_timeout: -1
                )
     end
   end
 
+  describe "journal default unsupported table-runtime operations" do
+    test "list_runs/2 returns an explicit unsupported runtime error" do
+      assert {:error, {:unsupported_runtime, {:journal, :list_runs}}} =
+               SquidMesh.list_runs([], repo: Repo)
+    end
+
+    test "cancel_run/2 returns an explicit unsupported runtime error" do
+      assert {:error, {:unsupported_runtime, {:journal, :cancel_run}}} =
+               SquidMesh.cancel_run(Ecto.UUID.generate(), repo: Repo)
+    end
+
+    test "replay_run/2 returns an explicit unsupported runtime error" do
+      assert {:error, {:unsupported_runtime, {:journal, :replay_run}}} =
+               SquidMesh.replay_run(Ecto.UUID.generate(), repo: Repo)
+    end
+
+    test "cron starts return an explicit unsupported runtime error" do
+      assert {:error, {:unsupported_runtime, {:journal, :start_run_with_initial_context}}} =
+               SquidMesh.start_run_with_initial_context(
+                 ScheduledCaptureWorkflow,
+                 :scheduled_capture,
+                 %{},
+                 %{schedule: %{idempotency_key: "journal-default-unsupported-cron"}},
+                 repo: Repo
+               )
+    end
+  end
+
   describe "start_run/3" do
+    setup :use_runtime_tables
+
     test "persists a new run and returns the public run shape" do
       payload = %{account_id: "acct_123", invoice_id: "inv_456"}
 
@@ -1321,6 +1444,8 @@ defmodule SquidMeshTest do
   end
 
   describe "cron trigger activation" do
+    setup :use_runtime_tables
+
     test "starts a cron workflow run from the neutral runner" do
       assert :ok =
                Runner.start_cron_trigger(
@@ -1521,6 +1646,8 @@ defmodule SquidMeshTest do
   end
 
   describe "inspect_run/2" do
+    setup :use_runtime_tables
+
     test "fetches a persisted run by id" do
       assert {:ok, created_run} =
                SquidMesh.start_run(
@@ -1846,6 +1973,8 @@ defmodule SquidMeshTest do
   end
 
   describe "inspect_run_graph/2" do
+    setup :use_runtime_tables
+
     test "returns graph-oriented state for a completed transition workflow" do
       assert {:ok, created_run} =
                SquidMesh.start_run(
@@ -1974,6 +2103,8 @@ defmodule SquidMeshTest do
   end
 
   describe "list_runs/2" do
+    setup :use_runtime_tables
+
     test "returns runs newest first" do
       assert {:ok, first_run} =
                SquidMesh.start_run(
@@ -2050,6 +2181,8 @@ defmodule SquidMeshTest do
   end
 
   describe "cancel_run/2" do
+    setup :use_runtime_tables
+
     test "cancels pending runs through the public API" do
       assert {:ok, run} =
                SquidMesh.start_run(
@@ -2118,6 +2251,8 @@ defmodule SquidMeshTest do
   end
 
   describe "replay_run/2" do
+    setup :use_runtime_tables
+
     test "creates a new run linked to the source run through the public API" do
       assert {:ok, source_run} =
                SquidMesh.start_run(
@@ -2268,6 +2403,8 @@ defmodule SquidMeshTest do
   end
 
   describe "unblock_run/2" do
+    setup :use_runtime_tables
+
     test "resumes paused runs through the public API" do
       assert {:ok, run} =
                SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
@@ -2387,6 +2524,8 @@ defmodule SquidMeshTest do
   end
 
   describe "approve_run/3 and reject_run/3" do
+    setup :use_runtime_tables
+
     test "approves paused approval runs through the public API" do
       assert {:ok, run} =
                SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
@@ -3005,12 +3144,12 @@ defmodule SquidMeshTest do
     end
 
     test "journal runtime returns structured errors for invalid pause resume requests" do
-      assert {:error, {:invalid_option, {:runtime_tables, [:journal_storage]}}} =
+      assert {:error, :not_found} =
                SquidMesh.unblock_run(Ecto.UUID.generate(),
                  journal_storage: @read_model_storage
                )
 
-      assert {:error, {:invalid_option, {:runtime_tables, [:journal_storage]}}} =
+      assert {:error, :not_found} =
                SquidMesh.unblock_run(Ecto.UUID.generate(), %{},
                  journal_storage: @read_model_storage
                )
@@ -3373,7 +3512,7 @@ defmodule SquidMeshTest do
     end
 
     test "journal runtime returns structured errors for invalid approval controls" do
-      assert {:error, {:invalid_option, {:runtime_tables, [:journal_storage]}}} =
+      assert {:error, {:invalid_review, %{actor: :required}}} =
                SquidMesh.approve_run(Ecto.UUID.generate(), %{},
                  journal_storage: @read_model_storage
                )
@@ -4239,13 +4378,16 @@ defmodule SquidMeshTest do
       assert rebuilt_snapshot.pending_dispatches == []
     end
 
-    test "journal runtime start requires explicit journal storage" do
-      assert {:error, {:invalid_option, {:journal_storage, nil}}} =
+    test "journal runtime start infers Ecto journal storage from the configured repo" do
+      assert {:ok, %Snapshot{} = snapshot} =
                SquidMesh.start_run(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal
                )
+
+      assert snapshot.workflow == Atom.to_string(PaymentRecoveryWorkflow)
+      assert snapshot.status == :running
     end
 
     test "table runtime start rejects journal-only options" do
@@ -4253,6 +4395,7 @@ defmodule SquidMeshTest do
                SquidMesh.start_run(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
+                 runtime: :runtime_tables,
                  journal_storage: @read_model_storage
                )
     end
@@ -6533,11 +6676,11 @@ defmodule SquidMeshTest do
       assert explanation.next_actions == [:schedule_pending_dispatch]
     end
 
-    test "read model requires explicit journal storage" do
-      assert {:error, {:invalid_option, {:journal_storage, nil}}} =
+    test "read model infers Ecto journal storage from the configured repo" do
+      assert {:error, :not_found} =
                SquidMesh.inspect_run(@read_model_run_id, read_model: :read_model)
 
-      assert {:error, {:invalid_option, {:journal_storage, nil}}} =
+      assert {:error, :not_found} =
                SquidMesh.explain_run(@read_model_run_id, read_model: :read_model)
     end
 

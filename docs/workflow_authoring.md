@@ -188,7 +188,8 @@ Current boundary:
 
 - trigger metadata is validated and stored in the workflow definition
 - manual triggers are runnable through the public API
-- cron triggers are activated by the host app's scheduler and executor
+- cron trigger execution is still table-runtime-only while the journal runtime
+  start boundary is completed
 
 Cron workflow example:
 
@@ -418,10 +419,6 @@ pick up the runtime, read model, storage adapter, and queue defaults:
 ```elixir
 config :squid_mesh,
   repo: MyApp.Repo,
-  executor: MyApp.SquidMeshExecutor,
-  runtime: :journal,
-  read_model: :read_model,
-  journal_storage: {SquidMesh.Runtime.Journal.Storage.Ecto, repo: MyApp.Repo},
   queue: "default"
 ```
 
@@ -434,16 +431,17 @@ threading journal options through every boundary:
 {:ok, snapshot} = SquidMesh.execute_next(owner_id: "worker-1")
 ```
 
-The storage setting is intentionally adapter-shaped rather than database-shaped.
-Squid Mesh validates it through its own journal storage boundary and then
-delegates to `Jido.Storage`. The built-in Ecto adapter is the recommended
-starting point for Postgres-compatible Ecto repos because it persists Jido
-threads and checkpoints in the host database through the Squid Mesh migration.
-Other Jido-compatible stores can be used, but production adapters should provide
-ordered per-thread appends, optimistic conflict detection, and durable
-checkpoint reads; not every database can provide those properties without extra
-coordination. Use `Jido.Storage.ETS` only for tests and local demos because it is
-process-local and ephemeral.
+When no `journal_storage` is configured, Squid Mesh infers
+`{SquidMesh.Runtime.Journal.Storage.Ecto, repo: MyApp.Repo}`. The storage
+setting remains intentionally adapter-shaped rather than database-shaped, so
+host apps can override it later without changing workflow code. The built-in
+Ecto adapter is the recommended starting point for Postgres-compatible Ecto
+repos because it persists Jido threads and checkpoints in the host database
+through the Squid Mesh migration. Other Jido-compatible stores can be used, but
+production adapters should provide ordered per-thread appends, optimistic
+conflict detection, and durable checkpoint reads; not every database can provide
+those properties without extra coordination. Use `Jido.Storage.ETS` only for
+tests and local demos because it is process-local and ephemeral.
 
 ## Graph Inspection
 
@@ -455,17 +453,14 @@ node-and-edge view without reverse-engineering step history:
 {:ok, graph} = SquidMesh.inspect_run_graph(run_id)
 ```
 
-The graph is derived from the same durable state as `inspect_run/2`. For the
-default runtime-table read model, Squid Mesh loads step and attempt history and
-overlays the declared workflow definition when the workflow module is still
-available. For the Jido-native read model, configure `read_model: :read_model`
-and `journal_storage:` at the host boundary or pass the same projection options
-used for inspection:
+The graph is derived from the same durable state as `inspect_run/2`. The default
+Jido-native read model rebuilds graph state from journal projections and infers
+Ecto storage from the configured repo. To override storage or queue for a
+specific call, pass the same projection options used for inspection:
 
 ```elixir
 {:ok, graph} =
   SquidMesh.inspect_run_graph(run_id,
-    read_model: :read_model,
     journal_storage: storage,
     queue: "default"
   )
@@ -601,12 +596,13 @@ Both markers produce the same replay safety behavior:
 
 - `inspect_run(..., include_history: true)` includes each step's `recovery`
   policy
-- `explain_run/2` removes `:replay_run` from terminal next actions after a
-  completed marked step and reports the blocking step in `details.replay`
-- `replay_run/2` returns `{:error, {:unsafe_replay, details}}` by default after
-  a completed marked step
-- `replay_run(run_id, allow_irreversible: true)` is the explicit operator
-  override when re-execution has been reviewed and accepted
+- in the table runtime, `explain_run/2` removes `:replay_run` from terminal
+  next actions after a completed marked step and reports the blocking step in
+  `details.replay`
+- in the table runtime, `replay_run/2` returns
+  `{:error, {:unsafe_replay, details}}` by default after a completed marked step
+- in the table runtime, `replay_run(run_id, allow_irreversible: true)` is the
+  explicit operator override when re-execution has been reviewed and accepted
 
 These markers do not provide exactly-once delivery or external compensation.
 They keep Squid Mesh honest about recovery policy so a replay cannot silently

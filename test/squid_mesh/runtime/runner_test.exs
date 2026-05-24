@@ -1,6 +1,8 @@
 defmodule SquidMesh.Runtime.RunnerTest do
   use SquidMesh.DataCase, async: false
 
+  @moduletag :runtime_tables
+
   alias SquidMesh.Executor.Payload
   alias SquidMesh.Runtime.Runner
   alias SquidMesh.Test.Executor

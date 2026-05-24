@@ -54,6 +54,8 @@ defmodule SquidMesh do
            | {:run_id, term()}
            | {:runtime_tables, [atom()]}}
 
+  @type unsupported_runtime_error :: {:unsupported_runtime, {:journal, atom()}}
+
   @doc """
   Loads Squid Mesh configuration from the application environment with optional
   runtime overrides.
@@ -125,11 +127,12 @@ defmodule SquidMesh do
   context injection is kept out of this public API so scheduled starts and other
   internal callers can keep their idempotency metadata isolated.
 
-  Configure `runtime: :journal` and `journal_storage:` at the host boundary, or
-  pass them as overrides, to use the Jido journal runtime for the named trigger.
-  Journal execution supports normal action steps, immediate built-in `:log`
-  steps, built-in `:wait` steps in transition and dependency workflows, and
-  manual `:pause` or `:approval` boundaries.
+  The Jido journal runtime is the default and infers Ecto-backed journal storage
+  from the configured repo. Pass `journal_storage:` only when a host, test, or
+  integration boundary needs a non-default storage adapter. Journal execution
+  supports normal action steps, immediate built-in `:log` steps, built-in
+  `:wait` steps in transition and dependency workflows, and manual `:pause` or
+  `:approval` boundaries.
   """
   @spec start_run(module(), atom(), map(), keyword()) ::
           {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
@@ -153,13 +156,21 @@ defmodule SquidMesh do
           | {:error, Config.config_error()}
           | {:error, {:invalid_option, atom()}}
           | {:error, Runs.Store.create_error()}
+          | {:error, unsupported_runtime_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run_with_initial_context(workflow, trigger_name, payload, initial_context, overrides)
       when is_atom(trigger_name) and is_map(payload) and is_map(initial_context) and
              is_list(overrides) do
     with :ok <- reject_public_start_options(overrides),
-         {:ok, config} <- Config.load(overrides) do
-      start_initial_context_run(config, workflow, trigger_name, payload, initial_context)
+         {:ok, runtime} <- runtime(overrides) do
+      start_initial_context_run_with_runtime(
+        runtime,
+        workflow,
+        trigger_name,
+        payload,
+        initial_context,
+        overrides
+      )
     else
       {:error, reason} -> {:error, reason}
     end
@@ -243,9 +254,10 @@ defmodule SquidMesh do
   @doc """
   Executes the next visible workflow attempt through the selected runtime.
 
-  Configure `runtime: :journal` and `journal_storage:` at the host boundary, or
-  pass them as overrides, to claim one visible Jido journal-backed attempt, run
-  its declared step, and append durable attempt completion or failure facts.
+  The default journal runtime claims one visible Jido journal-backed attempt,
+  runs its declared step, and appends durable attempt completion or failure
+  facts. Pass `journal_storage:` only when overriding the inferred Ecto storage
+  boundary.
   """
   @spec execute_next(keyword()) :: Executor.execute_result()
   def execute_next(overrides \\ [])
@@ -283,10 +295,10 @@ defmodule SquidMesh do
   Lists workflow runs with optional filters.
   """
   @spec list_runs(Runs.Store.list_filters(), keyword()) ::
-          {:ok, [Run.t()]} | {:error, Config.config_error()}
+          {:ok, [Run.t()]} | {:error, Config.config_error() | unsupported_runtime_error()}
   def list_runs(filters \\ [], overrides \\ []) do
-    with {:ok, config} <- Config.load(overrides) do
-      Runs.Store.list_runs(config.repo, filters)
+    with {:ok, runtime} <- runtime(overrides) do
+      list_runs_with_runtime(runtime, filters, overrides)
     end
   end
 
@@ -299,18 +311,19 @@ defmodule SquidMesh do
              :not_found
              | :invalid_run_id
              | Config.config_error()
-             | Runs.Store.transition_error()}
+             | Runs.Store.transition_error()
+             | unsupported_runtime_error()}
   def cancel_run(run_id, overrides \\ []) do
-    with {:ok, config} <- Config.load(overrides) do
-      Runs.Store.cancel_run(config.repo, run_id)
+    with {:ok, runtime} <- runtime(overrides) do
+      cancel_run_with_runtime(runtime, run_id, overrides)
     end
   end
 
   @doc """
   Resumes a run that is intentionally paused for manual intervention.
 
-  This arity uses the configured runtime. With `runtime: :journal`, it resolves
-  an inspectable journal pause boundary using the configured journal storage.
+  This arity uses the configured runtime. By default, it resolves an inspectable
+  journal pause boundary using the inferred Ecto journal storage.
   """
   @spec unblock_run(Ecto.UUID.t()) ::
           {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
@@ -358,9 +371,9 @@ defmodule SquidMesh do
   @doc """
   Resumes a paused run with manual action attributes and configuration overrides.
 
-  Configure `runtime: :journal` and `journal_storage:` at the host boundary, or
-  pass them as overrides, to resolve an inspectable journal pause boundary and
-  persist the manual action attributes in the journal resolution metadata.
+  By default, this resolves an inspectable journal pause boundary and persists
+  the manual action attributes in journal resolution metadata. Pass
+  `journal_storage:` only when overriding the inferred Ecto storage boundary.
   """
   @spec unblock_run(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
@@ -382,9 +395,9 @@ defmodule SquidMesh do
   @doc """
   Approves a paused approval step and resumes the run through its success path.
 
-  Configure `runtime: :journal` and `journal_storage:` at the host boundary, or
-  pass them as overrides, to resolve an inspectable journal approval boundary
-  and persist the decision as journal facts.
+  By default, this resolves an inspectable journal approval boundary and
+  persists the decision as journal facts. Pass `journal_storage:` only when
+  overriding the inferred Ecto storage boundary.
   """
   @spec approve_run(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
@@ -406,9 +419,9 @@ defmodule SquidMesh do
   @doc """
   Rejects a paused approval step and resumes the run through its rejection path.
 
-  Configure `runtime: :journal` and `journal_storage:` at the host boundary, or
-  pass them as overrides, to resolve an inspectable journal approval boundary
-  and persist the decision as journal facts.
+  By default, this resolves an inspectable journal approval boundary and
+  persists the decision as journal facts. Pass `journal_storage:` only when
+  overriding the inferred Ecto storage boundary.
   """
   @spec reject_run(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
@@ -440,11 +453,41 @@ defmodule SquidMesh do
              :not_found
              | :invalid_run_id
              | Config.config_error()
-             | Runs.Store.replay_error()}
+             | Runs.Store.replay_error()
+             | unsupported_runtime_error()}
           | {:error, {:dispatch_failed, term()}}
   def replay_run(run_id, overrides \\ []) do
     {replay_opts, config_overrides} = Keyword.split(overrides, [:allow_irreversible])
 
+    with {:ok, runtime} <- runtime(config_overrides),
+         {:ok, run} <- replay_run_with_runtime(runtime, run_id, replay_opts, config_overrides) do
+      {:ok, run}
+    else
+      {:error, reason} = error when reason in [:not_found, :invalid_run_id] ->
+        error
+
+      {:error, {:unsafe_replay, _details} = reason} ->
+        {:error, reason}
+
+      {:error, {:invalid_run, _changeset} = reason} ->
+        {:error, reason}
+
+      {:error, {:unsupported_runtime, _details} = reason} ->
+        {:error, reason}
+
+      {:error, %_struct{} = reason} ->
+        {:error, {:dispatch_failed, reason}}
+
+      {:error, reason} ->
+        {:error, {:dispatch_failed, reason}}
+    end
+  end
+
+  defp replay_run_with_runtime(:journal, _run_id, _replay_opts, _config_overrides) do
+    unsupported_journal_runtime(:replay_run)
+  end
+
+  defp replay_run_with_runtime(:runtime_tables, run_id, replay_opts, config_overrides) do
     with {:ok, config} <- Config.load(config_overrides),
          {:ok, run} <-
            Runs.Store.replay_and_dispatch_run(
@@ -457,21 +500,6 @@ defmodule SquidMesh do
            ) do
       SquidMesh.Observability.emit_run_replayed(run)
       {:ok, run}
-    else
-      {:error, reason} = error when reason in [:not_found, :invalid_run_id] ->
-        error
-
-      {:error, {:unsafe_replay, _details} = reason} ->
-        {:error, reason}
-
-      {:error, {:invalid_run, _changeset} = reason} ->
-        {:error, reason}
-
-      {:error, %_struct{} = reason} ->
-        {:error, {:dispatch_failed, reason}}
-
-      {:error, reason} ->
-        {:error, {:dispatch_failed, reason}}
     end
   end
 
@@ -525,6 +553,50 @@ defmodule SquidMesh do
 
   defp start_triggered_run_with_runtime(:journal, workflow, trigger_name, payload, overrides) do
     Starter.start_run(workflow, trigger_name, payload, journal_start_options(overrides))
+  end
+
+  defp start_initial_context_run_with_runtime(
+         :runtime_tables,
+         workflow,
+         trigger_name,
+         payload,
+         initial_context,
+         overrides
+       ) do
+    with {:ok, config} <- Config.load(overrides) do
+      start_initial_context_run(config, workflow, trigger_name, payload, initial_context)
+    end
+  end
+
+  defp start_initial_context_run_with_runtime(
+         :journal,
+         _workflow,
+         _trigger_name,
+         _payload,
+         _initial_context,
+         _overrides
+       ) do
+    unsupported_journal_runtime(:start_run_with_initial_context)
+  end
+
+  defp list_runs_with_runtime(:runtime_tables, filters, overrides) do
+    with {:ok, config} <- Config.load(overrides) do
+      Runs.Store.list_runs(config.repo, filters)
+    end
+  end
+
+  defp list_runs_with_runtime(:journal, _filters, _overrides) do
+    unsupported_journal_runtime(:list_runs)
+  end
+
+  defp cancel_run_with_runtime(:runtime_tables, run_id, overrides) do
+    with {:ok, config} <- Config.load(overrides) do
+      Runs.Store.cancel_run(config.repo, run_id)
+    end
+  end
+
+  defp cancel_run_with_runtime(:journal, _run_id, _overrides) do
+    unsupported_journal_runtime(:cancel_run)
   end
 
   defp unblock_runtime_table_run(run_id, attrs, overrides) do
@@ -667,6 +739,10 @@ defmodule SquidMesh do
   end
 
   defp runtime(_overrides), do: {:error, {:invalid_option, {:opts, :invalid}}}
+
+  defp unsupported_journal_runtime(operation) when is_atom(operation) do
+    {:error, {:unsupported_runtime, {:journal, operation}}}
+  end
 
   defp validate_keyword_options(overrides) do
     if Keyword.keyword?(overrides) do

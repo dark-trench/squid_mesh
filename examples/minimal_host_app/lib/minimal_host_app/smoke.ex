@@ -156,20 +156,20 @@ defmodule MinimalHostApp.Smoke do
              SquidMesh.start_run(
                MinimalHostApp.Workflows.DependencyRecovery,
                :dependency_recovery,
-             attrs
-           ),
-         {:ok, inspected_run} <-
-           drain_journal_executor(started_run.run_id, @journal_executor_attempts),
-         {:ok, explanation} <- SquidMesh.explain_run(started_run.run_id) do
-      unless started_run.queue == queue and
-               inspected_run.queue == queue and
-               explanation.queue == queue do
-        raise "unexpected journal executor queue"
-      end
+               attrs
+             ),
+           {:ok, inspected_run} <-
+             drain_journal_executor(started_run.run_id, @journal_executor_attempts),
+           {:ok, explanation} <- SquidMesh.explain_run(started_run.run_id) do
+        unless started_run.queue == queue and
+                 inspected_run.queue == queue and
+                 explanation.queue == queue do
+          raise "unexpected journal executor queue"
+        end
 
-      unless inspected_run.status == :completed do
-        raise "unexpected journal executor smoke result"
-      end
+        unless inspected_run.status == :completed do
+          raise "unexpected journal executor smoke result"
+        end
 
         inspected_run
       else

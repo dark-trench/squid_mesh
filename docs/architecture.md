@@ -27,7 +27,8 @@ inside a host application's supervision tree and infrastructure.
 
 `SquidMesh.Runtime.Dispatcher`
 
-- turns workflow execution intent into calls to the configured host executor
+- legacy table-runtime bridge that turns workflow execution intent into calls
+  to the configured host executor
 
 `SquidMesh.Runtime.WorkflowAgent`
 
@@ -75,10 +76,11 @@ inside a host application's supervision tree and infrastructure.
 
 `SquidMesh.inspect_run/2` and `SquidMesh.explain_run/2`
 
-- keep the current runtime-table read model as the default public behavior
-- accept `read_model: :read_model` with `journal_storage:` when callers
-  want to inspect or explain a run from durable Jido journals without
-  switching the execution runtime
+- use the journal read model as the default public behavior and infer Ecto
+  storage from the configured repo
+- still accept explicit projection options such as `journal_storage:` or
+  `queue:` when callers need to inspect or explain a non-default journal
+  boundary
 
 `SquidMesh.Executor`
 
@@ -141,12 +143,18 @@ Postgres owns:
 
 1. A host application starts a run through `SquidMesh.start_run/2`, `start_run/3`, or `start_run/4`.
 2. Squid Mesh validates the workflow definition and payload.
-3. Squid Mesh persists a pending run in Postgres.
-4. The dispatcher asks the configured executor to enqueue the current workflow step.
-5. The host job delivers the payload to `SquidMesh.Runtime.Runner.perform/1`.
-6. Step output is merged into run context.
-7. The runtime decides whether the run completes, advances, retries, fails, or no-ops.
-8. If more work is required, the dispatcher asks the executor to enqueue the next step or delayed retry.
+3. The journal runtime appends run and runnable facts to the host repo through
+   the configured journal storage adapter.
+4. A worker calls `SquidMesh.execute_next/1` to claim one visible attempt.
+5. Step output is appended back to the journal and projected into run state.
+6. The runtime decides whether the run completes, advances, retries, fails, or
+   no-ops.
+7. If more work is required, successor runnable intent is appended before later
+   workers can claim it.
+
+The explicit `runtime: :runtime_tables` path still uses the configured host
+executor and `SquidMesh.Runtime.Runner.perform/1` while that path remains
+available.
 
 ## Recovery Boundary
 

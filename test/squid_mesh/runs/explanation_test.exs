@@ -1,6 +1,8 @@
 defmodule SquidMesh.Runs.ExplanationTest do
   use SquidMesh.DataCase, async: false
 
+  @moduletag :runtime_tables
+
   alias __MODULE__.ApprovalWorkflow
   alias __MODULE__.BackoffWorkflow
   alias __MODULE__.DependencyWorkflow

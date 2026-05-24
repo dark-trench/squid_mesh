@@ -14,7 +14,7 @@ defmodule SquidMesh.Config do
   @type read_model :: :runtime_tables | :read_model
   @type raw_config :: [
           repo: module(),
-          executor: module(),
+          executor: module() | nil,
           stale_step_timeout: stale_step_timeout(),
           runtime: runtime(),
           read_model: read_model(),
@@ -23,7 +23,7 @@ defmodule SquidMesh.Config do
         ]
   @type t :: %__MODULE__{
           repo: module(),
-          executor: module(),
+          executor: module() | nil,
           stale_step_timeout: stale_step_timeout(),
           runtime: runtime(),
           read_model: read_model(),
@@ -36,14 +36,14 @@ defmodule SquidMesh.Config do
     :executor,
     :journal_storage,
     stale_step_timeout: :disabled,
-    runtime: :runtime_tables,
-    read_model: :runtime_tables,
+    runtime: :journal,
+    read_model: :read_model,
     queue: "default"
   ]
 
   @default_stale_step_timeout :disabled
-  @default_runtime :runtime_tables
-  @default_read_model :runtime_tables
+  @default_runtime :journal
+  @default_read_model :read_model
   @default_queue "default"
   @runtimes [:runtime_tables, :journal]
   @read_models [:runtime_tables, :read_model]
@@ -74,7 +74,7 @@ defmodule SquidMesh.Config do
            validate_read_model(Keyword.get(config, :read_model, @default_read_model)),
          {:ok, queue} <- validate_queue(Keyword.get(config, :queue, @default_queue)),
          {:ok, journal_storage} <- validate_journal_storage(config, runtime, read_model),
-         {:ok, executor} <- validate_executor(Keyword.fetch!(config, :executor)) do
+         {:ok, executor} <- validate_executor_config(config, runtime) do
       {:ok,
        %__MODULE__{
          repo: Keyword.fetch!(config, :repo),
@@ -113,7 +113,7 @@ defmodule SquidMesh.Config do
   end
 
   defp validate_required_keys(config) do
-    missing_keys = Enum.reject([:repo, :executor], &Keyword.has_key?(config, &1))
+    missing_keys = Enum.reject([:repo], &Keyword.has_key?(config, &1))
 
     case missing_keys do
       [] -> :ok
@@ -183,7 +183,34 @@ defmodule SquidMesh.Config do
         end
 
       :error ->
-        {:error, {:missing_config, [:journal_storage]}}
+        infer_journal_storage(config)
+    end
+  end
+
+  defp infer_journal_storage(config) do
+    config
+    |> Keyword.fetch!(:repo)
+    |> then(&Options.storage({SquidMesh.Runtime.Journal.Storage.Ecto, repo: &1}))
+    |> case do
+      {:ok, storage} ->
+        {:ok, storage}
+
+      {:error, {:invalid_option, {:journal_storage, reason}}} ->
+        {:error, {:invalid_config, [journal_storage: reason]}}
+    end
+  end
+
+  defp validate_executor_config(config, :runtime_tables) do
+    case Keyword.fetch(config, :executor) do
+      {:ok, executor} -> validate_executor(executor)
+      :error -> {:error, {:missing_config, [:executor]}}
+    end
+  end
+
+  defp validate_executor_config(config, :journal) do
+    case Keyword.fetch(config, :executor) do
+      {:ok, executor} -> validate_executor(executor)
+      :error -> {:ok, nil}
     end
   end
 
