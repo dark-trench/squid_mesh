@@ -161,7 +161,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     journal_run_name = :"minimal_host_app_journal_run_#{System.unique_integer([:positive])}"
 
     start_supervised!(
-      {MinimalHostApp.JournalExecutor,
+      {MinimalHostApp.JournalRun,
        name: journal_run_name,
        owner_id: "minimal-host-app-supervised-test",
        idle_interval_ms: 10,

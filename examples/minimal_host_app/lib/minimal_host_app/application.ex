@@ -22,7 +22,7 @@ defmodule MinimalHostApp.Application do
     [
       MinimalHostApp.Repo,
       {Oban, Application.fetch_env!(:minimal_host_app, Oban)},
-      MinimalHostApp.JournalExecutor
+      MinimalHostApp.JournalRun
     ]
   end
 end

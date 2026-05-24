@@ -1,4 +1,4 @@
-defmodule MinimalHostApp.JournalExecutor do
+defmodule MinimalHostApp.JournalRun do
   @moduledoc """
   Small host-owned worker loop that drains Squid Mesh journal attempts.
 
@@ -21,7 +21,7 @@ defmodule MinimalHostApp.JournalExecutor do
   @impl GenServer
   def init(opts) do
     state = %{
-      owner_id: Keyword.get(opts, :owner_id, "minimal-host-app-journal-executor"),
+      owner_id: Keyword.get(opts, :owner_id, "minimal-host-app-journal-run"),
       idle_interval_ms: Keyword.get(opts, :idle_interval_ms, @idle_interval_ms),
       error_interval_ms: Keyword.get(opts, :error_interval_ms, @error_interval_ms)
     }
