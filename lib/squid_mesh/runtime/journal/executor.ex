@@ -18,6 +18,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   alias SquidMesh.Runtime.RetryPolicy
   alias SquidMesh.Runtime.StepInput
   alias SquidMesh.Runtime.WorkflowAgent
+  alias SquidMesh.Runtime.WorkflowAgent.Projection
   alias SquidMesh.Workflow.Definition
 
   @dispatch_append_retries 25
@@ -105,8 +106,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
        when is_list(opts) do
     with {:ok, workflow_agent} <- WorkflowAgent.rebuild(storage, attempt.run_id),
          {:ok, workflow, definition, step_name, step} <-
-           executable_step(storage, workflow_agent, attempt),
-         :ok <- validate_executable_step_mode(definition, step) do
+           executable_step(storage, workflow_agent, attempt) do
       context = step_context(attempt, workflow, step_name)
       finished_at = lifecycle_time(opts, claim_now)
       runtime = %{storage: storage, queue: queue, now: finished_at}
@@ -404,7 +404,18 @@ defmodule SquidMesh.Runtime.Journal.Executor do
              result,
              progression
            ) do
-      entries = [runnable_applied_entry!(attempt, result, transition, now) | progression_entries]
+      entries = [
+        runnable_applied_entry!(
+          attempt,
+          result,
+          transition,
+          now,
+          execution_opts,
+          schedule_base_at
+        )
+        | progression_entries
+      ]
+
       append_success_entries(runtime, workflow_agent, success, entries, retries_left)
     end
   end
@@ -753,6 +764,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
         context = dependency_context(workflow_agent, result)
 
         case dependency_success_runnables(
+               workflow_agent,
                attempt,
                context,
                definition,
@@ -775,6 +787,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   end
 
   defp dependency_success_runnables(
+         workflow_agent,
          attempt,
          context,
          definition,
@@ -785,12 +798,20 @@ defmodule SquidMesh.Runtime.Journal.Executor do
            schedule_base_at: %DateTime{} = schedule_base_at
          }
        ) do
-    visible_at = successor_visible_at(schedule_base_at, execution_opts)
+    base_visible_at = successor_visible_at(schedule_base_at, execution_opts)
 
     result =
       Enum.reduce_while(next_steps, {:ok, []}, fn next_step, {:ok, acc} ->
         case successor_input(context, definition, next_step) do
           {:ok, input} ->
+            visible_at =
+              dependency_successor_visible_at(
+                workflow_agent,
+                definition,
+                next_step,
+                base_visible_at
+              )
+
             runnable = journal_runnable(attempt.run_id, queue, next_step, input, 1, visible_at)
             {:cont, {:ok, [runnable | acc]}}
 
@@ -802,6 +823,64 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     case result do
       {:ok, runnables} -> {:ok, Enum.reverse(runnables)}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp dependency_successor_visible_at(workflow_agent, definition, next_step, %DateTime{} = base) do
+    workflow_agent
+    |> completed_wait_dependency_visible_ats(definition, next_step)
+    |> Enum.reduce(base, &max_datetime/2)
+  end
+
+  defp completed_wait_dependency_visible_ats(
+         %{state: %{projection: %Projection{} = projection}},
+         definition,
+         next_step
+       ) do
+    definition
+    |> dependency_steps(next_step)
+    |> Enum.flat_map(&completed_wait_visible_at(projection, definition, &1))
+  end
+
+  defp dependency_steps(definition, next_step) do
+    case Definition.step(definition, next_step) do
+      {:ok, %{opts: opts}} ->
+        opts
+        |> Keyword.get(:after, [])
+        |> List.wrap()
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp completed_wait_visible_at(%Projection{} = projection, definition, dependency_step) do
+    with {:ok, %{module: :wait, opts: opts}} <- Definition.step(definition, dependency_step),
+         {:ok, runnable_key} <-
+           Projection.applied_runnable_key_for_step(
+             projection,
+             Definition.serialize_step(dependency_step)
+           ),
+         %DateTime{} = applied_at <- Projection.applied_at(projection, runnable_key) do
+      execution_opts = wait_dependency_execution_opts(projection, runnable_key, opts)
+
+      [successor_visible_at(applied_at, execution_opts)]
+    else
+      _not_a_completed_wait_dependency -> []
+    end
+  end
+
+  defp wait_dependency_execution_opts(%Projection{} = projection, runnable_key, step_opts) do
+    case Projection.applied_execution_opts(projection, runnable_key) do
+      [] -> recovered_execution_opts(%{module: :wait, opts: step_opts})
+      execution_opts -> execution_opts
+    end
+  end
+
+  defp max_datetime(%DateTime{} = left, %DateTime{} = right) do
+    case DateTime.compare(left, right) do
+      :gt -> left
+      _lte_or_eq -> right
     end
   end
 
@@ -1107,14 +1186,28 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   defp retry_delay_ms(_error, policy_delay_ms), do: policy_delay_ms
 
   defp runnable_applied_entry!(%ActionAttempt{} = attempt, result, %DateTime{} = now) do
-    runnable_applied_entry!(attempt, result, nil, now)
+    runnable_applied_entry!(attempt, result, nil, now, [], now)
   end
 
   defp runnable_applied_entry!(%ActionAttempt{} = attempt, result, transition, %DateTime{} = now) do
+    runnable_applied_entry!(attempt, result, transition, now, [], now)
+  end
+
+  defp runnable_applied_entry!(
+         %ActionAttempt{} = attempt,
+         result,
+         transition,
+         %DateTime{} = now,
+         execution_opts,
+         %DateTime{} = applied_at
+       )
+       when is_list(execution_opts) do
     entry!(:runnable_applied, %{
       run_id: attempt.run_id,
       runnable_key: attempt.runnable_key,
       result: result,
+      execution_opts: execution_opts,
+      applied_at: applied_at,
       transition: transition,
       occurred_at: now
     })
@@ -1279,21 +1372,15 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   defp recover_completed_step(storage, dispatch_agent, queue, workflow_agent, attempt, now) do
     case executable_step(storage, workflow_agent, attempt) do
       {:ok, _workflow, definition, step_name, step} ->
-        case validate_executable_step_mode(definition, step) do
-          :ok ->
-            append_recovered_success(
-              %{storage: storage, queue: queue, now: now},
-              dispatch_agent,
-              workflow_agent,
-              attempt,
-              definition,
-              step_name,
-              step
-            )
-
-          {:error, reason} ->
-            recover_incompatible_progression(storage, queue, workflow_agent, attempt, now, reason)
-        end
+        append_recovered_success(
+          %{storage: storage, queue: queue, now: now},
+          dispatch_agent,
+          workflow_agent,
+          attempt,
+          definition,
+          step_name,
+          step
+        )
 
       {:error, reason} ->
         recover_incompatible_progression(storage, queue, workflow_agent, attempt, now, reason)
@@ -1551,16 +1638,6 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       state: attempt.input
     }
   end
-
-  defp validate_executable_step_mode(definition, %{module: :wait}) do
-    if Definition.dependency_mode?(definition) do
-      {:error, %{code: "unsupported_journal_step", step_kind: :wait, retryable?: false}}
-    else
-      :ok
-    end
-  end
-
-  defp validate_executable_step_mode(_definition, _step), do: :ok
 
   defp recovered_execution_opts(%{module: :wait, opts: opts}) when is_list(opts) do
     {:ok, _output, execution_opts} = BuiltInStep.execute_wait(opts)

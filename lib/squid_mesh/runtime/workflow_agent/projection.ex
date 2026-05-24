@@ -33,6 +33,8 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
           planned_runnables: %{optional(String.t()) => map()},
           applied_runnable_keys: string_set(),
           applied_results: %{optional(String.t()) => map() | nil},
+          applied_execution_opts: %{optional(String.t()) => keyword()},
+          applied_at: %{optional(String.t()) => DateTime.t()},
           manual_state: manual_state() | nil,
           terminal_status: atom() | nil,
           anomalies: [anomaly()]
@@ -44,6 +46,8 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
             planned_runnables: %{},
             applied_runnable_keys: MapSet.new(),
             applied_results: %{},
+            applied_execution_opts: %{},
+            applied_at: %{},
             manual_state: nil,
             terminal_status: nil,
             anomalies: []
@@ -116,6 +120,45 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   @spec applied_result(t(), String.t()) :: {:ok, map() | nil} | :error
   def applied_result(%__MODULE__{} = projection, runnable_key) when is_binary(runnable_key) do
     Map.fetch(applied_results(projection), runnable_key)
+  end
+
+  @doc false
+  @spec applied_execution_opts(t(), String.t()) :: keyword()
+  def applied_execution_opts(%__MODULE__{} = projection, runnable_key)
+      when is_binary(runnable_key) do
+    projection
+    |> Map.get(:applied_execution_opts, %{})
+    |> Map.get(runnable_key, [])
+  end
+
+  @doc false
+  @spec applied_at(t(), String.t()) :: DateTime.t() | nil
+  def applied_at(%__MODULE__{} = projection, runnable_key) when is_binary(runnable_key) do
+    projection
+    |> Map.get(:applied_at, %{})
+    |> Map.get(runnable_key)
+  end
+
+  @doc false
+  @spec applied_runnable_key_for_step(t(), String.t()) :: {:ok, String.t()} | :error
+  def applied_runnable_key_for_step(%__MODULE__{} = projection, step) when is_binary(step) do
+    applied_keys = applied_runnable_keys(projection)
+
+    projection.planned_runnables
+    |> Map.values()
+    |> Enum.find_value(fn runnable ->
+      runnable_key = Map.get(runnable, :runnable_key) || Map.get(runnable, "runnable_key")
+      runnable_step = Map.get(runnable, :step) || Map.get(runnable, "step")
+
+      if runnable_step == step and is_binary(runnable_key) and
+           MapSet.member?(applied_keys, runnable_key) do
+        runnable_key
+      end
+    end)
+    |> case do
+      runnable_key when is_binary(runnable_key) -> {:ok, runnable_key}
+      nil -> :error
+    end
   end
 
   @doc false
@@ -223,6 +266,14 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
         :applied_results,
         Map.put(applied_results(projection), runnable_key, Map.get(data, :result))
       )
+      |> Map.put(
+        :applied_execution_opts,
+        Map.put(applied_execution_opts(projection), runnable_key, execution_opts(data))
+      )
+      |> Map.put(
+        :applied_at,
+        Map.put(applied_at(projection), runnable_key, effective_applied_at(data, entry))
+      )
       |> refresh_status()
     else
       add_anomaly(projection, entry, :unknown_runnable_intent)
@@ -291,6 +342,28 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
 
   defp applied_results(%__MODULE__{} = projection) do
     Map.get(projection, :applied_results, %{})
+  end
+
+  defp applied_execution_opts(%__MODULE__{} = projection) do
+    Map.get(projection, :applied_execution_opts, %{})
+  end
+
+  defp applied_at(%__MODULE__{} = projection) do
+    Map.get(projection, :applied_at, %{})
+  end
+
+  defp execution_opts(data) when is_map(data) do
+    case Map.get(data, :execution_opts) do
+      opts when is_list(opts) -> opts
+      _missing_or_invalid -> []
+    end
+  end
+
+  defp effective_applied_at(data, entry) when is_map(data) do
+    case Map.get(data, :applied_at) do
+      %DateTime{} = applied_at -> applied_at
+      _missing_or_invalid -> entry.occurred_at
+    end
   end
 
   defp refresh_status(%__MODULE__{terminal_status: terminal_status} = projection)
