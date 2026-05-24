@@ -459,6 +459,10 @@ defmodule SquidMeshTest do
 
     @impl Jido.Action
     def run(%{account_id: account_id}, _context) do
+      if hook = :persistent_term.get(:journal_gateway_run_hook, nil) do
+        hook.()
+      end
+
       {:ok, %{gateway_check: %{account_id: account_id, status: "healthy"}}}
     end
   end
@@ -1248,14 +1252,14 @@ defmodule SquidMeshTest do
     end
   end
 
-  describe "journal default unsupported table-runtime operations" do
+  describe "journal default table-runtime parity gaps" do
     test "list_runs/2 returns an empty journal catalog when no runs exist" do
       assert {:ok, []} =
                SquidMesh.list_runs([], repo: Repo)
     end
 
-    test "cancel_run/2 returns an explicit unsupported runtime error" do
-      assert {:error, {:unsupported_runtime, {:journal, :cancel_run}}} =
+    test "cancel_run/2 returns not found through the journal default" do
+      assert {:error, :not_found} =
                SquidMesh.cancel_run(Ecto.UUID.generate(), repo: Repo)
     end
 
@@ -2918,6 +2922,208 @@ defmodule SquidMeshTest do
 
       assert graph.run_id == listed_second.run_id
       assert Enum.map(graph.nodes, &{&1.id, &1.status}) == [{"check_gateway", :pending}]
+    end
+
+    test "cancel_run/2 cancels a visible journal run and fences dispatch" do
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_cancel"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{step: "check_gateway", status: :available}] = started.visible_attempts
+
+      assert {:ok, %Snapshot{} = cancelled} =
+               SquidMesh.cancel_run(started.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert cancelled.run_id == started.run_id
+      assert cancelled.status == :cancelled
+      assert cancelled.terminal?
+      assert cancelled.terminal_status == :cancelled
+      assert cancelled.visible_attempts == []
+
+      assert {:ok, :none} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+    end
+
+    test "cancel_run/2 rejects stale claim completions after journal cancellation" do
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_stale_cancel"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, dispatch_agent} = DispatchAgent.rebuild(@read_model_storage, @read_model_queue)
+
+      assert {:ok,
+              %{
+                agent: claimed_dispatch_agent,
+                attempt: %{runnable_key: runnable_key},
+                claim_id: claim_id,
+                claim_token: claim_token
+              }} =
+               DispatchAgent.claim_next(@read_model_storage, dispatch_agent, "worker_1",
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %Snapshot{status: :cancelled}} =
+               SquidMesh.cancel_run(started.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert {:error, :terminal_run} =
+               DispatchAgent.complete(
+                 @read_model_storage,
+                 claimed_dispatch_agent,
+                 runnable_key,
+                 claim_id,
+                 claim_token,
+                 %{status: "late"},
+                 now: DateTime.add(@read_model_visible_at, 2, :second)
+               )
+    end
+
+    test "cancel_run/2 fences cancellation between claim and step execution" do
+      parent = self()
+
+      on_exit(fn -> :persistent_term.erase(:journal_gateway_run_hook) end)
+      :persistent_term.put(:journal_gateway_run_hook, fn -> send(parent, :gateway_step_ran) end)
+
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_claim_cancel"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      test_after_claim = fn %{run_id: run_id} ->
+        send(parent, :after_claim)
+
+        assert {:ok, %Snapshot{status: :cancelled}} =
+                 SquidMesh.cancel_run(run_id,
+                   runtime: :journal,
+                   journal_storage: @read_model_storage,
+                   queue: @read_model_queue,
+                   now: DateTime.add(@read_model_visible_at, 1, :second)
+                 )
+
+        :ok
+      end
+
+      assert {:ok, %Snapshot{} = cancelled} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at,
+                 test_after_claim: test_after_claim
+               )
+
+      assert cancelled.run_id == started.run_id
+      assert cancelled.status == :cancelled
+      assert cancelled.visible_attempts == []
+      assert_receive :after_claim
+      refute_receive :gateway_step_ran
+    end
+
+    test "cancel_run/2 clears journal manual state for paused runs" do
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.start_run(
+                 ApprovalWorkflow,
+                 %{account_id: "acct_cancel_paused"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{status: :paused} = paused} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert paused.run_id == started.run_id
+      assert %{step: "wait_for_review", kind: "approval"} = paused.manual_state
+
+      assert {:ok, %Snapshot{} = cancelled} =
+               SquidMesh.cancel_run(paused.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert cancelled.status == :cancelled
+      assert cancelled.manual_state == nil
+      assert cancelled.visible_attempts == []
+    end
+
+    test "cancel_run/2 rejects terminal journal runs" do
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_cancel_terminal"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{status: :completed}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert {:error, {:invalid_transition, :completed, :cancelling}} =
+               SquidMesh.cancel_run(started.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+    end
+
+    test "cancel_run/2 returns structured journal errors for missing and malformed run ids" do
+      assert {:error, :not_found} =
+               SquidMesh.cancel_run(Ecto.UUID.generate(),
+                 runtime: :journal,
+                 journal_storage: @read_model_storage
+               )
+
+      assert {:error, :invalid_run_id} =
+               SquidMesh.cancel_run("not-a-uuid",
+                 runtime: :journal,
+                 journal_storage: @read_model_storage
+               )
     end
 
     test "list_runs/2 surfaces malformed journal run catalog facts" do

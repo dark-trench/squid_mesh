@@ -63,6 +63,7 @@ defmodule MinimalHostApp.Smoke do
           saga_checkout: SquidMesh.Run.t(),
           journal_executor: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_recovery: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          journal_cancellation: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           daily_digest: SquidMesh.Run.t()
         }
   def run_all! do
@@ -74,6 +75,7 @@ defmodule MinimalHostApp.Smoke do
     saga_checkout = run_saga_checkout!()
     journal_executor = run_journal_executor!()
     journal_recovery = run_journal_recovery!()
+    journal_cancellation = run_journal_cancellation!()
     existing_daily_digest_run_ids = daily_digest_run_ids()
 
     with :ok <- run_cron_digest(),
@@ -93,6 +95,7 @@ defmodule MinimalHostApp.Smoke do
         saga_checkout: saga_checkout,
         journal_executor: journal_executor,
         journal_recovery: journal_recovery,
+        journal_cancellation: journal_cancellation,
         daily_digest: cron_run
       }
     else
@@ -220,6 +223,49 @@ defmodule MinimalHostApp.Smoke do
       else
         {:error, reason} ->
           raise "journal recovery smoke test failed: #{inspect(reason)}"
+      end
+    end)
+  end
+
+  @doc """
+  Runs journal cancellation through the example app's configured Ecto storage.
+  """
+  @spec run_journal_cancellation!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
+  def run_journal_cancellation! do
+    RuntimeHarness.ensure_runtime_started()
+    queue = journal_executor_queue()
+
+    attrs = %{
+      account_id: "acct_journal_cancel_demo",
+      invoice_id: "inv_journal_cancel_demo",
+      attempt_id: "attempt_journal_cancel_demo"
+    }
+
+    with_journal_runtime_config(queue, fn ->
+      with {:ok, started_run} <-
+             SquidMesh.start_run(
+               MinimalHostApp.Workflows.DependencyRecovery,
+               :dependency_recovery,
+               attrs
+             ),
+           {:ok, cancelled_run} <- SquidMesh.cancel_run(started_run.run_id),
+           {:ok, inspected_run} <- SquidMesh.inspect_run(started_run.run_id),
+           {:ok, :none} <- SquidMesh.execute_next(journal_executor_execute_options()) do
+        unless started_run.queue == queue and
+                 cancelled_run.queue == queue and
+                 inspected_run.queue == queue do
+          raise "unexpected journal cancellation queue"
+        end
+
+        unless cancelled_run.status == :cancelled and inspected_run.status == :cancelled and
+                 cancelled_run.visible_attempts == [] do
+          raise "unexpected journal cancellation smoke result"
+        end
+
+        cancelled_run
+      else
+        {:error, reason} ->
+          raise "journal cancellation smoke test failed: #{inspect(reason)}"
       end
     end)
   end
