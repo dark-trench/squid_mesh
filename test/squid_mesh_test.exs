@@ -897,6 +897,44 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule IdempotentScheduledContextWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :scheduled_capture do
+        cron "@hourly", timezone: "Etc/UTC", idempotency: :return_existing_run
+      end
+
+      step :capture_schedule, ScheduledContextWorkflow.CaptureSchedule
+      transition :capture_schedule, on: :ok, to: :complete
+    end
+  end
+
+  defmodule SkipDuplicateScheduleClobberWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :scheduled_capture do
+        cron "@hourly", timezone: "Etc/UTC", idempotency: :skip_duplicate
+      end
+
+      step :clobber_schedule, SkipDuplicateScheduleClobberWorkflow.ClobberSchedule
+      transition :clobber_schedule, on: :ok, to: :complete
+    end
+  end
+
+  defmodule SkipDuplicateScheduleClobberWorkflow.ClobberSchedule do
+    use Jido.Action,
+      name: "clobber_schedule",
+      description: "Returns an accidental reserved schedule output",
+      schema: []
+
+    @impl Jido.Action
+    def run(_params, _context) do
+      {:ok, %{schedule: %{idempotency: :return_existing_run}, digest_delivery: %{ok: true}}}
+    end
+  end
+
   defmodule AnotherScheduledContextWorkflow do
     use SquidMesh.Workflow
 
@@ -1268,16 +1306,475 @@ defmodule SquidMeshTest do
                SquidMesh.replay_run(Ecto.UUID.generate(), repo: Repo)
     end
 
-    test "cron starts return an explicit unsupported runtime error" do
-      assert {:error, {:unsupported_runtime, {:journal, :start_run_with_initial_context}}} =
+    test "cron starts run through the journal default and expose schedule context" do
+      storage = {Jido.Storage.ETS, table: :squid_mesh_journal_cron_context_test}
+      queue = "journal-cron-context-test"
+      started_at = ~U[2026-05-15 00:00:00Z]
+      visible_at = ~U[2026-05-15 00:00:10Z]
+
+      put_squid_mesh_config(
+        repo: Repo,
+        runtime: :journal,
+        read_model: :read_model,
+        journal_storage: storage,
+        queue: queue
+      )
+
+      payload =
+        Payload.cron(
+          ScheduledContextWorkflow,
+          :scheduled_capture,
+          signal_id: "journal_signal_123",
+          intended_window: %{
+            start_at: "2026-05-15T09:00:00Z",
+            end_at: "2026-05-15T10:00:00Z"
+          }
+        )
+
+      assert :ok = Runner.perform(payload, now: started_at)
+
+      assert {:ok, [%Summary{} = summary]} = SquidMesh.list_runs([])
+
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.inspect_run(summary.run_id, now: started_at)
+
+      assert started.trigger == "scheduled_capture"
+      assert started.context.schedule.signal_id == "journal_signal_123"
+      assert started.context.schedule.trigger_name == "scheduled_capture"
+      assert started.context.schedule.intended_window.start_at == "2026-05-15T09:00:00Z"
+
+      assert {:ok, %Snapshot{} = completed} =
+               SquidMesh.execute_next(
+                 owner_id: "journal-cron-test",
+                 now: visible_at
+               )
+
+      assert completed.terminal_status == :completed
+      assert completed.context.schedule_seen == completed.context.schedule
+    end
+
+    test "idempotent cron starts reuse one journal run for duplicate schedule delivery" do
+      storage = {Jido.Storage.ETS, table: :squid_mesh_journal_cron_idempotency_test}
+      queue = "journal-cron-idempotency-test"
+      started_at = ~U[2026-05-15 00:00:00Z]
+
+      payload =
+        Payload.cron(
+          IdempotentScheduledContextWorkflow,
+          :scheduled_capture,
+          intended_window: %{
+            start_at: "2026-05-15T09:00:00Z",
+            end_at: "2026-05-15T10:00:00Z"
+          }
+        )
+
+      assert :ok =
+               Runner.perform(payload,
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 now: started_at
+               )
+
+      assert :ok =
+               Runner.perform(payload,
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 now: DateTime.add(started_at, 1, :second)
+               )
+
+      assert {:ok, [%Summary{} = summary]} =
+               SquidMesh.list_runs([],
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue
+               )
+
+      assert summary.workflow == Atom.to_string(IdempotentScheduledContextWorkflow)
+    end
+
+    test "duplicate journal cron starts survive queue changes for the same schedule identity" do
+      storage = {Jido.Storage.ETS, table: :squid_mesh_journal_cron_duplicate_queue_change_test}
+      started_at = ~U[2026-05-15 00:00:00Z]
+
+      payload =
+        Payload.cron(
+          IdempotentScheduledContextWorkflow,
+          :scheduled_capture,
+          signal_id: "journal_queue_change_signal_123"
+        )
+
+      assert :ok =
+               Runner.perform(payload,
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: "journal-cron-original-queue",
+                 now: started_at
+               )
+
+      assert {:ok, [%Summary{} = summary]} =
+               SquidMesh.list_runs([],
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: "journal-cron-original-queue"
+               )
+
+      assert {:ok, {:duplicate_schedule_start, duplicate_run_id}} =
+               Runner.start_cron_trigger(payload["workflow"], payload["trigger"], payload,
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: "journal-cron-new-queue",
+                 now: DateTime.add(started_at, 1, :second)
+               )
+
+      assert duplicate_run_id == summary.run_id
+    end
+
+    test "duplicate journal cron starts survive current workflow definition drift" do
+      storage =
+        {Jido.Storage.ETS, table: :squid_mesh_journal_cron_duplicate_definition_drift_test}
+
+      started_at = ~U[2026-05-15 00:00:00Z]
+      workflow = DynamicJournalCronDefinitionDrift
+
+      on_exit(fn -> unload_dynamic_workflow(workflow) end)
+
+      compile_dynamic_cron_workflow(workflow, :with_idempotent_schedule)
+
+      payload =
+        Payload.cron(workflow, :scheduled_capture,
+          signal_id: "journal_definition_drift_signal_123"
+        )
+
+      opts = [
+        runtime: :journal,
+        journal_storage: storage,
+        queue: "journal-cron-definition-drift-test"
+      ]
+
+      assert :ok = Runner.perform(payload, Keyword.put(opts, :now, started_at))
+      assert {:ok, [%Summary{} = summary]} = SquidMesh.list_runs([], opts)
+
+      compile_dynamic_cron_workflow(workflow, :without_scheduled_trigger)
+
+      assert {:ok, {:duplicate_schedule_start, duplicate_run_id}} =
+               Runner.start_cron_trigger(
+                 payload["workflow"],
+                 payload["trigger"],
+                 payload,
+                 Keyword.put(opts, :now, DateTime.add(started_at, 1, :second))
+               )
+
+      assert duplicate_run_id == summary.run_id
+    end
+
+    test "duplicate journal cron starts derive identity after workflow definition drift" do
+      storage = {Jido.Storage.ETS, table: :squid_mesh_journal_cron_duplicate_derived_drift_test}
+      started_at = ~U[2026-05-15 00:00:00Z]
+      workflow = DynamicJournalCronDerivedDrift
+
+      on_exit(fn -> unload_dynamic_workflow(workflow) end)
+
+      compile_dynamic_cron_workflow(workflow, :with_idempotent_schedule)
+
+      payload =
+        Payload.cron(workflow, :scheduled_capture,
+          intended_window: %{
+            start_at: "2026-05-15T09:00:00Z",
+            end_at: "2026-05-15T10:00:00Z"
+          }
+        )
+
+      opts = [
+        runtime: :journal,
+        journal_storage: storage,
+        queue: "journal-cron-derived-drift-test"
+      ]
+
+      assert :ok = Runner.perform(payload, Keyword.put(opts, :now, started_at))
+      assert {:ok, [%Summary{} = summary]} = SquidMesh.list_runs([], opts)
+
+      compile_dynamic_cron_workflow(workflow, :without_scheduled_trigger)
+
+      assert {:ok, {:duplicate_schedule_start, duplicate_run_id}} =
+               Runner.start_cron_trigger(
+                 payload["workflow"],
+                 payload["trigger"],
+                 payload,
+                 Keyword.put(opts, :now, DateTime.add(started_at, 1, :second))
+               )
+
+      assert duplicate_run_id == summary.run_id
+    end
+
+    test "journal cron duplicate classification ignores step output schedule keys" do
+      storage = {Jido.Storage.ETS, table: :squid_mesh_journal_cron_schedule_clobber_test}
+      queue = "journal-cron-schedule-clobber-test"
+      started_at = ~U[2026-05-15 00:00:00Z]
+      visible_at = ~U[2026-05-15 00:00:10Z]
+
+      payload =
+        Payload.cron(
+          SkipDuplicateScheduleClobberWorkflow,
+          :scheduled_capture,
+          signal_id: "journal_schedule_clobber_signal_123"
+        )
+
+      opts = [
+        runtime: :journal,
+        journal_storage: storage,
+        queue: queue
+      ]
+
+      assert :ok = Runner.perform(payload, Keyword.put(opts, :now, started_at))
+
+      assert {:ok, %Snapshot{} = completed} =
+               execute_journal_next(
+                 opts
+                 |> Keyword.put(:owner_id, "journal-cron-schedule-clobber")
+                 |> Keyword.put(:now, visible_at)
+                 |> Keyword.put(:finished_at, visible_at)
+               )
+
+      assert completed.context.schedule.idempotency == :skip_duplicate
+      assert completed.context.schedule.idempotency_key == "journal_schedule_clobber_signal_123"
+      assert completed.context.digest_delivery.ok == true
+
+      assert {:ok, {:skipped_schedule_start, skipped_run_id}} =
+               Runner.start_cron_trigger(
+                 payload["workflow"],
+                 payload["trigger"],
+                 payload,
+                 Keyword.put(opts, :now, DateTime.add(started_at, 1, :second))
+               )
+
+      assert skipped_run_id == completed.run_id
+    end
+
+    test "replay_run/2 preserves journal cron schedule context" do
+      storage = {Jido.Storage.ETS, table: :squid_mesh_journal_cron_replay_context_test}
+      queue = "journal-cron-replay-context-test"
+      started_at = ~U[2026-05-15 00:00:00Z]
+      visible_at = ~U[2026-05-15 00:00:10Z]
+
+      payload =
+        Payload.cron(
+          ScheduledContextWorkflow,
+          :scheduled_capture,
+          signal_id: "journal_replay_signal_123",
+          intended_window: %{
+            start_at: "2026-05-15T09:00:00Z",
+            end_at: "2026-05-15T10:00:00Z"
+          }
+        )
+
+      assert :ok =
+               Runner.perform(payload,
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 now: started_at
+               )
+
+      assert {:ok, [%Summary{} = summary]} =
+               SquidMesh.list_runs([],
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue
+               )
+
+      assert {:ok, %Snapshot{} = completed} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 owner_id: "journal-cron-replay-source",
+                 now: visible_at,
+                 finished_at: visible_at
+               )
+
+      assert completed.context.schedule.signal_id == "journal_replay_signal_123"
+      assert completed.context.schedule_seen == completed.context.schedule
+
+      assert {:ok, %Snapshot{} = replayed} =
+               SquidMesh.replay_run(summary.run_id,
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 now: DateTime.add(started_at, 1, :second)
+               )
+
+      assert replayed.context.schedule == completed.context.schedule
+
+      assert {:ok, %Snapshot{} = completed_replay} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 owner_id: "journal-cron-replay-target",
+                 now: DateTime.add(visible_at, 1, :second),
+                 finished_at: DateTime.add(visible_at, 1, :second)
+               )
+
+      assert completed_replay.context.schedule_seen == completed.context.schedule
+    end
+
+    test "replay_run/2 removes schedule idempotency identity from journal cron context" do
+      storage = {Jido.Storage.ETS, table: :squid_mesh_journal_cron_replay_idempotency_test}
+      queue = "journal-cron-replay-idempotency-test"
+      started_at = ~U[2026-05-15 00:00:00Z]
+
+      payload =
+        Payload.cron(
+          IdempotentScheduledContextWorkflow,
+          :scheduled_capture,
+          signal_id: "journal_replay_idempotency_signal_123",
+          intended_window: %{
+            start_at: "2026-05-15T09:00:00Z",
+            end_at: "2026-05-15T10:00:00Z"
+          }
+        )
+
+      assert :ok =
+               Runner.perform(payload,
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 now: started_at
+               )
+
+      assert {:ok, [%Summary{} = summary]} =
+               SquidMesh.list_runs([],
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue
+               )
+
+      assert {:ok, %Snapshot{} = source} =
+               SquidMesh.inspect_run(summary.run_id,
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue
+               )
+
+      assert source.context.schedule.idempotency == :return_existing_run
+      assert source.context.schedule.idempotency_key == "journal_replay_idempotency_signal_123"
+
+      assert {:ok, %Snapshot{} = replayed} =
+               SquidMesh.replay_run(summary.run_id,
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 now: DateTime.add(started_at, 1, :second)
+               )
+
+      assert replayed.context.schedule.signal_id == "journal_replay_idempotency_signal_123"
+      refute Map.has_key?(replayed.context.schedule, :idempotency)
+      refute Map.has_key?(replayed.context.schedule, :idempotency_key)
+    end
+
+    test "journal cron starts reject malformed schedule idempotency keys" do
+      assert {:error, {:invalid_option, {:schedule_idempotency_key, :invalid}}} =
                SquidMesh.start_run_with_initial_context(
-                 ScheduledCaptureWorkflow,
+                 IdempotentScheduledContextWorkflow,
                  :scheduled_capture,
                  %{},
-                 %{schedule: %{idempotency_key: "journal-default-unsupported-cron"}},
-                 repo: Repo
+                 %{schedule: %{idempotency_key: 123}},
+                 runtime: :journal,
+                 journal_storage:
+                   {Jido.Storage.ETS, table: :squid_mesh_journal_cron_bad_key_test},
+                 queue: "journal-cron-bad-key-test"
                )
     end
+
+    test "journal cron starts return structured option errors" do
+      assert {:error, {:invalid_option, {:queue, :invalid}}} =
+               SquidMesh.start_run_with_initial_context(
+                 ScheduledContextWorkflow,
+                 :scheduled_capture,
+                 %{},
+                 %{schedule: %{idempotency_key: "valid-key"}},
+                 runtime: :journal,
+                 journal_storage:
+                   {Jido.Storage.ETS, table: :squid_mesh_journal_cron_bad_queue_test},
+                 queue: ""
+               )
+    end
+
+    test "malformed journal cron scheduler metadata does not create a run" do
+      storage = {Jido.Storage.ETS, table: :squid_mesh_journal_cron_invalid_metadata_test}
+      queue = "journal-cron-invalid-metadata-test"
+
+      payload =
+        ScheduledContextWorkflow
+        |> Payload.cron(:scheduled_capture)
+        |> Map.put("signal_id", 123)
+
+      assert {:error, {:invalid_schedule_signal_id, 123}} =
+               Runner.perform(payload,
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue
+               )
+
+      assert {:ok, []} =
+               SquidMesh.list_runs([],
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue
+               )
+    end
+  end
+
+  defp compile_dynamic_cron_workflow(module, variant) do
+    compiler_options = Code.compiler_options()
+    Code.compiler_options(ignore_module_conflict: true)
+
+    try do
+      Code.compile_string(dynamic_cron_workflow_source(module, variant))
+    after
+      Code.compiler_options(compiler_options)
+    end
+  end
+
+  defp dynamic_cron_workflow_source(module, :with_idempotent_schedule) do
+    """
+    defmodule #{inspect(module)} do
+      use SquidMesh.Workflow
+
+      workflow do
+        trigger :scheduled_capture do
+          cron "@hourly", timezone: "Etc/UTC", idempotency: :return_existing_run
+        end
+
+        step :capture_schedule, SquidMeshTest.ScheduledContextWorkflow.CaptureSchedule
+        transition :capture_schedule, on: :ok, to: :complete
+      end
+    end
+    """
+  end
+
+  defp dynamic_cron_workflow_source(module, :without_scheduled_trigger) do
+    """
+    defmodule #{inspect(module)} do
+      use SquidMesh.Workflow
+
+      workflow do
+        trigger :manual_capture do
+          manual()
+        end
+
+        step :capture_schedule, SquidMeshTest.ScheduledContextWorkflow.CaptureSchedule
+        transition :capture_schedule, on: :ok, to: :complete
+      end
+    end
+    """
+  end
+
+  defp unload_dynamic_workflow(module) do
+    :code.purge(module)
+    :code.delete(module)
   end
 
   describe "start_run/3" do

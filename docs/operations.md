@@ -228,7 +228,8 @@ Current boundary:
 
 - activation is static at boot
 - the host scheduler owns recurring scheduling
-- Squid Mesh turns the cron tick into a normal `start_run/3` call
+- Squid Mesh turns the delivered cron payload into a normal journal-backed run
+  start
 
 Recommended practice:
 

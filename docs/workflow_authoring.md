@@ -188,8 +188,8 @@ Current boundary:
 
 - trigger metadata is validated and stored in the workflow definition
 - manual triggers are runnable through the public API
-- cron trigger execution is still table-runtime-only while the journal runtime
-  start boundary is completed
+- cron activations are delivered by the host scheduler and can start journal
+  runs through `SquidMesh.Runtime.Runner.perform/2`
 
 Cron workflow example:
 
@@ -242,6 +242,8 @@ Current cron boundary:
 - Squid Mesh declares cron intent in the workflow DSL
 - the host app performs the actual recurring scheduling
 - cron workflow registration is static at boot today
+- delivered cron payloads start runs through the configured runtime, which is
+  the Jido journal runtime by default
 
 Scheduled workflow steps receive scheduler metadata through the durable run
 context, not through the workflow payload contract. If the host scheduler passes
@@ -256,8 +258,9 @@ also accepted for hosts that want to describe the duplicate decision as a skip.
 Both strategies require a stable scheduler identity: pass `signal_id`, or pass
 an `intended_window` with `start_at` and `end_at` so Squid Mesh can derive one.
 When idempotency is enabled, the persisted schedule context includes
-`idempotency` and `idempotency_key`, and the database enforces uniqueness for
-that workflow, trigger, and key.
+`idempotency` and `idempotency_key`. Squid Mesh uses that stable schedule
+identity to fence duplicate starts for the same workflow and trigger across the
+configured durable storage backend.
 
 ## Payload
 

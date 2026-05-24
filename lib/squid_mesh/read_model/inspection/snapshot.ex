@@ -52,6 +52,7 @@ defmodule SquidMesh.ReadModel.Inspection.Snapshot do
           workflow: String.t() | nil,
           trigger: String.t() | nil,
           input: map() | nil,
+          context: map(),
           replayed_from_run_id: String.t() | nil,
           queue: String.t(),
           status: atom(),
@@ -107,6 +108,7 @@ defmodule SquidMesh.ReadModel.Inspection.Snapshot do
     next_visible_at: nil,
     expired_claims: [],
     attempts: [],
-    anomalies: []
+    anomalies: [],
+    context: %{}
   ]
 end

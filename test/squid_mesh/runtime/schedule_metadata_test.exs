@@ -37,6 +37,19 @@ defmodule SquidMesh.Runtime.ScheduleMetadataTest do
              ScheduleMetadata.cron_context(ScheduledDigestWorkflow, trigger, %{})
   end
 
+  test "rejects non-string intended window bounds" do
+    trigger = trigger_definition()
+
+    assert {:error, {:invalid_schedule_intended_window, %{start_at: 123}}} =
+             ScheduleMetadata.cron_context(ScheduledDigestWorkflow, trigger, %{
+               "signal_id" => "digest-2026-05-16T09",
+               "intended_window" => %{
+                 "start_at" => 123,
+                 "end_at" => "2026-05-16T10:00:00Z"
+               }
+             })
+  end
+
   defp trigger_definition do
     ScheduledDigestWorkflow.workflow_definition()
     |> SquidMesh.Workflow.Definition.trigger(:scheduled_digest)

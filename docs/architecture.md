@@ -158,9 +158,10 @@ Postgres owns:
 7. If more work is required, successor runnable intent is appended before later
    workers can claim it.
 
-The explicit `runtime: :runtime_tables` path still uses the configured host
-executor and `SquidMesh.Runtime.Runner.perform/1` while that path remains
-available.
+Delivered cron payloads use `SquidMesh.Runtime.Runner.perform/2` to start runs
+through the configured runtime, which is journal-backed by default. Step and
+compensation payloads delivered through `Runner` remain part of the explicit
+`runtime: :runtime_tables` executor path while that path remains available.
 
 ## Recovery Boundary
 

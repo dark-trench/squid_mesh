@@ -22,6 +22,7 @@ defmodule SquidMesh do
   alias SquidMesh.Runtime.Journal.Replay
   alias SquidMesh.Runtime.Journal.Starter
   alias SquidMesh.Runtime.Reviewer
+  alias SquidMesh.Runtime.ScheduleIdentity
   alias SquidMesh.Runtime.Unblocker
 
   @read_models [:runtime_tables, :read_model]
@@ -56,9 +57,8 @@ defmodule SquidMesh do
            | {:queue, term()}
            | {:now, term()}
            | {:run_id, term()}
+           | {:schedule_idempotency_key, term()}
            | {:runtime_tables, [atom()]}}
-
-  @type unsupported_runtime_error :: {:unsupported_runtime, {:journal, atom()}}
 
   @doc """
   Loads Squid Mesh configuration from the application environment with optional
@@ -155,12 +155,13 @@ defmodule SquidMesh do
 
   @doc false
   @spec start_run_with_initial_context(module(), atom(), map(), map(), keyword()) ::
-          {:ok, Run.t()}
-          | {:ok, {:duplicate_schedule_start, Run.t()}}
+          {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:ok,
+             {:duplicate_schedule_start, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}}
           | {:error, Config.config_error()}
-          | {:error, {:invalid_option, atom()}}
+          | {:error, start_option_error()}
+          | {:error, Starter.start_error()}
           | {:error, Runs.Store.create_error()}
-          | {:error, unsupported_runtime_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run_with_initial_context(workflow, trigger_name, payload, initial_context, overrides)
       when is_atom(trigger_name) and is_map(payload) and is_map(initial_context) and
@@ -304,7 +305,7 @@ defmodule SquidMesh do
   """
   @spec list_runs(Runs.Store.list_filters(), keyword()) ::
           {:ok, [Run.t() | Listing.Summary.t()]}
-          | {:error, Config.config_error() | unsupported_runtime_error() | Listing.list_error()}
+          | {:error, Config.config_error() | Listing.list_error()}
   def list_runs(filters \\ [], overrides \\ []) do
     with {:ok, runtime} <- runtime(overrides) do
       list_runs_with_runtime(runtime, filters, overrides)
@@ -321,8 +322,7 @@ defmodule SquidMesh do
              | :invalid_run_id
              | Config.config_error()
              | Runs.Store.transition_error()
-             | Cancellation.cancel_error()
-             | unsupported_runtime_error()}
+             | Cancellation.cancel_error()}
   def cancel_run(run_id, overrides \\ []) do
     with {:ok, runtime} <- runtime(overrides) do
       cancel_run_with_runtime(runtime, run_id, overrides)
@@ -464,8 +464,7 @@ defmodule SquidMesh do
              | :invalid_run_id
              | Config.config_error()
              | Runs.Store.replay_error()
-             | Replay.replay_error()
-             | unsupported_runtime_error()}
+             | Replay.replay_error()}
           | {:error, {:dispatch_failed, term()}}
   def replay_run(run_id, overrides \\ []) do
     {replay_opts, config_overrides} = Keyword.split(overrides, [:allow_irreversible])
@@ -490,9 +489,6 @@ defmodule SquidMesh do
         {:error, reason}
 
       {:error, {:invalid_replay_source, _details} = reason} ->
-        {:error, reason}
-
-      {:error, {:unsupported_runtime, _details} = reason} ->
         {:error, reason}
 
       {:error, %_struct{} = reason} ->
@@ -590,13 +586,21 @@ defmodule SquidMesh do
 
   defp start_initial_context_run_with_runtime(
          :journal,
-         _workflow,
-         _trigger_name,
-         _payload,
-         _initial_context,
-         _overrides
+         workflow,
+         trigger_name,
+         payload,
+         initial_context,
+         overrides
        ) do
-    unsupported_journal_runtime(:start_run_with_initial_context)
+    with {:ok, opts} <-
+           journal_initial_context_start_options(
+             workflow,
+             trigger_name,
+             initial_context,
+             overrides
+           ) do
+      Starter.start_run(workflow, trigger_name, payload, opts)
+    end
   end
 
   defp list_runs_with_runtime(:runtime_tables, filters, overrides) do
@@ -672,6 +676,67 @@ defmodule SquidMesh do
   end
 
   defp normalize_initial_context_run({:error, reason}, _config), do: normalize_start_error(reason)
+
+  defp journal_initial_context_start_options(workflow, trigger_name, initial_context, overrides) do
+    opts =
+      overrides
+      |> journal_start_options()
+      |> Keyword.put(:initial_context, initial_context)
+
+    with {:ok, idempotency_key} <- schedule_idempotency_key(initial_context) do
+      case idempotency_key do
+        nil ->
+          {:ok, opts}
+
+        idempotency_key ->
+          opts =
+            opts
+            |> Keyword.put(:run_id, schedule_run_id(workflow, trigger_name, idempotency_key))
+            |> Keyword.put(:duplicate_schedule_start, true)
+
+          {:ok, opts}
+      end
+    end
+  end
+
+  defp schedule_idempotency_key(context) when is_map(context) do
+    context
+    |> schedule_context()
+    |> schedule_value(:idempotency_key)
+    |> validate_schedule_idempotency_key()
+  end
+
+  defp validate_schedule_idempotency_key(nil), do: {:ok, nil}
+
+  defp validate_schedule_idempotency_key(key) when is_binary(key), do: {:ok, key}
+
+  defp validate_schedule_idempotency_key(_key) do
+    {:error, {:invalid_option, {:schedule_idempotency_key, :invalid}}}
+  end
+
+  defp schedule_context(context) do
+    case Map.fetch(context, :schedule) do
+      {:ok, schedule} -> schedule
+      :error -> Map.get(context, "schedule", %{})
+    end
+  end
+
+  defp schedule_value(schedule, key) when is_map(schedule) do
+    case Map.fetch(schedule, key) do
+      {:ok, value} -> value
+      :error -> Map.get(schedule, Atom.to_string(key))
+    end
+  end
+
+  defp schedule_value(_schedule, _key), do: nil
+
+  defp schedule_run_id(workflow, trigger_name, idempotency_key) do
+    workflow_name = SquidMesh.Workflow.Definition.serialize_workflow(workflow)
+    trigger = SquidMesh.Workflow.Definition.serialize_trigger(trigger_name)
+
+    {:ok, run_id} = ScheduleIdentity.run_id(workflow_name, trigger, idempotency_key)
+    run_id
+  end
 
   defp reject_public_start_options(overrides) do
     cond do
@@ -761,10 +826,6 @@ defmodule SquidMesh do
   end
 
   defp runtime(_overrides), do: {:error, {:invalid_option, {:opts, :invalid}}}
-
-  defp unsupported_journal_runtime(operation) when is_atom(operation) do
-    {:error, {:unsupported_runtime, {:journal, operation}}}
-  end
 
   defp validate_keyword_options(overrides) do
     if Keyword.keyword?(overrides) do

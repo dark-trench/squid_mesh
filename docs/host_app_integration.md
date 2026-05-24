@@ -102,18 +102,15 @@ boundary remains adapter-shaped, so other Jido-compatible stores can be used
 later, but production stores must still provide ordered per-thread appends,
 durable checkpoint reads, and conflict detection for `:expected_rev`.
 
-The current journal default covers start, cancellation, replay, global and
-workflow-filtered `list_runs/2`, inspect, explain, graph inspection, manual
-resume/approval controls, and `SquidMesh.execute_next/1`. Journal listing is
-backed by a durable run catalog fact rather than a storage-adapter scan, and
+The current journal default covers start, cron start, cancellation, replay,
+global and workflow-filtered `list_runs/2`, inspect, explain, graph inspection,
+manual resume/approval controls, and `SquidMesh.execute_next/1`. Journal listing
+is backed by a durable run catalog fact rather than a storage-adapter scan, and
 returns redacted summaries; use `inspect_run/2` for one run when a caller needs
-inputs, outputs, attempts, or claim metadata. Dashboards can call `list_runs([])`
-for the index view, then pass the selected summary's `run_id` and `queue` to
-`inspect_run(run_id, queue: queue, include_history: true)` or
-`inspect_run_graph(run_id, queue: queue)` for detail views. Cron starts
-delivered through `SquidMesh.Runtime.Runner` are still table-only and return
-explicit `{:unsupported_runtime, {:journal, operation}}` errors under the
-journal default.
+inputs, outputs, attempts, or claim metadata. Dashboards can call
+`list_runs([])` for the index view, then pass the selected summary's `run_id`
+and `queue` to `inspect_run(run_id, queue: queue, include_history: true)` or
+`inspect_run_graph(run_id, queue: queue)` for detail views.
 
 ## Executor Contract
 
@@ -233,9 +230,15 @@ not insert a second run. Idempotent cron starts must include `signal_id` or a
 complete `intended_window`; otherwise Squid Mesh returns
 `{:error, {:missing_schedule_idempotency_key, trigger_name}}`.
 
+With the journal default, cron payload delivery through
+`SquidMesh.Runtime.Runner.perform/2` starts a journal run and persists the
+schedule context on the `:run_started` journal fact. Step and compensation
+payloads delivered through `Runner` remain part of the explicit legacy
+table-runtime executor path while that path exists.
+
 That is the whole execution contract for the current runtime path. Workflow
 modules, context modules, and controllers should not need to know which job
-backend the executor uses.
+backend the scheduler uses.
 
 ## Optional Lease Executor Contract
 
@@ -538,7 +541,8 @@ The example app wires:
 
 - its own `MinimalHostApp.Repo`
 - journal runtime smoke paths that use inferred Ecto storage and
-  `SquidMesh.execute_next/1`
+  `SquidMesh.execute_next/1`, including cron activation through the journal
+  runtime
 - explicit table-runtime smoke paths that use `MinimalHostApp.SquidMeshExecutor`
   and one generic worker calling `SquidMesh.Runtime.Runner.perform/1`
 - Squid Mesh through `MinimalHostApp.WorkflowRuns`
