@@ -116,7 +116,7 @@ manual gates, cron, and Bedrock-backed leases when those pieces are needed.
 
 ## Execution Boundary
 
-The current runtime is Jido-native. Squid Mesh records workflow facts in Jido
+The journal-backed runtime is Jido-native. Squid Mesh records workflow facts in Jido
 journals while host-owned workers provide process supervision and capacity by
 calling `SquidMesh.execute_next/1`. External schedulers may enqueue cron
 activation payloads, but step delivery now runs through the journal-backed

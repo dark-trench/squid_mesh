@@ -55,10 +55,10 @@ boundary options when a host needs a non-default journal setup.
 
 ## Status Terms
 
-- Supported: available in the current runtime and covered by repository docs
+- Supported: available in the journal-backed runtime and covered by repository docs
   and tests.
 - In progress: implemented as a protocol or foundation, but not wired through
-  the full runtime path yet.
+  the full journal-backed runtime path yet.
 - Planned: accepted roadmap direction linked to an issue, but not a runtime
   guarantee today.
 - Out of scope: intentionally not part of Squid Mesh's product surface.
@@ -185,7 +185,7 @@ the vocabulary for runnable intent, claim fencing, leases, heartbeats, retries,
 and terminal-run behavior. The workflow and dispatch agents can rebuild that
 state from durable journals. Runtime-safe dynamic graph expansion remains a
 future feature; it is useful after the Jido-native core is stable, but it is not
-required for the current runtime.
+required for the journal-backed runtime.
 
 Track the linked issues for remaining feature work:
 

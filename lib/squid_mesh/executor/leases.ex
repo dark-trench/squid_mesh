@@ -7,9 +7,9 @@ defmodule SquidMesh.Executor.Leases do
   extend active claims, complete delivered work, and return failed work to the
   backend's retry or dead-letter policy.
 
-  The current runtime does not require a lease executor. It exists as the public
-  contract for adapters that want to expose leasing semantics ahead of the
-  Jido-native dispatch path.
+  The journal-backed runtime does not require a lease adapter. It exists as the
+  public contract for adapters that want to expose leasing semantics through
+  a durable delivery backend.
   """
 
   alias SquidMesh.Config

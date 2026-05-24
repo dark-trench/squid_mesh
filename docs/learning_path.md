@@ -211,7 +211,7 @@ end
 
 The scheduler should deliver a `SquidMesh.Executor.Payload.cron/3` payload to
 `SquidMesh.Runtime.Runner.perform/2`. Step and compensation payloads are not
-part of the current runtime path.
+part of the journal-backed runtime contract.
 
 For idempotent cron starts, pass a stable `signal_id` or a complete
 `intended_window` so duplicate scheduler delivery returns or skips the existing
