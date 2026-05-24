@@ -150,7 +150,7 @@ manual-control, and terminal-state facts.
 
 ## Cron Payload Contract
 
-Cron starts are the only remaining `SquidMesh.Executor` payload boundary. Hosts
+Cron starts are the `SquidMesh.Executor` payload boundary. Hosts
 that already have a scheduler can enqueue `SquidMesh.Executor.Payload.cron/3`
 and deliver the stored payload to `SquidMesh.Runtime.Runner.perform/2`:
 
@@ -243,7 +243,7 @@ schedule context on the `:run_started` journal fact. Only cron payloads are
 accepted because step execution is claimed through
 `SquidMesh.execute_next/1`.
 
-That is the whole execution contract for the current runtime path. Workflow
+That is the whole execution contract for the journal-backed runtime path. Workflow
 modules, context modules, and controllers should not need to know which job
 backend the scheduler uses.
 
@@ -254,7 +254,7 @@ Backends that expose worker leases can also implement
 visible work, heartbeats active claims, completes delivered work, and returns
 failed work to the backend's retry or dead-letter policy.
 
-The current runtime does not require a lease adapter. The behavior exists so
+The journal-backed runtime does not require a lease adapter. The behavior exists so
 Bedrock or another durable backend can expose lease semantics through a stable
 Squid Mesh boundary without changing workflow modules.
 

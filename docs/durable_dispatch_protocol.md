@@ -1,6 +1,6 @@
 # Durable Dispatch Protocol
 
-Squid Mesh's new runtime path treats dispatch state as an append-only journal.
+Squid Mesh's journal-backed runtime treats dispatch state as an append-only journal.
 The protocol and pure projection are storage-independent, and
 `SquidMesh.Runtime.Journal` persists the same entries through
 `SquidMesh.Runtime.Journal.Storage`, which currently delegates to `Jido.Storage`

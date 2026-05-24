@@ -30,13 +30,13 @@ Before removing the warning, the project should have:
 - a published compatibility matrix
 - a production operations guide
 - restart and deploy resilience verification
-- soak/load validation on the current runtime
+- soak/load validation on the journal-backed runtime
 - no known unresolved correctness bug in the core runtime
 - at least one round of real host-app dogfooding under normal deploy workflows
 
 ## Example Verification Entry Points
 
-The example host app provides the current repeatable checks:
+The example host app provides the repeatable checks:
 
 ```sh
 cd examples/minimal_host_app
