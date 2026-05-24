@@ -7,25 +7,46 @@ defmodule SquidMesh.Config do
   workflow definitions and public API usage.
   """
 
+  alias SquidMesh.Runtime.Journal.Options
+
   @type stale_step_timeout :: non_neg_integer() | :disabled
+  @type runtime :: :runtime_tables | :journal
+  @type read_model :: :runtime_tables | :read_model
   @type raw_config :: [
           repo: module(),
           executor: module(),
-          stale_step_timeout: stale_step_timeout()
+          stale_step_timeout: stale_step_timeout(),
+          runtime: runtime(),
+          read_model: read_model(),
+          journal_storage: term(),
+          queue: atom() | String.t()
         ]
   @type t :: %__MODULE__{
           repo: module(),
           executor: module(),
-          stale_step_timeout: stale_step_timeout()
+          stale_step_timeout: stale_step_timeout(),
+          runtime: runtime(),
+          read_model: read_model(),
+          journal_storage: SquidMesh.Runtime.Journal.Storage.t() | nil,
+          queue: String.t()
         }
 
   defstruct [
     :repo,
     :executor,
-    stale_step_timeout: :disabled
+    :journal_storage,
+    stale_step_timeout: :disabled,
+    runtime: :runtime_tables,
+    read_model: :runtime_tables,
+    queue: "default"
   ]
 
   @default_stale_step_timeout :disabled
+  @default_runtime :runtime_tables
+  @default_read_model :runtime_tables
+  @default_queue "default"
+  @runtimes [:runtime_tables, :journal]
+  @read_models [:runtime_tables, :read_model]
 
   @type config_error :: {:missing_config, [atom()]} | {:invalid_config, keyword()}
 
@@ -48,12 +69,21 @@ defmodule SquidMesh.Config do
            validate_stale_step_timeout(
              Keyword.get(config, :stale_step_timeout, @default_stale_step_timeout)
            ),
+         {:ok, runtime} <- validate_runtime(Keyword.get(config, :runtime, @default_runtime)),
+         {:ok, read_model} <-
+           validate_read_model(Keyword.get(config, :read_model, @default_read_model)),
+         {:ok, queue} <- validate_queue(Keyword.get(config, :queue, @default_queue)),
+         {:ok, journal_storage} <- validate_journal_storage(config, runtime, read_model),
          {:ok, executor} <- validate_executor(Keyword.fetch!(config, :executor)) do
       {:ok,
        %__MODULE__{
          repo: Keyword.fetch!(config, :repo),
          executor: executor,
-         stale_step_timeout: stale_step_timeout
+         stale_step_timeout: stale_step_timeout,
+         runtime: runtime,
+         read_model: read_model,
+         journal_storage: journal_storage,
+         queue: queue
        }}
     end
   end
@@ -101,6 +131,59 @@ defmodule SquidMesh.Config do
 
       invalid ->
         {:error, {:invalid_config, [stale_step_timeout: invalid]}}
+    end
+  end
+
+  defp validate_runtime(runtime) when runtime in @runtimes, do: {:ok, runtime}
+
+  defp validate_runtime(runtime) do
+    {:error, {:invalid_config, [runtime: runtime]}}
+  end
+
+  defp validate_read_model(read_model) when read_model in @read_models, do: {:ok, read_model}
+
+  defp validate_read_model(read_model) do
+    {:error, {:invalid_config, [read_model: read_model]}}
+  end
+
+  defp validate_queue(queue) do
+    case Options.queue(queue) do
+      {:ok, queue} ->
+        {:ok, queue}
+
+      {:error, {:invalid_option, {:queue, :invalid}}} ->
+        {:error, {:invalid_config, [queue: :invalid]}}
+    end
+  end
+
+  defp validate_journal_storage(config, runtime, read_model) do
+    if journal_storage_required?(runtime, read_model) do
+      validate_required_journal_storage(config)
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp journal_storage_required?(runtime, read_model) do
+    runtime == :journal or read_model == :read_model
+  end
+
+  defp validate_required_journal_storage(config) do
+    case Keyword.fetch(config, :journal_storage) do
+      {:ok, nil} ->
+        {:error, {:missing_config, [:journal_storage]}}
+
+      {:ok, storage} ->
+        case Options.storage(storage) do
+          {:ok, storage} ->
+            {:ok, storage}
+
+          {:error, {:invalid_option, {:journal_storage, reason}}} ->
+            {:error, {:invalid_config, [journal_storage: reason]}}
+        end
+
+      :error ->
+        {:error, {:missing_config, [:journal_storage]}}
     end
   end
 

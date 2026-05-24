@@ -395,24 +395,23 @@ now rebuild workflow-scoped run lookup state from durable index entries and keep
 malformed or conflicting index facts visible as anomalies. The first projected
 explanation layer derives deterministic reason-specific details and next
 actions from the inspection snapshot. The public `SquidMesh.inspect_run/2` and
-`SquidMesh.explain_run/2` APIs now expose this read model behind the explicit
-`read_model: :read_model` option with `journal_storage:`, while the
-stable runtime-table read model remains the default. Callers that opt into
-projection reads pass both options together, for example
-`SquidMesh.inspect_run(run_id, read_model: :read_model, journal_storage: storage)`.
+`SquidMesh.explain_run/2` APIs expose this read model through host configuration
+or explicit `read_model: :read_model` and `journal_storage:` overrides, while
+the stable runtime-table read model remains available. Host apps moving to the
+Jido-native path configure `runtime: :journal`, `read_model: :read_model`,
+`journal_storage:`, and `queue:` once at the Squid Mesh boundary. Public start,
+execution, inspection, explanation, and manual-control APIs then pick up those
+defaults without repeating journal options at every call site.
 
-The first live write path is also available behind a temporary cutover gate:
-`SquidMesh.start_run(workflow, payload, runtime: :journal, journal_storage: storage)`.
-That path appends run and run-index facts to `Jido.Storage`, rebuilds the
-workflow and dispatch agents, schedules the initial dispatch attempts from the
-journal, and returns the projection-backed inspection snapshot. Journal
-execution currently supports normal action steps, immediate built-in `:log`
-steps, built-in `:wait` steps in transition and dependency workflows, and manual
-`:pause` or `:approval` boundaries. Manual boundaries persist intervention
-state: `unblock_run/3` resumes `:pause` steps, while `approve_run/3` and
-`reject_run/3` resolve `:approval` decisions when called with
-`runtime: :journal`. The current table-backed start path remains the default
-until the remaining runtime cutover lands.
+The journal start path appends run and run-index facts to `Jido.Storage`,
+rebuilds the workflow and dispatch agents, schedules the initial dispatch
+attempts from the journal, and returns the projection-backed inspection
+snapshot. Journal execution currently supports normal action steps, immediate
+built-in `:log` steps, built-in `:wait` steps in transition and dependency
+workflows, and manual `:pause` or `:approval` boundaries. Manual boundaries
+persist intervention state: `unblock_run/3` resumes `:pause` steps, while
+`approve_run/3` and `reject_run/3` resolve `:approval` decisions through the
+configured journal runtime.
 
 | Feature | Issue | Runtime dependency |
 | --- | --- | --- |

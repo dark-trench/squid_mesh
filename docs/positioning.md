@@ -49,9 +49,10 @@ The long-term runtime shape is:
 The current implementation is partway through that transition. Squid Mesh
 already uses Spark and Jido-compatible step execution, and it now has a durable
 dispatch protocol plus rebuildable workflow and dispatch agents for the
-Jido-native core. The default live runtime still uses the current Postgres
-tables and host-executor path, while the first journal-backed start path is
-available behind a temporary `runtime: :journal` cutover gate.
+Jido-native core. Host applications can configure the journal runtime,
+projection read model, storage adapter, and queue at the Squid Mesh boundary so
+public start, execution, inspection, explanation, and manual-control APIs use
+the Jido-native path without repeating runtime options at every call site.
 
 ## Status Terms
 
@@ -73,10 +74,10 @@ available behind a temporary `runtime: :journal` cutover gate.
 | Host executor boundary | Supported | Squid Mesh delegates queueing, delayed scheduling, redelivery, and cron activation to `SquidMesh.Executor`. |
 | Human approval workflows | Supported | Pause and approval flows are durable for transition-based workflows. |
 | Replay and cancellation | Supported | Replay respects irreversible and non-compensatable steps; cancellation converges through persisted run state. |
-| Inspection and explanation | Supported, evolving | Runtime-table inspection remains the default. Callers can opt into journal-backed inspection and explanation with `read_model: :read_model` and `journal_storage:`; [#163](https://github.com/dark-trench/squid_mesh/issues/163) delivered the durable projection foundation. |
-| Durable dispatch protocol | In progress | The pure protocol, projection, and `Jido.Storage` journal boundary define runnable intent, claims, leases, heartbeats, completion, failure, retries, terminal-run fencing, and checkpoint pointers. It is implemented as a foundation, but not yet the full live execution path. |
-| Jido.Storage-backed core | In progress | Protocol entries, projection checkpoints, and the temporary journal start cutover path can be persisted through `Jido.Storage`; the remaining execution and control cutover remains follow-up work after [#162](https://github.com/dark-trench/squid_mesh/issues/162). |
-| Jido-native runtime agents | In progress | Workflow and dispatch agents can rebuild from durable journals and checkpoints; [#164](https://github.com/dark-trench/squid_mesh/issues/164) covers the completed agent foundation. |
+| Inspection and explanation | Supported, evolving | Runtime-table inspection remains available. Host apps can configure journal-backed inspection and explanation with `read_model: :read_model` and `journal_storage:`; [#163](https://github.com/dark-trench/squid_mesh/issues/163) delivered the durable projection foundation. |
+| Durable dispatch protocol | Supported, evolving | The pure protocol, projection, and `Jido.Storage` journal boundary define runnable intent, claims, leases, heartbeats, completion, failure, retries, terminal-run fencing, and checkpoint pointers for the journal runtime. |
+| Jido.Storage-backed core | Supported, evolving | Start, execution, inspection, explanation, pause, and approval controls can run through configured `Jido.Storage` without writing legacy runtime rows for the covered journal path. |
+| Jido-native runtime agents | Supported, evolving | Workflow and dispatch agents rebuild from durable journals and checkpoints; [#164](https://github.com/dark-trench/squid_mesh/issues/164) covers the completed agent foundation. |
 | IntentLedger executor | Planned | IntentLedger is the preferred durable executor direction for leases, retries, queue delivery, and worker recovery while Squid Mesh keeps custom executor support. |
 | Scheduled-start metadata | Supported | Intended schedule windows are stored in durable run context for cron starts. Cron triggers can opt into duplicate-start protection with stable scheduler signal ids or complete intended windows. |
 | Conditional and deferred continuation | Planned | Durable planner facts and deferred wakeups are tracked in [#140](https://github.com/dark-trench/squid_mesh/issues/140). |
@@ -176,20 +177,17 @@ Choose another layer when:
 The roadmap separates what users can rely on today from the foundations that
 are being prepared for the next runtime generation.
 
-Use the current runtime when you need the supported workflow DSL, persisted run
-history, host-executor integration, retries, approvals, replay, cancellation,
-and inspection backed by the existing Postgres tables. Use
-`read_model: :read_model` with `journal_storage:` when you need the
-Jido-native journal-backed inspection or explanation read model. Use
-`runtime: :journal` with explicit `journal_storage:` when you need the
-temporary journal-backed cutover path for the covered start flow.
+Use the configured journal runtime when you need the supported workflow DSL,
+Jido-native persisted run and dispatch facts, journal dispatch claims, retries,
+approvals, pause/resume controls, and projection-backed inspection. The legacy
+runtime-table path remains available while the final switchover work lands.
 
 Treat the durable dispatch protocol as an architectural foundation. It defines
 the vocabulary for runnable intent, claim fencing, leases, heartbeats, retries,
 and terminal-run behavior. The workflow and dispatch agents can rebuild that
-state from durable journals. The default runtime has not fully switched to that
-path yet, but journal-backed starts now use those agents as rebuildable
-coordinators behind the temporary cutover gate.
+state from durable journals. Runtime-safe dynamic graph expansion remains a
+future feature; it is useful after the Jido-native core is stable, but it is not
+required for the core switchover.
 
 Track the linked issues for the larger runtime transition:
 

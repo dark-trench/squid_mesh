@@ -410,6 +410,38 @@ Manual-review durability notes:
 - the resolved `:ok` and `:error` targets plus output-mapping metadata are persisted with the paused step so restart or deploy boundaries do not recompute review semantics from the current workflow definition
 - host apps should apply the latest Squid Mesh migrations before using pause-resume in existing environments
 
+## Jido Runtime Configuration
+
+Host apps can configure the Jido-native journal runtime once and let public APIs
+pick up the runtime, read model, storage adapter, and queue defaults:
+
+```elixir
+config :squid_mesh,
+  repo: MyApp.Repo,
+  executor: MyApp.SquidMeshExecutor,
+  runtime: :journal,
+  read_model: :read_model,
+  journal_storage: {MyApp.JournalStorage, storage_opts},
+  queue: "default"
+```
+
+With those settings, workflow code can use the same public calls without
+threading journal options through every boundary:
+
+```elixir
+{:ok, snapshot} = SquidMesh.start_run(MyWorkflow, %{account_id: "acct_123"})
+{:ok, snapshot} = SquidMesh.inspect_run(snapshot.run_id)
+{:ok, snapshot} = SquidMesh.execute_next(owner_id: "worker-1")
+```
+
+The storage setting is intentionally adapter-shaped rather than database-shaped.
+Squid Mesh validates it through its own journal storage boundary and then
+delegates to `Jido.Storage`. Production adapters should provide ordered
+per-thread appends, optimistic conflict detection, and durable checkpoint reads;
+not every database can provide those properties without extra coordination. Use
+`Jido.Storage.ETS` only for tests and local demos because it is process-local and
+ephemeral.
+
 ## Graph Inspection
 
 Use `inspect_run/2` when application code needs the factual run snapshot. Use
@@ -423,8 +455,9 @@ node-and-edge view without reverse-engineering step history:
 The graph is derived from the same durable state as `inspect_run/2`. For the
 default runtime-table read model, Squid Mesh loads step and attempt history and
 overlays the declared workflow definition when the workflow module is still
-available. For the Jido-native read model, pass the same projection options used
-for inspection:
+available. For the Jido-native read model, configure `read_model: :read_model`
+and `journal_storage:` at the host boundary or pass the same projection options
+used for inspection:
 
 ```elixir
 {:ok, graph} =

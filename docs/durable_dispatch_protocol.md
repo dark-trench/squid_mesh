@@ -36,10 +36,10 @@ checkpoints with the exact thread revision they cover. Checkpoints are rebuild
 accelerators; the append-only thread remains the source of truth.
 
 The storage-backed slices prove the Squid Mesh protocol can persist and restore
-dispatch projections through `Jido.Storage`. The default live runtime still uses
-the current host-executor and Postgres table path, while the temporary
-`runtime: :journal` cutover path now writes run and dispatch facts through this
-boundary.
+dispatch projections through `Jido.Storage`. Host apps can now configure the
+Jido-native runtime, projection read model, journal storage adapter, and queue at
+the Squid Mesh boundary so start, execution, inspection, and manual controls use
+the journal path without per-call runtime options.
 
 For production adapters, the required storage properties are:
 

@@ -1019,6 +1019,10 @@ defmodule SquidMeshTest do
       assert config.repo == SquidMeshTest.Repo
       assert config.executor == SquidMesh.Test.Executor
       assert config.stale_step_timeout == :disabled
+      assert config.runtime == :runtime_tables
+      assert config.read_model == :runtime_tables
+      assert config.journal_storage == nil
+      assert config.queue == "default"
     end
 
     test "allows host applications to configure stale step timeout" do
@@ -1031,6 +1035,83 @@ defmodule SquidMeshTest do
       assert {:ok, config} = SquidMesh.config(overrides)
 
       assert config.stale_step_timeout == 60_000
+    end
+
+    test "allows host applications to configure journal runtime defaults" do
+      journal_storage = {Jido.Storage.ETS, table: :squid_mesh_config_test}
+
+      overrides = [
+        repo: SquidMeshTest.Repo,
+        executor: SquidMesh.Test.Executor,
+        runtime: :journal,
+        read_model: :read_model,
+        journal_storage: journal_storage,
+        queue: :configured_queue
+      ]
+
+      assert {:ok, config} = SquidMesh.config(overrides)
+
+      assert config.runtime == :journal
+      assert config.read_model == :read_model
+      assert config.journal_storage.adapter == Jido.Storage.ETS
+      assert config.journal_storage.opts == [table: :squid_mesh_config_test]
+      assert config.queue == "configured_queue"
+    end
+
+    test "requires journal storage when configured runtime or read model uses the journal" do
+      required = [
+        repo: SquidMeshTest.Repo,
+        executor: SquidMesh.Test.Executor
+      ]
+
+      assert {:error, {:missing_config, [:journal_storage]}} =
+               SquidMesh.config(Keyword.put(required, :runtime, :journal))
+
+      assert {:error, {:missing_config, [:journal_storage]}} =
+               SquidMesh.config(Keyword.put(required, :read_model, :read_model))
+    end
+
+    test "ignores journal storage settings unless configured runtime or read model needs them" do
+      assert {:ok, config} =
+               SquidMesh.config(
+                 repo: SquidMeshTest.Repo,
+                 executor: SquidMesh.Test.Executor,
+                 journal_storage: nil
+               )
+
+      assert config.runtime == :runtime_tables
+      assert config.read_model == :runtime_tables
+      assert config.journal_storage == nil
+
+      assert {:ok, config} =
+               SquidMesh.config(
+                 repo: SquidMeshTest.Repo,
+                 executor: SquidMesh.Test.Executor,
+                 journal_storage: :not_used_by_runtime_tables
+               )
+
+      assert config.journal_storage == nil
+    end
+
+    test "redacts invalid queue settings in config errors" do
+      secret_queue = %{claim_token: "super-secret-token"}
+
+      assert {:error, {:invalid_config, [queue: :invalid]} = reason} =
+               SquidMesh.config(
+                 repo: SquidMeshTest.Repo,
+                 executor: SquidMesh.Test.Executor,
+                 queue: secret_queue
+               )
+
+      refute inspect(reason) =~ "super-secret-token"
+
+      assert_raise ArgumentError, ~r/queue=:invalid/, fn ->
+        SquidMesh.config!(
+          repo: SquidMeshTest.Repo,
+          executor: SquidMesh.Test.Executor,
+          queue: secret_queue
+        )
+      end
     end
 
     test "reports missing required configuration keys" do
@@ -2500,6 +2581,61 @@ defmodule SquidMeshTest do
       assert SquidMesh.Runtime.RunIndexProjection.run_ids(run_index_projection) == [
                snapshot.run_id
              ]
+
+      assert legacy_runtime_counts() == legacy_counts_before
+    end
+
+    test "configured journal runtime defaults start, inspect, explain, and execute calls" do
+      configured_queue = "configured-runtime-test"
+
+      put_squid_mesh_config(
+        runtime: :journal,
+        read_model: :read_model,
+        journal_storage: @read_model_storage,
+        queue: configured_queue
+      )
+
+      legacy_counts_before = legacy_runtime_counts()
+
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_123"},
+                 now: @read_model_started_at
+               )
+
+      assert started.workflow == Atom.to_string(PaymentRecoveryWorkflow)
+      assert started.queue == configured_queue
+      assert [%{step: "check_gateway", status: :available}] = started.visible_attempts
+
+      assert {:ok, %Snapshot{} = inspected} =
+               SquidMesh.inspect_run(started.run_id, now: @read_model_started_at)
+
+      assert inspected.run_id == started.run_id
+      assert inspected.queue == configured_queue
+
+      assert {:ok, %Diagnostic{} = explanation} =
+               SquidMesh.explain_run(started.run_id, now: @read_model_started_at)
+
+      assert explanation.run_id == started.run_id
+      assert explanation.queue == configured_queue
+      assert explanation.reason == :attempt_visible
+
+      assert {:error, {:invalid_option, {:queue, :invalid}}} =
+               SquidMesh.inspect_run(started.run_id, queue: "../dispatch")
+
+      assert {:error, {:invalid_option, {:queue, :invalid}}} =
+               SquidMesh.execute_next(queue: "../dispatch")
+
+      assert {:ok, %Snapshot{} = completed} =
+               SquidMesh.execute_next(
+                 owner_id: "configured-runtime-test",
+                 now: @read_model_started_at
+               )
+
+      assert completed.run_id == started.run_id
+      assert completed.terminal?
+      assert completed.terminal_status == :completed
 
       assert legacy_runtime_counts() == legacy_counts_before
     end
@@ -6666,5 +6802,24 @@ defmodule SquidMeshTest do
     end
   rescue
     ArgumentError -> :ok
+  end
+
+  defp put_squid_mesh_config(overrides) do
+    original_config = Application.get_all_env(:squid_mesh)
+
+    on_exit(fn ->
+      :squid_mesh
+      |> Application.get_all_env()
+      |> Keyword.keys()
+      |> Enum.each(&Application.delete_env(:squid_mesh, &1))
+
+      Enum.each(original_config, fn {key, value} ->
+        Application.put_env(:squid_mesh, key, value)
+      end)
+    end)
+
+    Enum.each(overrides, fn {key, value} ->
+      Application.put_env(:squid_mesh, key, value)
+    end)
   end
 end
