@@ -1210,7 +1210,7 @@ defmodule SquidMeshTest do
     end
   end
 
-  describe "journal-only executor payloads" do
+  describe "journal-only runtime payloads" do
     test "runner rejects non-cron payload kinds as invalid payloads" do
       assert {:error, {:invalid_runtime_payload, %{"kind" => "step", "run_id" => _run_id}}} =
                Runner.perform(%{
@@ -1227,7 +1227,7 @@ defmodule SquidMeshTest do
                })
     end
 
-    test "executor payloads expose cron trigger delivery only" do
+    test "runtime payloads expose cron trigger delivery only" do
       assert Code.ensure_loaded?(Payload)
       refute function_exported?(Payload, :step, 2)
       refute function_exported?(Payload, :compensation, 1)
@@ -6745,7 +6745,7 @@ defmodule SquidMeshTest do
       refute inspect(reason) =~ "super-secret-token"
     end
 
-    test "public execute_next/1 rejects internal executor controls" do
+    test "public execute_next/1 rejects internal runtime controls" do
       for option <- [:claim_id, :claim_token, :finished_at] do
         assert {:error, {:invalid_option, {:option, ^option}}} =
                  SquidMesh.execute_next(
