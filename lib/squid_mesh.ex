@@ -48,6 +48,8 @@ defmodule SquidMesh do
            | {:now, term()}
            | {:run_id, term()}
            | {:runtime_tables, [atom()]}}
+          | {:unsupported_journal_step, atom(),
+             SquidMesh.Workflow.Definition.built_in_step_kind()}
 
   @doc """
   Loads Squid Mesh configuration from the application environment with optional
@@ -74,9 +76,10 @@ defmodule SquidMesh do
   the legacy runtime tables for the covered start flow. Journal execution
   currently supports normal action steps, immediate built-in `:log` steps, and
   built-in `:wait` steps in transition and dependency workflows, where waits
-  delay downstream runnable visibility. Manual built-ins (`:pause` and
-  `:approval`) are rejected until those semantics are represented as journal
-  facts.
+  delay downstream runnable visibility. Built-in `:pause` steps persist
+  inspectable manual intervention state; journal controls for resolving that
+  state are not available yet. `:approval` remains rejected until decision
+  semantics are represented as journal facts.
   """
   @spec start_run(module(), map()) ::
           {:ok, Run.t()}
@@ -129,9 +132,10 @@ defmodule SquidMesh do
   Jido journal-backed cutover path for the named trigger. Journal execution
   currently supports normal action steps, immediate built-in `:log` steps, and
   built-in `:wait` steps in transition and dependency workflows, where waits
-  delay downstream runnable visibility. Manual built-ins (`:pause` and
-  `:approval`) are rejected until those semantics are represented as journal
-  facts.
+  delay downstream runnable visibility. Built-in `:pause` steps persist
+  inspectable manual intervention state; journal controls for resolving that
+  state are not available yet. `:approval` remains rejected until decision
+  semantics are represented as journal facts.
   """
   @spec start_run(module(), atom(), map(), keyword()) ::
           {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
@@ -252,7 +256,9 @@ defmodule SquidMesh do
   completion or failure facts. Journal execution currently supports normal
   action steps, immediate built-in `:log` steps, and built-in `:wait` steps in
   transition and dependency workflows, where waits delay downstream runnable
-  visibility. Manual built-ins (`:pause` and `:approval`) are rejected at start.
+  visibility. Built-in `:pause` steps persist inspectable manual intervention
+  state; journal controls for resolving that state are not available yet.
+  `:approval` attempts are not produced by journal start.
   """
   @spec execute_next(keyword()) :: Executor.execute_result()
   def execute_next(overrides \\ [])
@@ -312,6 +318,8 @@ defmodule SquidMesh do
 
   @doc """
   Resumes a run that is intentionally paused for manual intervention.
+
+  This control currently targets table-backed runtime runs.
   """
   @spec unblock_run(Ecto.UUID.t()) ::
           {:ok, Run.t()}
@@ -330,7 +338,8 @@ defmodule SquidMesh do
   Pass a keyword list to override runtime configuration, or a map to provide
   manual action attributes. Attribute maps are validated against the paused
   step's manual action contract before the runtime appends resume events or
-  dispatches successor work.
+  dispatches successor work. This control currently targets table-backed
+  runtime runs.
   """
   @spec unblock_run(Ecto.UUID.t(), keyword()) ::
           {:ok, Run.t()}
@@ -358,6 +367,8 @@ defmodule SquidMesh do
 
   @doc """
   Resumes a paused run with manual action attributes and configuration overrides.
+
+  This control currently targets table-backed runtime runs.
   """
   @spec unblock_run(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, Run.t()}
@@ -377,6 +388,8 @@ defmodule SquidMesh do
 
   @doc """
   Approves a paused approval step and resumes the run through its success path.
+
+  This control currently targets table-backed runtime runs.
   """
   @spec approve_run(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, Run.t()}
@@ -396,6 +409,8 @@ defmodule SquidMesh do
 
   @doc """
   Rejects a paused approval step and resumes the run through its rejection path.
+
+  This control currently targets table-backed runtime runs.
   """
   @spec reject_run(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, Run.t()}

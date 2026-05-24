@@ -2644,6 +2644,188 @@ defmodule SquidMeshTest do
       assert delayed_runnable.visible_at == delayed_at
     end
 
+    test "journal runtime executes built-in pause steps into durable manual state" do
+      run_id = Ecto.UUID.generate()
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 PauseWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert snapshot.run_id == run_id
+      assert [%{step: "wait_for_approval", status: :available}] = snapshot.visible_attempts
+
+      assert {:ok, %Snapshot{} = paused_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-pause-test",
+                 claim_id: "claim_pause",
+                 claim_token: "token_pause",
+                 now: @read_model_visible_at,
+                 finished_at: @read_model_visible_at
+               )
+
+      assert paused_snapshot.run_id == run_id
+      assert paused_snapshot.status == :paused
+      assert paused_snapshot.reason == :manual_intervention_required
+      assert paused_snapshot.visible_attempts == []
+      assert paused_snapshot.pending_results == []
+
+      assert paused_snapshot.manual_state == %{
+               step: "wait_for_approval",
+               kind: "pause",
+               paused_at: @read_model_visible_at,
+               metadata: %{
+                 output: %{},
+                 target: "record_delivery"
+               }
+             }
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
+               SquidMesh.inspect_run_graph(run_id,
+                 read_model: :read_model,
+                 include_history: true,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      graph_nodes = Map.new(graph.nodes, &{&1.id, &1})
+
+      assert graph.current_node_id == "wait_for_approval"
+      assert graph.current_node_ids == ["wait_for_approval"]
+      assert graph_nodes["wait_for_approval"].status == :paused
+      assert graph_nodes["wait_for_approval"].current?
+      assert graph_nodes["wait_for_approval"].manual_state == paused_snapshot.manual_state
+
+      assert {:error, :not_found} = SquidMesh.unblock_run(run_id, %{})
+
+      assert {:ok, :none} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-pause-test",
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :manual_step_paused
+             ]
+
+      assert %{
+               data: %{
+                 step: "wait_for_approval",
+                 kind: "pause",
+                 paused_at: @read_model_visible_at,
+                 metadata: %{output: %{}, target: "record_delivery"}
+               }
+             } = List.last(run_entries)
+    end
+
+    test "journal runtime recovers built-in pause manual state after dispatch completion" do
+      run_id = Ecto.UUID.generate()
+      recovery_at = DateTime.add(@read_model_visible_at, 1, :second)
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 PauseWorkflow,
+                 %{account_id: "acct_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert [%{runnable_key: runnable_key, step: "wait_for_approval"}] =
+               snapshot.visible_attempts
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:attempt_claimed, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          claim_id: "pause_claim",
+          claim_token_hash: claim_token_hash("pause_token"),
+          owner_id: "worker_1",
+          queue: @read_model_queue,
+          lease_until: DateTime.add(@read_model_visible_at, 30, :second),
+          occurred_at: @read_model_visible_at
+        }),
+        read_model_entry!(:attempt_completed, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          claim_id: "pause_claim",
+          claim_token_hash: claim_token_hash("pause_token"),
+          queue: @read_model_queue,
+          result: %{},
+          occurred_at: @read_model_visible_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = recovered_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-pause-recovery-test",
+                 now: recovery_at
+               )
+
+      assert recovered_snapshot.status == :paused
+      assert recovered_snapshot.reason == :manual_intervention_required
+      assert recovered_snapshot.visible_attempts == []
+      assert recovered_snapshot.pending_results == []
+
+      assert recovered_snapshot.manual_state == %{
+               step: "wait_for_approval",
+               kind: "pause",
+               paused_at: @read_model_visible_at,
+               metadata: %{
+                 output: %{},
+                 target: "record_delivery"
+               }
+             }
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :manual_step_paused
+             ]
+
+      assert %{data: %{paused_at: @read_model_visible_at}} = List.last(run_entries)
+
+      assert {:ok, :none} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-pause-recovery-test",
+                 now: recovery_at
+               )
+
+      assert {:ok, replayed_run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert Enum.count(replayed_run_entries, &(&1.type == :manual_step_paused)) == 1
+    end
+
     test "journal runtime recovers built-in wait successor delay after dispatch completion" do
       run_id = Ecto.UUID.generate()
       delayed_at = DateTime.add(@read_model_visible_at, 2, :second)
@@ -3370,10 +3552,7 @@ defmodule SquidMeshTest do
     end
 
     test "journal runtime start rejects unsupported built-in steps before persisting runnables" do
-      cases = [
-        {PauseWorkflow, %{account_id: "acct_123"}, :wait_for_approval, :pause},
-        {ApprovalWorkflow, %{account_id: "acct_123"}, :wait_for_review, :approval}
-      ]
+      cases = [{ApprovalWorkflow, %{account_id: "acct_123"}, :wait_for_review, :approval}]
 
       for {workflow, payload, step_name, step_kind} <- cases do
         run_id = Ecto.UUID.generate()

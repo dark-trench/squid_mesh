@@ -13,9 +13,11 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   controls, and recovery move onto the journal-backed path. The journal runtime
   can execute normal action steps, immediate built-in `:log` steps, and
   built-in `:wait` steps in transition and dependency workflows, where waits
-  delay downstream runnable visibility. Manual built-ins remain rejected until
-  their intervention semantics are represented in journal facts. Callers enter
-  this path explicitly with `runtime: :journal`,
+  delay downstream runnable visibility. Built-in `:pause` steps persist
+  inspectable manual intervention state, but journal controls for resolving that
+  state are not available yet. Approval steps remain rejected until their
+  decision semantics are represented in journal facts. Callers enter this path
+  explicitly with `runtime: :journal`,
   `journal_storage:`, and optional queue or clock overrides. No Jido primitive
   is required in workflow authoring.
   """
@@ -80,7 +82,8 @@ defmodule SquidMesh.Runtime.Journal.Starter do
     end
   end
 
-  defp unsupported_built_in_step?(%{module: module}), do: module in [:pause, :approval]
+  defp unsupported_built_in_step?(%{module: :approval}), do: true
+  defp unsupported_built_in_step?(_step), do: false
 
   defp ensure_run_started(storage, workflow, definition, run_id, runnables, %DateTime{} = now) do
     expected_fingerprint = Definition.fingerprint(definition)
