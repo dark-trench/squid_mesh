@@ -28,10 +28,14 @@ defmodule SquidMesh.Runtime.ManualAction do
 
   @doc false
   @spec build(type(), attrs()) :: persisted()
-  def build(type, attrs) when type in [:resumed, :approved, :rejected] and is_map(attrs) do
+  @spec build(type(), attrs(), DateTime.t()) :: persisted()
+  def build(type, attrs, now \\ DateTime.utc_now(:microsecond))
+
+  def build(type, attrs, %DateTime{} = now)
+      when type in [:resumed, :approved, :rejected] and is_map(attrs) do
     %{
       "event" => Atom.to_string(type),
-      "at" => DateTime.to_iso8601(DateTime.utc_now(:microsecond))
+      "at" => DateTime.to_iso8601(now)
     }
     |> maybe_put("actor", Map.get(attrs, :actor))
     |> maybe_put("comment", Map.get(attrs, :comment))

@@ -117,6 +117,12 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   end
 
   @doc false
+  @spec applied_results(t()) :: %{optional(String.t()) => map() | nil}
+  def applied_results(%__MODULE__{} = projection) do
+    Map.get(projection, :applied_results, %{})
+  end
+
+  @doc false
   @spec applied_result(t(), String.t()) :: {:ok, map() | nil} | :error
   def applied_result(%__MODULE__{} = projection, runnable_key) when is_binary(runnable_key) do
     Map.fetch(applied_results(projection), runnable_key)
@@ -338,10 +344,6 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
 
   defp resolve_manual_step(%__MODULE__{} = projection, entry, _data) do
     add_anomaly(projection, entry, :terminal_run)
-  end
-
-  defp applied_results(%__MODULE__{} = projection) do
-    Map.get(projection, :applied_results, %{})
   end
 
   defp applied_execution_opts(%__MODULE__{} = projection) do

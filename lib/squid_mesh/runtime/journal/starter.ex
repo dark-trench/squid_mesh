@@ -14,10 +14,10 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   can execute normal action steps, immediate built-in `:log` steps, and
   built-in `:wait` steps in transition and dependency workflows, where waits
   delay downstream runnable visibility. Built-in `:pause` steps persist
-  inspectable manual intervention state, but journal controls for resolving that
-  state are not available yet. Approval steps remain rejected until their
-  decision semantics are represented in journal facts. Callers enter this path
-  explicitly with `runtime: :journal`,
+  inspectable manual intervention state and can be resumed through journal
+  manual controls. Approval steps remain rejected until their decision semantics
+  are represented in journal facts. Callers enter this path explicitly with
+  `runtime: :journal`,
   `journal_storage:`, and optional queue or clock overrides. No Jido primitive
   is required in workflow authoring.
   """

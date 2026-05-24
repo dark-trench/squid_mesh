@@ -176,10 +176,10 @@ kind, timestamp, and persisted metadata. `manual_step_resolved` records that the
 same boundary was completed by an operator action such as resume, approve, or
 reject.
 
-The protocol already names both sides of the manual boundary, but the current
-journal runtime only appends pause facts. Resume, approve, and reject controls
-still belong to the table-backed runtime until journal control APIs start
-appending `manual_step_resolved`.
+The journal runtime appends `manual_step_paused` for built-in `:pause` steps and
+`manual_step_resolved` when `unblock_run/3` resumes that pause with
+`runtime: :journal`. Approval and rejection controls still belong to the
+table-backed runtime until approval decisions are represented as journal facts.
 
 The workflow projection exposes only the current manual state. Duplicate pause
 facts are idempotent when they match. A second active manual boundary, a stale
@@ -190,7 +190,7 @@ projection anomaly instead of changing the current state.
 stateDiagram-v2
     [*] --> Running: run_started
     Running --> Paused: manual_step_paused
-    Paused --> Running: manual_step_resolved protocol only
+    Paused --> Running: manual_step_resolved
     Running --> Terminal: run_terminal
     Paused --> Terminal: run_terminal
 
