@@ -20,7 +20,7 @@ defmodule SquidMesh.Executor.Payload do
         }
 
   @doc """
-  Builds the executor payload for a cron trigger activation.
+  Builds the cron payload for a trigger activation.
 
   `workflow` and `trigger` are serialized into strings so the payload can cross
   a queue boundary. When the job is delivered, the runtime loads the workflow

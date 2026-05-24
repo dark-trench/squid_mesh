@@ -15,7 +15,7 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
   - which stable idempotency key, when configured, protects the logical start
 
   Keeping both timestamps matters because delayed delivery is normal in durable
-  executors. Workflow steps should not infer their schedule window from current
+  runtime systems. Workflow steps should not infer their schedule window from current
   wall-clock time; they should read the intended window from the run context.
 
   The metadata is stored in run context rather than workflow payload so it does
@@ -43,7 +43,7 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
 
   The workflow and trigger definition contribute stable declarative data such
   as the workflow name, trigger name, cron expression, and timezone. The
-  executor payload contributes scheduler-delivery data such as `signal_id` and
+  payload contributes scheduler-delivery data such as `signal_id` and
   `intended_window`. If the scheduler omits `signal_id`, Squid Mesh derives one
   from the workflow, trigger, and intended window when both window bounds are
   present. The runtime adds

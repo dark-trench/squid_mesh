@@ -2,7 +2,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   @moduledoc """
   Executes one visible attempt from the journal-backed runtime queue.
 
-  The executor is the side-effect boundary for the journal-backed runtime. It
+  The runtime step boundary is the side-effect boundary for the journal-backed runtime. It
   claims a visible attempt with the dispatch agent, runs the declared workflow
   step once, records either a completed or failed attempt fact, and then applies
   any completed dispatch results back to the workflow journal.

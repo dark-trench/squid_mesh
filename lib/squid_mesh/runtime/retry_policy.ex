@@ -3,7 +3,7 @@ defmodule SquidMesh.Runtime.RetryPolicy do
   Resolves workflow retry configuration into concrete runtime decisions.
 
   This module turns declarative workflow retry definitions into explicit retry
-  outcomes that a step executor can consume without needing to re-interpret the
+  outcomes that runtime step execution can consume without needing to re-interpret the
   workflow contract on every failure.
   """
 
