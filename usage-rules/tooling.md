@@ -25,4 +25,3 @@
   APIs rather than reading storage adapter internals.
 - SquidSonar should fetch specific workflow internals by module/spec and
   specific run internals by run id.
-- Do not couple SquidSonar to legacy runtime tables.
