@@ -29,6 +29,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   alias SquidMesh.Runtime.RunCatalogProjection
   alias SquidMesh.Runtime.RunIndexProjection
   alias SquidMesh.Runtime.WorkflowAgent
+  alias SquidMesh.Runtime.WorkflowAgent.Projection
   alias SquidMesh.Workflow.Definition
   alias SquidMesh.Workflow.RunicPlanner
 
@@ -49,7 +50,9 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   by `SquidMesh.inspect_run/2` with `read_model: :read_model`.
   """
   @spec start_run(module(), atom() | nil, map(), keyword()) ::
-          {:ok, Inspection.Snapshot.t()} | {:error, start_error()}
+          {:ok, Inspection.Snapshot.t()}
+          | {:ok, {:duplicate_schedule_start, Inspection.Snapshot.t()}}
+          | {:error, start_error()}
   def start_run(workflow, trigger_name, payload, opts)
       when is_atom(workflow) and is_map(payload) and is_list(opts) do
     with {:ok, storage} <- journal_storage(opts),
@@ -62,7 +65,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
          {:ok, _planned, runnables} <- RunicPlanner.plan(planner, resolved_payload),
          {:ok, run_id} <- run_id(opts),
          {:ok, journal_runnables} <- journal_runnables(definition, run_id, queue, runnables, now),
-         :ok <-
+         {:ok, start_state} <-
            ensure_run_started(
              storage,
              %{
@@ -76,7 +79,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
              now,
              opts
            ) do
-      complete_started_run(storage, workflow, run_id, queue, now)
+      complete_started_run(storage, workflow, run_id, queue, now, start_state, opts)
     end
   end
 
@@ -106,6 +109,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
              workflow: Definition.serialize_workflow(workflow),
              trigger: Atom.to_string(Map.fetch!(trigger, :name)),
              input: input,
+             context: initial_context(opts),
              replayed_from_run_id: replayed_from_run_id(opts),
              definition_fingerprint: expected_fingerprint,
              occurred_at: now
@@ -118,10 +122,10 @@ defmodule SquidMesh.Runtime.Journal.Starter do
            }),
          {:ok, _run_thread} <-
            Journal.append_entries(storage, [run_started, runnables_planned], expected_rev: 0) do
-      :ok
+      {:ok, :created}
     else
       {:error, :conflict} ->
-        rebuild_existing_start(storage, workflow, run_id, runnables, expected_fingerprint)
+        rebuild_existing_start(storage, workflow, run_id, runnables, expected_fingerprint, opts)
 
       {:error, _reason} = error ->
         error
@@ -382,11 +386,47 @@ defmodule SquidMesh.Runtime.Journal.Starter do
     end
   end
 
-  defp complete_started_run(storage, workflow, run_id, queue, %DateTime{} = now) do
+  defp complete_started_run(
+         storage,
+         workflow,
+         run_id,
+         queue,
+         %DateTime{} = now,
+         start_state,
+         opts
+       ) do
+    queue = completion_queue(start_state, queue)
+
     case do_complete_started_run(storage, workflow, run_id, queue, now) do
-      {:ok, %Inspection.Snapshot{}} = ok -> ok
-      {:error, reason} -> {:error, {:journal_start_committed, run_id, reason}}
+      {:ok, %Inspection.Snapshot{} = snapshot} ->
+        duplicate_start_result(snapshot, start_state, opts)
+
+      {:error, reason} ->
+        {:error, {:journal_start_committed, run_id, reason}}
     end
+  end
+
+  defp completion_queue({:existing_schedule_duplicate, queue}, _queue), do: queue
+  defp completion_queue(_start_state, queue), do: queue
+
+  defp duplicate_start_result(
+         %Inspection.Snapshot{} = snapshot,
+         {:existing_schedule_duplicate, _queue},
+         _opts
+       ) do
+    {:ok, {:duplicate_schedule_start, snapshot}}
+  end
+
+  defp duplicate_start_result(%Inspection.Snapshot{} = snapshot, :existing, opts) do
+    if Keyword.get(opts, :duplicate_schedule_start, false) do
+      {:ok, {:duplicate_schedule_start, snapshot}}
+    else
+      {:ok, snapshot}
+    end
+  end
+
+  defp duplicate_start_result(%Inspection.Snapshot{} = snapshot, _start_state, _opts) do
+    {:ok, snapshot}
   end
 
   defp do_complete_started_run(storage, workflow, run_id, queue, %DateTime{} = now) do
@@ -399,16 +439,132 @@ defmodule SquidMesh.Runtime.Journal.Starter do
     end
   end
 
-  defp rebuild_existing_start(storage, workflow, run_id, expected_runnables, expected_fingerprint) do
+  defp rebuild_existing_start(
+         storage,
+         workflow,
+         run_id,
+         expected_runnables,
+         expected_fingerprint,
+         opts
+       ) do
     with {:ok, workflow_agent} <- WorkflowAgent.rebuild(storage, run_id),
          {:ok, existing_fingerprint} <- persisted_definition_fingerprint(storage, run_id) do
-      validate_existing_start(
+      mode = existing_start_mode(opts)
+
+      validate_existing_start_mode(
+        mode,
         workflow_agent,
         workflow,
         expected_runnables,
         expected_fingerprint,
-        existing_fingerprint
+        existing_fingerprint,
+        opts
       )
+    end
+  end
+
+  defp existing_start_mode(opts) do
+    if Keyword.get(opts, :duplicate_schedule_start, false) do
+      :schedule_duplicate
+    else
+      :strict
+    end
+  end
+
+  defp validate_existing_start_mode(
+         :schedule_duplicate,
+         workflow_agent,
+         workflow,
+         _expected_runnables,
+         _expected_fingerprint,
+         _existing_fingerprint,
+         opts
+       ) do
+    validate_existing_schedule_start(workflow_agent, workflow, opts)
+  end
+
+  defp validate_existing_start_mode(
+         :strict,
+         workflow_agent,
+         workflow,
+         expected_runnables,
+         expected_fingerprint,
+         existing_fingerprint,
+         _opts
+       ) do
+    with :ok <-
+           validate_existing_start(
+             workflow_agent,
+             workflow,
+             expected_runnables,
+             expected_fingerprint,
+             existing_fingerprint
+           ) do
+      {:ok, :existing}
+    end
+  end
+
+  defp validate_existing_schedule_start(workflow_agent, workflow, opts) do
+    existing_workflow = workflow_agent.state.workflow
+    expected_workflow = Definition.serialize_workflow(workflow)
+    expected_idempotency_key = schedule_idempotency_key(initial_context(opts))
+    existing_idempotency_key = existing_schedule_idempotency_key(workflow_agent)
+
+    cond do
+      existing_workflow != expected_workflow ->
+        {:error, :conflict}
+
+      is_nil(expected_idempotency_key) ->
+        {:error, :conflict}
+
+      existing_idempotency_key != expected_idempotency_key ->
+        {:error, :conflict}
+
+      true ->
+        existing_queue(workflow_agent)
+    end
+  end
+
+  defp existing_schedule_idempotency_key(%{
+         state: %{projection: %Projection{context: context}}
+       })
+       when is_map(context) do
+    context
+    |> schedule_context()
+    |> schedule_value(:idempotency_key)
+  end
+
+  defp existing_schedule_idempotency_key(_workflow_agent), do: nil
+
+  defp schedule_idempotency_key(context) when is_map(context) do
+    context
+    |> schedule_context()
+    |> schedule_value(:idempotency_key)
+  end
+
+  defp schedule_context(context) do
+    case Map.fetch(context, :schedule) do
+      {:ok, schedule} -> schedule
+      :error -> Map.get(context, "schedule", %{})
+    end
+  end
+
+  defp schedule_value(schedule, key) when is_map(schedule) do
+    case Map.fetch(schedule, key) do
+      {:ok, value} -> value
+      :error -> Map.get(schedule, Atom.to_string(key))
+    end
+  end
+
+  defp schedule_value(_schedule, _key), do: nil
+
+  defp existing_queue(workflow_agent) do
+    workflow_agent
+    |> WorkflowAgent.planned_runnables()
+    |> Enum.find_value(&runnable_value(&1, :queue))
+    |> case do
+      queue when is_binary(queue) -> {:ok, {:existing_schedule_duplicate, queue}}
+      _missing_queue -> {:error, :conflict}
     end
   end
 
@@ -540,6 +696,34 @@ defmodule SquidMesh.Runtime.Journal.Starter do
       run_id -> Options.uuid(run_id)
     end
   end
+
+  defp initial_context(opts) do
+    opts
+    |> Keyword.get(:initial_context, %{})
+    |> pick_reserved_context()
+  end
+
+  defp pick_reserved_context(context) when is_map(context) do
+    context
+    |> Map.take([:schedule, "schedule"])
+    |> normalize_schedule_context()
+  end
+
+  defp pick_reserved_context(_context), do: %{}
+
+  defp normalize_schedule_context(%{schedule: nil}), do: %{}
+
+  defp normalize_schedule_context(%{schedule: schedule}) do
+    %{schedule: schedule}
+  end
+
+  defp normalize_schedule_context(%{"schedule" => nil}), do: %{}
+
+  defp normalize_schedule_context(%{"schedule" => schedule}) do
+    %{schedule: schedule}
+  end
+
+  defp normalize_schedule_context(_context), do: %{}
 
   defp replayed_from_run_id(opts) do
     case Keyword.get(opts, :replayed_from_run_id) do

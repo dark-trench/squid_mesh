@@ -8,6 +8,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   any completed dispatch results back to the workflow journal.
   """
 
+  alias Jido.Agent
   alias SquidMesh.ReadModel.Inspection
   alias SquidMesh.Runtime.BuiltInStep
   alias SquidMesh.Runtime.DispatchAgent
@@ -160,7 +161,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
        when is_list(opts) do
     case executable_step(storage, workflow_agent, attempt) do
       {:ok, workflow, definition, step_name, step} ->
-        context = step_context(attempt, workflow, step_name)
+        context = step_context(workflow_agent, attempt, workflow, step_name)
         finished_at = lifecycle_time(opts, claim_now)
         runtime = %{storage: storage, queue: queue, now: finished_at}
 
@@ -1071,7 +1072,9 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     applied_results =
       applied_result_context(workflow_agent)
 
-    Map.merge(applied_results, current_result || %{})
+    applied_results
+    |> Map.merge(current_result || %{})
+    |> Map.merge(run_context(workflow_agent))
   end
 
   defp journal_context(workflow_agent, %ActionAttempt{input: input}, current_result) do
@@ -1079,6 +1082,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     |> applied_result_context()
     |> Map.merge(input || %{})
     |> Map.merge(current_result || %{})
+    |> Map.merge(run_context(workflow_agent))
   end
 
   defp applied_result_context(workflow_agent) do
@@ -1088,6 +1092,13 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     |> Enum.filter(&is_map/1)
     |> Enum.reduce(%{}, &Map.merge(&2, &1))
   end
+
+  defp run_context(%Agent{state: %{projection: %Projection{context: context}}})
+       when is_map(context) do
+    context
+  end
+
+  defp run_context(_workflow_agent), do: %{}
 
   defp successor_runnable(
          %ActionAttempt{} = attempt,
@@ -1833,13 +1844,17 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     end
   end
 
-  defp step_context(%ActionAttempt{} = attempt, workflow, step_name) do
+  defp step_context(workflow_agent, %ActionAttempt{} = attempt, workflow, step_name) do
     %{
       run_id: attempt.run_id,
       workflow: workflow,
       step: step_name,
       attempt: attempt.attempt_number,
-      state: attempt.input
+      state:
+        workflow_agent
+        |> applied_result_context()
+        |> Map.merge(attempt.input)
+        |> Map.merge(run_context(workflow_agent))
     }
   end
 

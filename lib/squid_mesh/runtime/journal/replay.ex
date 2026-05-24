@@ -46,12 +46,15 @@ defmodule SquidMesh.Runtime.Journal.Replay do
          :ok <-
            ensure_replay_allowed(source_agent, definition, replay_opts, completed_dispatch_keys),
          {:ok, trigger} <- source_trigger(source_agent, definition),
-         {:ok, input} <- source_input(source_agent) do
+         {:ok, input} <- source_input(source_agent),
+         {:ok, context} <- source_context(source_agent) do
       Starter.start_run(
         workflow,
         trigger,
         input,
-        Keyword.put(config_opts, :replayed_from_run_id, run_id)
+        config_opts
+        |> Keyword.put(:initial_context, context)
+        |> Keyword.put(:replayed_from_run_id, run_id)
       )
     end
   end
@@ -173,6 +176,41 @@ defmodule SquidMesh.Runtime.Journal.Replay do
   defp source_input(%Agent{}) do
     {:error, {:invalid_replay_source, :missing_input}}
   end
+
+  defp source_context(%Agent{state: %{projection: %Projection{context: context}}})
+       when is_map(context) do
+    {:ok, replay_context(context)}
+  end
+
+  defp source_context(%Agent{}), do: {:ok, %{}}
+
+  defp replay_context(context) do
+    context
+    |> Map.take([:schedule, "schedule"])
+    |> normalize_replay_context()
+  end
+
+  defp normalize_replay_context(%{:schedule => schedule}) do
+    case replay_schedule_context(schedule) do
+      nil -> %{}
+      schedule -> %{schedule: schedule}
+    end
+  end
+
+  defp normalize_replay_context(%{"schedule" => schedule}) do
+    case replay_schedule_context(schedule) do
+      nil -> %{}
+      schedule -> %{schedule: schedule}
+    end
+  end
+
+  defp normalize_replay_context(_context), do: %{}
+
+  defp replay_schedule_context(schedule) when is_map(schedule) do
+    Map.drop(schedule, [:idempotency, "idempotency", :idempotency_key, "idempotency_key"])
+  end
+
+  defp replay_schedule_context(_schedule), do: nil
 
   defp run_id(run_id) do
     case Ecto.UUID.cast(run_id) do

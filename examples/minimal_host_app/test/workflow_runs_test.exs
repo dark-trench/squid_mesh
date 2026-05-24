@@ -572,6 +572,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              journal_recovery: journal_recovery,
              journal_cancellation: journal_cancellation,
              journal_replay: journal_replay,
+             journal_cron_digest: journal_cron_digest,
              daily_digest: daily_digest
            } =
              Smoke.run_all!()
@@ -606,6 +607,10 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert journal_replay.status == :completed
     assert journal_replay.replayed_from_run_id
+
+    assert journal_cron_digest.status == :completed
+    assert journal_cron_digest.trigger == "daily_digest"
+    assert journal_cron_digest.context.schedule.signal_id
 
     assert daily_digest.status == :completed
     assert daily_digest.trigger == :daily_digest
@@ -660,6 +665,23 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert run.status == :completed
     assert run.replayed_from_run_id
     assert run.applied_runnable_keys == run.planned_runnable_keys
+  end
+
+  test "runs the journal cron smoke path" do
+    assert %SquidMesh.ReadModel.Inspection.Snapshot{} = run = Smoke.run_journal_cron_digest!()
+
+    assert run.status == :completed
+    assert run.trigger == "daily_digest"
+    assert run.context.schedule.signal_id
+  end
+
+  test "runs the journal cron duplicate smoke path" do
+    assert %SquidMesh.ReadModel.Inspection.Snapshot{} =
+             run = Smoke.run_journal_cron_duplicate_digest!()
+
+    assert run.status == :completed
+    assert run.trigger == "daily_digest"
+    assert run.context.schedule.idempotency == :return_existing_run
   end
 
   test "runs the cancellation smoke path" do

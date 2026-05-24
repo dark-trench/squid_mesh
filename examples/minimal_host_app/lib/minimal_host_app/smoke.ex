@@ -10,8 +10,10 @@ defmodule MinimalHostApp.Smoke do
   alias MinimalHostApp.RuntimeHarness
   alias MinimalHostApp.WorkflowRuns
   alias MinimalHostApp.Workers.SquidMeshWorker
+  alias SquidMesh.Executor.Payload
   alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.Journal.Storage.Ecto, as: JournalStorage
+  alias SquidMesh.Runtime.Runner
 
   @poll_attempts 20
   @journal_executor_attempts 10
@@ -65,6 +67,7 @@ defmodule MinimalHostApp.Smoke do
           journal_recovery: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_cancellation: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_replay: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          journal_cron_digest: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           daily_digest: SquidMesh.Run.t()
         }
   def run_all! do
@@ -78,6 +81,7 @@ defmodule MinimalHostApp.Smoke do
     journal_recovery = run_journal_recovery!()
     journal_cancellation = run_journal_cancellation!()
     journal_replay = run_journal_replay!()
+    journal_cron_digest = run_journal_cron_digest!()
     existing_daily_digest_run_ids = daily_digest_run_ids()
 
     with :ok <- run_cron_digest(),
@@ -99,6 +103,7 @@ defmodule MinimalHostApp.Smoke do
         journal_recovery: journal_recovery,
         journal_cancellation: journal_cancellation,
         journal_replay: journal_replay,
+        journal_cron_digest: journal_cron_digest,
         daily_digest: cron_run
       }
     else
@@ -316,6 +321,79 @@ defmodule MinimalHostApp.Smoke do
     end)
   end
 
+  @doc """
+  Starts the daily digest cron trigger through the journal runtime.
+  """
+  @spec run_journal_cron_digest!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
+  def run_journal_cron_digest! do
+    RuntimeHarness.ensure_runtime_started()
+    queue = journal_executor_queue()
+    signal_id = "minimal-host-app:journal:daily_digest:#{System.unique_integer([:positive])}"
+
+    payload =
+      Payload.cron(
+        MinimalHostApp.Workflows.DailyDigest,
+        :daily_digest,
+        signal_id: signal_id
+      )
+
+    with_journal_runtime_config(queue, fn ->
+      with :ok <- Runner.perform(payload),
+           {:ok, run_id} <- journal_daily_digest_run_id(queue),
+           {:ok, completed_run} <- drain_journal_executor(run_id, @journal_executor_attempts) do
+        unless completed_run.status == :completed and completed_run.trigger == "daily_digest" do
+          raise "unexpected journal cron smoke result"
+        end
+
+        unless completed_run.context.schedule.signal_id == signal_id do
+          raise "unexpected journal cron schedule context"
+        end
+
+        completed_run
+      else
+        {:error, reason} ->
+          raise "journal cron smoke test failed: #{inspect(reason)}"
+      end
+    end)
+  end
+
+  @doc """
+  Proves duplicate daily digest cron delivery is fenced by the journal runtime.
+  """
+  @spec run_journal_cron_duplicate_digest!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
+  def run_journal_cron_duplicate_digest! do
+    RuntimeHarness.ensure_runtime_started()
+    queue = journal_executor_queue()
+    signal_id = "minimal-host-app:journal:daily_digest:duplicate"
+
+    payload =
+      Payload.cron(
+        MinimalHostApp.Workflows.DailyDigest,
+        :daily_digest,
+        signal_id: signal_id
+      )
+
+    with_journal_runtime_config(queue, fn ->
+      with :ok <- Runner.perform(payload),
+           {:ok, run_id} <- journal_daily_digest_run_id(queue),
+           {:ok, {:duplicate_schedule_start, ^run_id}} <-
+             Runner.start_cron_trigger(payload["workflow"], payload["trigger"], payload, []),
+           {:ok, completed_run} <- drain_journal_executor(run_id, @journal_executor_attempts) do
+        unless completed_run.context.schedule.signal_id == signal_id do
+          raise "unexpected journal cron duplicate schedule context"
+        end
+
+        completed_run
+      else
+        {:error, reason} ->
+          raise "journal cron duplicate smoke test failed: #{inspect(reason)}"
+
+        other ->
+          raise "journal cron duplicate smoke test failed: #{inspect(other)}"
+      end
+    end)
+  end
+
   @spec run_cancellation!() :: SquidMesh.Run.t()
   def run_cancellation! do
     RuntimeHarness.ensure_runtime_started()
@@ -439,6 +517,21 @@ defmodule MinimalHostApp.Smoke do
 
   defp smoke_cron_signal_id do
     "minimal-host-app:smoke:daily_digest:#{System.unique_integer([:positive])}"
+  end
+
+  defp journal_daily_digest_run_id(queue) do
+    case SquidMesh.list_runs(workflow: MinimalHostApp.Workflows.DailyDigest) do
+      {:ok, runs} ->
+        runs
+        |> Enum.find(&(&1.queue == queue))
+        |> case do
+          %{run_id: run_id} when is_binary(run_id) -> {:ok, run_id}
+          _missing -> {:error, :missing_journal_daily_digest_run}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp mapped_dependency_input?(%SquidMesh.Run{step_runs: step_runs}) when is_list(step_runs) do

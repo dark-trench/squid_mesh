@@ -114,6 +114,7 @@ defmodule SquidMesh.ReadModel.Inspection do
       workflow: workflow,
       trigger: workflow_projection.trigger,
       input: workflow_projection.input,
+      context: snapshot_context(workflow_projection),
       replayed_from_run_id: workflow_projection.replayed_from_run_id,
       queue: queue,
       status: WorkflowAgent.status(workflow_agent),
@@ -182,6 +183,20 @@ defmodule SquidMesh.ReadModel.Inspection do
       true ->
         idle_snapshot_reason(workflow_projection, scheduled_attempts, attempts)
     end
+  end
+
+  defp snapshot_context(%WorkflowAgent.Projection{} = projection) do
+    projection
+    |> applied_result_context()
+    |> Map.merge(projection.context)
+  end
+
+  defp applied_result_context(%WorkflowAgent.Projection{} = projection) do
+    projection
+    |> WorkflowAgent.Projection.applied_results()
+    |> Map.values()
+    |> Enum.filter(&is_map/1)
+    |> Enum.reduce(%{}, &Map.merge(&2, &1))
   end
 
   defp idle_snapshot_reason(workflow_projection, scheduled_attempts, attempts) do
