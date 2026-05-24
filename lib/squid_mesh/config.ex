@@ -57,7 +57,6 @@ defmodule SquidMesh.Config do
       |> Keyword.merge(overrides)
 
     with :ok <- validate_required_keys(config),
-         :ok <- reject_removed_options(config),
          {:ok, runtime} <- validate_runtime(Keyword.get(config, :runtime, @default_runtime)),
          {:ok, read_model} <-
            validate_read_model(Keyword.get(config, :read_model, @default_read_model)),
@@ -162,19 +161,6 @@ defmodule SquidMesh.Config do
 
       {:error, {:invalid_option, {:journal_storage, reason}}} ->
         {:error, {:invalid_config, [journal_storage: reason]}}
-    end
-  end
-
-  defp reject_removed_options(config) do
-    cond do
-      Keyword.has_key?(config, :executor) ->
-        {:error, {:invalid_config, [executor: :unsupported]}}
-
-      Keyword.has_key?(config, :stale_step_timeout) ->
-        {:error, {:invalid_config, [stale_step_timeout: :unsupported]}}
-
-      true ->
-        :ok
     end
   end
 end

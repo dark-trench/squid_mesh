@@ -624,18 +624,10 @@ defmodule SquidMesh do
   defp runtime(_overrides), do: {:error, {:invalid_option, {:opts, :invalid}}}
 
   defp validate_keyword_options(overrides) do
-    cond do
-      not Keyword.keyword?(overrides) ->
-        {:error, {:invalid_option, {:opts, :invalid}}}
-
-      Keyword.has_key?(overrides, :executor) ->
-        {:error, {:invalid_option, {:executor, :unsupported}}}
-
-      Keyword.has_key?(overrides, :stale_step_timeout) ->
-        {:error, {:invalid_option, {:stale_step_timeout, :unsupported}}}
-
-      true ->
-        :ok
+    if Keyword.keyword?(overrides) do
+      :ok
+    else
+      {:error, {:invalid_option, {:opts, :invalid}}}
     end
   end
 
