@@ -117,7 +117,9 @@ A host app usually wraps that call in a supervised worker loop. The loop can be
 simple at first: call `execute_next/1`, back off when it returns `{:ok, :none}`,
 and add metrics or capacity controls as the integration matures. Step execution
 is pulled from the journal with `execute_next/1`. The remaining
-`SquidMesh.Executor` behavior is for optional cron payload enqueueing.
+`SquidMesh.Executor` behavior is for optional cron payload enqueueing, while
+`SquidMesh.Executor.Leases` owns backend lease management when the host app
+opts into fencing and recovery.
 
 Read next: [Host app integration](host_app_integration.md#journal-worker-contract).
 

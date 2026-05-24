@@ -6,7 +6,7 @@
 - Use business names for triggers, steps, and transitions.
 - Keep workflow branches, retries, waits, recovery routes, and manual gates in
   the workflow definition when operators need to understand them.
-- Use `SquidMesh.Workflow.to_spec/1` and `validate_spec/1` when tooling needs a
+- Use `SquidMesh.Workflow.to_spec/1` and `SquidMesh.Workflow.validate_spec/1` when tooling needs a
   normalized data representation.
 - Do not build runtime-authored workflows from request input.
 

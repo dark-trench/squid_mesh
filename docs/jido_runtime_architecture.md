@@ -130,7 +130,7 @@ The runtime is intentionally asymmetric:
 - execution stays in worker processes and Jido actions
 - inspection stays read-only and projection-backed
 
-## Runtime Shape
+## Runtime Capability Matrix
 
 ```mermaid
 flowchart LR
