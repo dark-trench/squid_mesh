@@ -150,7 +150,7 @@ message, shipment, or webhook idempotent.
 
 ## Backend-Owned Leases And Fencing
 
-Lease-capable executor backends should own queue delivery, claim expiry,
+Lease-capable delivery backends should own queue delivery, claim expiry,
 heartbeats, retry timing, and worker recovery. Squid Mesh keeps the
 workflow-facing facts durable: runnable identity, attempt history,
 workflow-state mutation fences, completion, failure, cancellation, and
@@ -164,7 +164,7 @@ Recommended lease settings:
 - use stable run, step, attempt, and domain-operation identifiers as backend
   work item keys or lineage metadata
 
-For a concrete executor-agnostic shape with Bedrock as the recommended lease
+For a concrete backend-neutral shape with Bedrock as the recommended lease
 backend, see the Bedrock setup section in `docs/host_app_integration.md`.
 
 Completion, failure, pause, and approval progression must be applied only by
