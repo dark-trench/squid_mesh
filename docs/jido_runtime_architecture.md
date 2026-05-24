@@ -406,11 +406,12 @@ The first live write path is also available behind a temporary cutover gate:
 That path appends run and run-index facts to `Jido.Storage`, rebuilds the
 workflow and dispatch agents, schedules the initial dispatch attempts from the
 journal, and returns the projection-backed inspection snapshot. Journal
-execution currently supports normal action steps and immediate built-in `:log`
-steps; delayed and manual built-ins (`:wait`, `:pause`, and `:approval`) remain
-unsupported until wakeup and intervention semantics are journal facts. The
-current table-backed start path remains the default until the remaining runtime
-cutover lands.
+execution currently supports normal action steps, immediate built-in `:log`
+steps, and transition-based built-in `:wait` successors. Dependency-mode
+`:wait` and manual built-ins (`:pause` and `:approval`) remain unsupported until
+their timing and intervention semantics are journal facts. The current
+table-backed start path remains the default until the remaining runtime cutover
+lands.
 
 | Feature | Issue | Runtime dependency |
 | --- | --- | --- |

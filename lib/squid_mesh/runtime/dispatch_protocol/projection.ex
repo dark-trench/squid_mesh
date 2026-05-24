@@ -295,6 +295,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
         attempt
         | status: :completed,
           result: entry.data.result,
+          completed_at: entry.occurred_at,
           error: nil
       }
     end)
@@ -367,6 +368,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
             owner_id: nil,
             lease_until: nil,
             result: nil,
+            completed_at: nil,
             transition: nil,
             error: nil,
             wakeup_emitted?: false,

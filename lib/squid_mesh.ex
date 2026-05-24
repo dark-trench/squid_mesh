@@ -68,13 +68,14 @@ defmodule SquidMesh do
 
   By default this still uses the current table-backed runtime path and returns
   `SquidMesh.Run`.
-  Pass `runtime: :journal` with explicit `journal_storage:` to use the temporary
-  Jido journal-backed cutover path. That path returns a projection-backed
-  `SquidMesh.ReadModel.Inspection.Snapshot` and does not write the legacy
-  runtime tables for the covered start flow. Journal execution currently
-  supports normal action steps and immediate built-in `:log` steps. Delayed and
-  manual built-ins (`:wait`, `:pause`, and `:approval`) are rejected until those
-  semantics are represented as journal facts.
+  Use `start_run/3` with `runtime: :journal` and explicit `journal_storage:` to
+  enter the temporary Jido journal-backed cutover path. That path returns a
+  projection-backed `SquidMesh.ReadModel.Inspection.Snapshot` and does not write
+  the legacy runtime tables for the covered start flow. Journal execution
+  currently supports normal action steps, immediate built-in `:log` steps, and
+  transition-based built-in `:wait` successors. Dependency-mode `:wait` and
+  manual built-ins (`:pause` and `:approval`) are rejected until those semantics
+  are represented as journal facts.
   """
   @spec start_run(module(), map()) ::
           {:ok, Run.t()}
@@ -125,9 +126,10 @@ defmodule SquidMesh do
 
   Pass `runtime: :journal` with explicit `journal_storage:` to use the temporary
   Jido journal-backed cutover path for the named trigger. Journal execution
-  currently supports normal action steps and immediate built-in `:log` steps.
-  Delayed and manual built-ins (`:wait`, `:pause`, and `:approval`) are rejected
-  until those semantics are represented as journal facts.
+  currently supports normal action steps, immediate built-in `:log` steps, and
+  transition-based built-in `:wait` successors. Dependency-mode `:wait` and
+  manual built-ins (`:pause` and `:approval`) are rejected until those semantics
+  are represented as journal facts.
   """
   @spec start_run(module(), atom(), map(), keyword()) ::
           {:ok, Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()}
@@ -246,8 +248,9 @@ defmodule SquidMesh do
   Pass `runtime: :journal` with explicit `journal_storage:` to claim one visible
   Jido journal-backed attempt, run its declared step, and append durable attempt
   completion or failure facts. Journal execution currently supports normal
-  action steps and immediate built-in `:log` steps. Delayed and manual built-ins
-  (`:wait`, `:pause`, and `:approval`) are rejected at start.
+  action steps, immediate built-in `:log` steps, and transition-based built-in
+  `:wait` successors. Dependency-mode `:wait` and manual built-ins (`:pause`
+  and `:approval`) are rejected at start.
   """
   @spec execute_next(keyword()) :: Executor.execute_result()
   def execute_next(overrides \\ [])

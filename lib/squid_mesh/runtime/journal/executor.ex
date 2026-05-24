@@ -105,15 +105,16 @@ defmodule SquidMesh.Runtime.Journal.Executor do
        when is_list(opts) do
     with {:ok, workflow_agent} <- WorkflowAgent.rebuild(storage, attempt.run_id),
          {:ok, workflow, definition, step_name, step} <-
-           executable_step(storage, workflow_agent, attempt) do
+           executable_step(storage, workflow_agent, attempt),
+         :ok <- validate_executable_step_mode(definition, step) do
       context = step_context(attempt, workflow, step_name)
       finished_at = lifecycle_time(opts, claim_now)
       runtime = %{storage: storage, queue: queue, now: finished_at}
       claim = claim_context(dispatch_agent, workflow_agent, attempt, claim_id, claim_token)
 
       case run_step(step, attempt.input, context) do
-        {:ok, output} ->
-          complete_attempt(runtime, claim, definition, step_name, output)
+        {:ok, output, execution_opts} ->
+          complete_attempt(runtime, claim, definition, step_name, output, execution_opts)
 
         {:error, reason} ->
           fail_attempt(runtime, claim, workflow, definition, step_name, reason)
@@ -156,7 +157,8 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          },
          definition,
          step_name,
-         output
+         output,
+         execution_opts
        ) do
     runtime = %{storage: storage, queue: queue, now: now}
 
@@ -184,7 +186,8 @@ defmodule SquidMesh.Runtime.Journal.Executor do
         %{claim | dispatch_agent: dispatch_agent},
         definition,
         step_name,
-        result
+        result,
+        execution_opts
       )
     else
       {:error, _reason} = error ->
@@ -201,17 +204,19 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          } = claim,
          definition,
          step_name,
-         result
+         result,
+         execution_opts
        ) do
     case append_success_progression(
-           storage,
            workflow_agent,
-           attempt,
-           definition,
-           step_name,
-           result,
-           queue,
-           now
+           runtime,
+           %{
+             attempt: attempt,
+             definition: definition,
+             step_name: step_name,
+             result: result,
+             execution_opts: execution_opts
+           }
          ) do
       {:ok, workflow_agent} ->
         with {:ok, _schedule_update} <-
@@ -344,18 +349,11 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   end
 
   defp append_success_progression(
-         storage,
          workflow_agent,
-         %ActionAttempt{} = attempt,
-         definition,
-         step_name,
-         result,
-         queue,
-         %DateTime{} = now
+         %{storage: _storage, queue: _queue, now: %DateTime{}} = runtime,
+         %{attempt: %ActionAttempt{}} = success
        ) do
-    runtime = %{storage: storage, queue: queue, now: now}
-    success = %{attempt: attempt, definition: definition, step_name: step_name, result: result}
-
+    success = Map.put_new(success, :schedule_base_at, runtime.now)
     append_success_progression(runtime, workflow_agent, success, @run_append_retries)
   end
 
@@ -383,10 +381,20 @@ defmodule SquidMesh.Runtime.Journal.Executor do
            attempt: %ActionAttempt{} = attempt,
            definition: definition,
            step_name: step_name,
-           result: result
+           result: result,
+           execution_opts: execution_opts
          } = success,
          retries_left
        ) do
+    schedule_base_at = Map.get(success, :schedule_base_at, now)
+
+    progression = %{
+      execution_opts: execution_opts,
+      queue: queue,
+      schedule_base_at: schedule_base_at,
+      now: now
+    }
+
     with {:ok, transition, progression_entries} <-
            success_progression_entries(
              workflow_agent,
@@ -394,8 +402,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
              definition,
              step_name,
              result,
-             queue,
-             now
+             progression
            ) do
       entries = [runnable_applied_entry!(attempt, result, transition, now) | progression_entries]
       append_success_entries(runtime, workflow_agent, success, entries, retries_left)
@@ -496,8 +503,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          definition,
          step_name,
          result,
-         queue,
-         now
+         progression
        ) do
     if Definition.dependency_mode?(definition) do
       with {:ok, progression_entries} <-
@@ -507,8 +513,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
                definition,
                step_name,
                result,
-               queue,
-               now
+               progression
              ) do
         {:ok, nil, progression_entries}
       end
@@ -518,7 +523,13 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       with {:ok, %{to: target} = transition} <-
              Definition.transition(definition, step_name, :ok, context),
            {:ok, progression_entries} <-
-             success_progression_entries(attempt, definition, target, context, queue, now) do
+             success_progression_entries(
+               attempt,
+               definition,
+               target,
+               context,
+               progression
+             ) do
         {:ok, Definition.serialize_transition_decision(transition), progression_entries}
       end
     end
@@ -698,8 +709,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          _definition,
          :complete,
          _result,
-         _queue,
-         now
+         %{now: now}
        ) do
     {:ok, [run_terminal_entry!(attempt.run_id, :completed, now)]}
   end
@@ -709,11 +719,18 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          definition,
          next_step,
          result,
-         queue,
-         %DateTime{} = now
+         %{
+           execution_opts: execution_opts,
+           queue: queue,
+           schedule_base_at: %DateTime{} = schedule_base_at,
+           now: %DateTime{} = now
+         }
        )
        when is_atom(next_step) do
-    with {:ok, runnable} <- successor_runnable(attempt, definition, next_step, result, queue, now) do
+    visible_at = successor_visible_at(schedule_base_at, execution_opts)
+
+    with {:ok, runnable} <-
+           successor_runnable(attempt, definition, next_step, result, queue, visible_at) do
       {:ok, [runnables_planned_entry!(attempt.run_id, [runnable], now)]}
     end
   end
@@ -724,8 +741,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          definition,
          step_name,
          result,
-         queue,
-         %DateTime{} = now
+         %{now: now} = progression
        ) do
     step_statuses = dependency_step_statuses(workflow_agent, definition, step_name)
 
@@ -736,7 +752,13 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       {:dispatch, next_steps} ->
         context = dependency_context(workflow_agent, result)
 
-        case dependency_success_runnables(attempt, context, definition, next_steps, queue, now) do
+        case dependency_success_runnables(
+               attempt,
+               context,
+               definition,
+               next_steps,
+               progression
+             ) do
           {:ok, runnables} ->
             {:ok, [runnables_planned_entry!(attempt.run_id, runnables, now)]}
 
@@ -752,12 +774,24 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     end
   end
 
-  defp dependency_success_runnables(attempt, context, definition, next_steps, queue, now) do
+  defp dependency_success_runnables(
+         attempt,
+         context,
+         definition,
+         next_steps,
+         %{
+           execution_opts: execution_opts,
+           queue: queue,
+           schedule_base_at: %DateTime{} = schedule_base_at
+         }
+       ) do
+    visible_at = successor_visible_at(schedule_base_at, execution_opts)
+
     result =
       Enum.reduce_while(next_steps, {:ok, []}, fn next_step, {:ok, acc} ->
         case successor_input(context, definition, next_step) do
           {:ok, input} ->
-            runnable = journal_runnable(attempt.run_id, queue, next_step, input, 1, now)
+            runnable = journal_runnable(attempt.run_id, queue, next_step, input, 1, visible_at)
             {:cont, {:ok, [runnable | acc]}}
 
           {:error, _reason} = error ->
@@ -839,6 +873,13 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     case Definition.step_input_mapping(definition, next_step) do
       {:ok, input_mapping} -> StepInput.apply_input_mapping(context, input_mapping)
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp successor_visible_at(%DateTime{} = now, execution_opts) when is_list(execution_opts) do
+    case Keyword.get(execution_opts, :schedule_in) do
+      seconds when is_integer(seconds) and seconds > 0 -> DateTime.add(now, seconds, :second)
+      _immediate -> now
     end
   end
 
@@ -1237,17 +1278,22 @@ defmodule SquidMesh.Runtime.Journal.Executor do
 
   defp recover_completed_step(storage, dispatch_agent, queue, workflow_agent, attempt, now) do
     case executable_step(storage, workflow_agent, attempt) do
-      {:ok, _workflow, definition, step_name, _step} ->
-        append_recovered_success(
-          storage,
-          dispatch_agent,
-          queue,
-          workflow_agent,
-          attempt,
-          definition,
-          step_name,
-          now
-        )
+      {:ok, _workflow, definition, step_name, step} ->
+        case validate_executable_step_mode(definition, step) do
+          :ok ->
+            append_recovered_success(
+              %{storage: storage, queue: queue, now: now},
+              dispatch_agent,
+              workflow_agent,
+              attempt,
+              definition,
+              step_name,
+              step
+            )
+
+          {:error, reason} ->
+            recover_incompatible_progression(storage, queue, workflow_agent, attempt, now, reason)
+        end
 
       {:error, reason} ->
         recover_incompatible_progression(storage, queue, workflow_agent, attempt, now, reason)
@@ -1255,25 +1301,26 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   end
 
   defp append_recovered_success(
-         storage,
+         %{storage: storage, queue: queue, now: now} = runtime,
          dispatch_agent,
-         queue,
          workflow_agent,
          attempt,
          definition,
          step_name,
-         now
+         step
        ) do
     with {:ok, workflow_agent} <-
            append_success_progression(
-             storage,
              workflow_agent,
-             attempt,
-             definition,
-             step_name,
-             attempt.result || %{},
-             queue,
-             now
+             runtime,
+             %{
+               attempt: attempt,
+               definition: definition,
+               step_name: step_name,
+               result: attempt.result || %{},
+               execution_opts: recovered_execution_opts(step),
+               schedule_base_at: attempt_completion_at(attempt, now)
+             }
            ),
          {:ok, _schedule_update} <-
            schedule_pending_dispatches(storage, workflow_agent, dispatch_agent, now),
@@ -1505,17 +1552,45 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     }
   end
 
-  @spec run_step(map(), map(), map()) :: {:ok, map()} | {:error, term()}
+  defp validate_executable_step_mode(definition, %{module: :wait}) do
+    if Definition.dependency_mode?(definition) do
+      {:error, %{code: "unsupported_journal_step", step_kind: :wait, retryable?: false}}
+    else
+      :ok
+    end
+  end
+
+  defp validate_executable_step_mode(_definition, _step), do: :ok
+
+  defp recovered_execution_opts(%{module: :wait, opts: opts}) when is_list(opts) do
+    {:ok, _output, execution_opts} = BuiltInStep.execute_wait(opts)
+    execution_opts
+  end
+
+  defp recovered_execution_opts(_step), do: []
+
+  defp attempt_completion_at(%ActionAttempt{} = attempt, %DateTime{} = fallback) do
+    case Map.get(attempt, :completed_at) do
+      %DateTime{} = completed_at -> completed_at
+      _missing -> fallback
+    end
+  end
+
+  @spec run_step(map(), map(), map()) :: {:ok, map(), keyword()} | {:error, term()}
+  defp run_step(%{module: :wait, opts: opts}, _input, _context) when is_list(opts) do
+    BuiltInStep.execute_wait(opts)
+  end
+
   defp run_step(%{module: :log, opts: opts}, _input, _context) when is_list(opts) do
     {:ok, output, _execution_opts} = BuiltInStep.execute_log(opts)
-    {:ok, output}
+    {:ok, output, []}
   end
 
   defp run_step(%{module: module}, input, context) do
-    if module in [:wait, :pause, :approval] do
+    if module in [:pause, :approval] do
       {:error,
        %{
-         message: "journal executor cannot execute delayed or manual built-in steps yet",
+         message: "journal executor cannot execute manual built-in steps yet",
          retryable?: false,
          step_kind: module
        }}
@@ -1536,9 +1611,9 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       ])
 
     case result do
-      {:ok, output} when is_map(output) -> {:ok, output}
-      {:ok, output, extras} when is_map(output) and is_list(extras) -> {:ok, output}
-      {:ok, output, _extras} when is_map(output) -> {:ok, output}
+      {:ok, output} when is_map(output) -> {:ok, output, []}
+      {:ok, output, extras} when is_map(output) and is_list(extras) -> {:ok, output, []}
+      {:ok, output, _extras} when is_map(output) -> {:ok, output, []}
       {:error, reason} -> {:error, reason}
       other -> unexpected_exec_result(other)
     end
