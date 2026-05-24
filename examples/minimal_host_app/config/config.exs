@@ -21,7 +21,6 @@ config :minimal_host_app, MinimalHostApp.SquidMeshExecutor,
   queue: :squid_mesh
 
 config :squid_mesh,
-  repo: MinimalHostApp.Repo,
-  executor: MinimalHostApp.SquidMeshExecutor
+  repo: MinimalHostApp.Repo
 
 import_config "#{config_env()}.exs"

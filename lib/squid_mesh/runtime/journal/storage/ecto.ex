@@ -25,6 +25,8 @@ defmodule SquidMesh.Runtime.Journal.Storage.Ecto do
   alias SquidMesh.Persistence.JournalEntry
   alias SquidMesh.Persistence.JournalThread
 
+  @encoded_term_tag :squid_mesh_ecto_term_v1
+
   @type opts :: keyword()
 
   @impl Jido.Storage
@@ -346,7 +348,11 @@ defmodule SquidMesh.Runtime.Journal.Storage.Ecto do
     end
   end
 
-  defp encode_term(term), do: {:ok, :erlang.term_to_binary(term)}
+  defp encode_term(term) do
+    with {:ok, encoded} <- encode_value(term) do
+      {:ok, :erlang.term_to_binary({@encoded_term_tag, encoded})}
+    end
+  end
 
   defp decode_entry(binary) when is_binary(binary) do
     case decode_term(binary) do
@@ -357,9 +363,125 @@ defmodule SquidMesh.Runtime.Journal.Storage.Ecto do
   end
 
   defp decode_term(binary) when is_binary(binary) do
-    {:ok, :erlang.binary_to_term(binary, [:safe])}
+    # Journal rows are trusted storage, but not trusted code. The versioned
+    # envelope lets us safe-decode ETF without interning atoms from tampered
+    # rows. Atoms inside the envelope must already exist in the VM; unknown
+    # atoms fail closed instead of creating permanent atom table entries.
+    case :erlang.binary_to_term(binary, [:safe]) do
+      {@encoded_term_tag, encoded} -> decode_value(encoded)
+      _legacy_or_invalid -> {:error, :invalid_encoded_term}
+    end
   rescue
     error -> {:error, {error.__struct__, Exception.message(error)}}
+  end
+
+  defp encode_value(term) when is_atom(term), do: {:ok, {:atom, Atom.to_string(term)}}
+  defp encode_value(term) when is_binary(term), do: {:ok, {:binary, term}}
+  defp encode_value(term) when is_integer(term), do: {:ok, {:integer, term}}
+  defp encode_value(term) when is_float(term), do: {:ok, {:float, term}}
+
+  defp encode_value(term) when is_list(term) do
+    with {:ok, values} <- encode_many(term) do
+      {:ok, {:list, values}}
+    end
+  end
+
+  defp encode_value(term) when is_tuple(term) do
+    term
+    |> Tuple.to_list()
+    |> encode_many()
+    |> case do
+      {:ok, values} -> {:ok, {:tuple, values}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp encode_value(term) when is_map(term) do
+    term
+    |> Map.to_list()
+    |> Enum.reduce_while({:ok, []}, fn {key, value}, {:ok, pairs} ->
+      with {:ok, encoded_key} <- encode_value(key),
+           {:ok, encoded_value} <- encode_value(value) do
+        {:cont, {:ok, [{encoded_key, encoded_value} | pairs]}}
+      else
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, pairs} -> {:ok, {:map, Enum.reverse(pairs)}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp encode_value(term), do: {:error, {:unsupported_term, term}}
+
+  defp encode_many(values) when is_list(values) do
+    result =
+      Enum.reduce_while(values, {:ok, []}, fn value, {:ok, encoded_values} ->
+        case encode_value(value) do
+          {:ok, encoded_value} -> {:cont, {:ok, [encoded_value | encoded_values]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+
+    case result do
+      {:ok, encoded_values} -> {:ok, Enum.reverse(encoded_values)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp decode_value({:atom, value}) when is_binary(value), do: existing_atom(value)
+
+  defp decode_value({:binary, value}) when is_binary(value), do: {:ok, value}
+  defp decode_value({:integer, value}) when is_integer(value), do: {:ok, value}
+  defp decode_value({:float, value}) when is_float(value), do: {:ok, value}
+
+  defp decode_value({:list, values}) when is_list(values) do
+    decode_many(values)
+  end
+
+  defp decode_value({:tuple, values}) when is_list(values) do
+    with {:ok, values} <- decode_many(values) do
+      {:ok, List.to_tuple(values)}
+    end
+  end
+
+  defp decode_value({:map, pairs}) when is_list(pairs) do
+    Enum.reduce_while(pairs, {:ok, %{}}, fn
+      {encoded_key, encoded_value}, {:ok, decoded_map} ->
+        with {:ok, key} <- decode_value(encoded_key),
+             {:ok, value} <- decode_value(encoded_value) do
+          {:cont, {:ok, Map.put(decoded_map, key, value)}}
+        else
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+
+      _invalid, _acc ->
+        {:halt, {:error, :invalid_encoded_map}}
+    end)
+  end
+
+  defp decode_value(_encoded), do: {:error, :invalid_encoded_term}
+
+  defp existing_atom(value) do
+    {:ok, String.to_existing_atom(value)}
+  rescue
+    ArgumentError -> {:error, {:unknown_atom, value}}
+  end
+
+  defp decode_many(values) when is_list(values) do
+    result =
+      Enum.reduce_while(values, {:ok, []}, fn value, {:ok, decoded_values} ->
+        case decode_value(value) do
+          {:ok, decoded_value} -> {:cont, {:ok, [decoded_value | decoded_values]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+
+    case result do
+      {:ok, decoded_values} -> {:ok, Enum.reverse(decoded_values)}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp key_hash(key_binary) do

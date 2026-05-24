@@ -7,8 +7,6 @@ defmodule SquidMesh.Step.Context do
   durable run state available before the current attempt started.
   """
 
-  alias SquidMesh.Run
-
   @enforce_keys [:run_id, :workflow, :step, :attempt, :state]
   defstruct [:run_id, :workflow, :step, :attempt, state: %{}]
 
@@ -19,18 +17,6 @@ defmodule SquidMesh.Step.Context do
           attempt: pos_integer() | nil,
           state: map()
         }
-
-  @doc false
-  @spec from_run(Run.t(), atom(), pos_integer() | nil) :: t()
-  def from_run(%Run{} = run, step, attempt) when is_atom(step) do
-    %__MODULE__{
-      run_id: run.id,
-      workflow: run.workflow,
-      step: step,
-      attempt: attempt,
-      state: Map.merge(run.payload || %{}, run.context || %{})
-    }
-  end
 
   @doc false
   @spec from_map(map()) :: t()

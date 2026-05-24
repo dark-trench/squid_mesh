@@ -167,6 +167,44 @@ defmodule SquidMesh.ReadModel.InspectionTest do
              snapshot.attempts
   end
 
+  test "merges applied result context in durable application order" do
+    approval_gate_key = "#{@run_id}:wait_for_approval:1"
+    record_approval_key = "#{@run_id}:record_approval:1"
+    approval_recorded_at = DateTime.add(@completed_at, 1, :second)
+
+    append_run_entries([
+      run_started(),
+      runnables_planned([
+        planned_runnable(
+          runnable_key: approval_gate_key,
+          idempotency_key: approval_gate_key,
+          step: "wait_for_approval"
+        ),
+        planned_runnable(
+          runnable_key: record_approval_key,
+          idempotency_key: record_approval_key,
+          step: "record_approval"
+        )
+      ]),
+      runnable_applied(
+        runnable_key: approval_gate_key,
+        result: %{approval: %{}},
+        occurred_at: @completed_at
+      ),
+      runnable_applied(
+        runnable_key: record_approval_key,
+        result: %{approval: %{status: "approved", actor: "ops_123"}},
+        occurred_at: approval_recorded_at
+      ),
+      run_terminal(:completed, occurred_at: approval_recorded_at)
+    ])
+
+    assert {:ok, %Snapshot{} = snapshot} =
+             Inspection.snapshot(@storage, @run_id, queue: @queue, now: approval_recorded_at)
+
+    assert snapshot.context.approval == %{status: "approved", actor: "ops_123"}
+  end
+
   test "shows manual pause state without suggesting dispatch recovery" do
     append_run_entries([run_started(), runnables_planned(), manual_step_paused()])
     append_dispatch_entries([attempt_scheduled()])
@@ -326,20 +364,20 @@ defmodule SquidMesh.ReadModel.InspectionTest do
     })
   end
 
-  defp runnable_applied do
+  defp runnable_applied(overrides \\ []) do
     entry!(:runnable_applied, %{
       run_id: @run_id,
-      runnable_key: @runnable_key,
-      result: %{"status" => "captured"},
-      occurred_at: @completed_at
+      runnable_key: Keyword.get(overrides, :runnable_key, @runnable_key),
+      result: Keyword.get(overrides, :result, %{"status" => "captured"}),
+      occurred_at: Keyword.get(overrides, :occurred_at, @completed_at)
     })
   end
 
-  defp run_terminal(status) do
+  defp run_terminal(status, overrides \\ []) do
     entry!(:run_terminal, %{
       run_id: @run_id,
       status: status,
-      occurred_at: @completed_at
+      occurred_at: Keyword.get(overrides, :occurred_at, @completed_at)
     })
   end
 

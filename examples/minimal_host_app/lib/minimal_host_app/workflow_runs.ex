@@ -47,12 +47,12 @@ defmodule MinimalHostApp.WorkflowRuns do
         }
 
   @type run_result ::
-          SquidMesh.Run.t() | SquidMesh.ReadModel.Inspection.Snapshot.t()
+          SquidMesh.ReadModel.Inspection.Snapshot.t()
 
   @type explanation_result ::
-          SquidMesh.Runs.Explanation.t() | SquidMesh.ReadModel.Explanation.Diagnostic.t()
+          SquidMesh.ReadModel.Explanation.Diagnostic.t()
 
-  @type listing_result :: SquidMesh.Run.t() | SquidMesh.ReadModel.Listing.Summary.t()
+  @type listing_result :: SquidMesh.ReadModel.Listing.Summary.t()
 
   @spec start_payment_recovery(payment_recovery_attrs()) ::
           {:ok, run_result()} | {:error, term()}

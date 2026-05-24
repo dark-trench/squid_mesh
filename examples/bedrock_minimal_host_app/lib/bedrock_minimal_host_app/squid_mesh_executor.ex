@@ -8,36 +8,6 @@ defmodule BedrockMinimalHostApp.SquidMeshExecutor do
   alias SquidMesh.Executor.Payload
 
   @impl true
-  def enqueue_step(_config, run, step, opts) do
-    run
-    |> Payload.step(step)
-    |> enqueue(opts)
-  end
-
-  @impl true
-  def enqueue_steps(_config, run, steps, opts) do
-    # This exercises Bedrock's queue boundary only. The current Squid Mesh
-    # executor contract does not give this adapter an atomic batch enqueue.
-    results =
-      Enum.map(steps, fn step ->
-        run
-        |> Payload.step(step)
-        |> enqueue(opts)
-      end)
-
-    with :ok <- assert_all_enqueued(results) do
-      {:ok, Enum.map(results, fn {:ok, metadata} -> metadata end)}
-    end
-  end
-
-  @impl true
-  def enqueue_compensation(_config, run, opts) do
-    run
-    |> Payload.compensation()
-    |> enqueue(opts)
-  end
-
-  @impl true
   def enqueue_cron(_config, workflow, trigger, opts) do
     workflow
     |> Payload.cron(trigger, Keyword.take(opts, [:signal_id, :intended_window]))
@@ -58,13 +28,6 @@ defmodule BedrockMinimalHostApp.SquidMeshExecutor do
       {:ok, item} -> {:ok, metadata(item, queue_id, topic)}
       {:error, reason} -> {:error, reason}
       other -> {:error, {:unexpected_enqueue_result, other}}
-    end
-  end
-
-  defp assert_all_enqueued(results) do
-    case Enum.find(results, &match?({:error, _reason}, &1)) do
-      nil -> :ok
-      {:error, reason} -> {:error, reason}
     end
   end
 

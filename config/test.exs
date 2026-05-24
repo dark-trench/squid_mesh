@@ -2,8 +2,7 @@ import Config
 
 config :squid_mesh,
   ecto_repos: [SquidMesh.Test.Repo],
-  repo: SquidMesh.Test.Repo,
-  executor: SquidMesh.Test.Executor
+  repo: SquidMesh.Test.Repo
 
 config :squid_mesh, SquidMesh.Test.Repo,
   pool: Ecto.Adapters.SQL.Sandbox,

@@ -2,23 +2,20 @@ defmodule SquidMesh.Runtime.Runner do
   @moduledoc """
   Backend-neutral runtime entrypoints for host executors.
 
-  Executor jobs should call these functions when queued work is delivered.
+  Cron scheduler jobs should call this module when a serialized cron activation
+  is delivered. Step execution is claimed through `SquidMesh.execute_next/1`.
   """
 
-  require Logger
-
-  alias SquidMesh.Observability
   alias SquidMesh.ReadModel.Inspection.Snapshot
   alias SquidMesh.Runtime.ScheduleIdentity
   alias SquidMesh.Runtime.ScheduleMetadata
-  alias SquidMesh.Runtime.StepExecutor
 
   @doc """
   Executes one queued executor payload.
 
   Host job backends should store payloads produced by
   `SquidMesh.Executor.Payload` and pass the payload back here when the job is
-  delivered. The runner accepts step, compensation, and cron activation payloads.
+  delivered. The runner accepts cron activation payloads only.
 
   Cron payloads create a new run. Any scheduler metadata carried by
   `SquidMesh.Executor.Payload.cron/3` is persisted into the run context before
@@ -27,14 +24,12 @@ defmodule SquidMesh.Runtime.Runner do
   @spec perform(map(), keyword()) :: :ok | {:error, term()}
   def perform(args, overrides \\ [])
 
-  def perform(%{"kind" => "step", "run_id" => run_id, "step" => step}, overrides)
-      when is_binary(run_id) and is_binary(step) do
-    execute_step(run_id, step, overrides)
+  def perform(%{"kind" => kind}, _overrides) when kind in ["step", "compensation"] do
+    {:error, {:unsupported_executor_payload, kind}}
   end
 
-  def perform(%{"kind" => "compensation", "run_id" => run_id}, overrides)
-      when is_binary(run_id) do
-    execute_compensation(run_id, overrides)
+  def perform(%{"kind" => kind}, _overrides) when kind in [:step, :compensation] do
+    {:error, {:unsupported_executor_payload, Atom.to_string(kind)}}
   end
 
   def perform(%{"kind" => "cron", "workflow" => workflow, "trigger" => trigger} = args, overrides)
@@ -48,66 +43,6 @@ defmodule SquidMesh.Runtime.Runner do
 
   def perform(args, _overrides) do
     {:error, {:invalid_executor_payload, args}}
-  end
-
-  @doc """
-  Executes a queued step payload by run id and step name.
-
-  The step name may be the serialized string stored in a job payload. The step
-  executor reloads the durable run, validates that the step is still runnable,
-  and applies the normal retry, transition, and dispatch rules.
-  """
-  @spec execute_step(Ecto.UUID.t(), atom() | String.t(), keyword()) :: :ok | {:error, term()}
-  def execute_step(run_id, step, overrides \\ []) when is_binary(run_id) do
-    Observability.with_run_metadata(run_stub(run_id, step), fn ->
-      try do
-        case StepExecutor.execute(run_id, step, overrides) do
-          :ok ->
-            :ok
-
-          {:error, reason} = error ->
-            Logger.error("step execution failed: #{inspect(reason)}")
-            error
-        end
-      rescue
-        exception ->
-          Logger.error("""
-          unexpected step execution exception: #{Exception.format(:error, exception, __STACKTRACE__)}
-          """)
-
-          {:error, {:exception, Exception.message(exception)}}
-      end
-    end)
-  end
-
-  @doc """
-  Executes queued compensation for a failed run.
-
-  Compensation uses persisted run and step history to determine which reversible
-  steps need compensation work. Delivery errors are returned as structured
-  `{:error, reason}` tuples so job backends can apply their own retry policy.
-  """
-  @spec execute_compensation(Ecto.UUID.t(), keyword()) :: :ok | {:error, term()}
-  def execute_compensation(run_id, overrides \\ []) when is_binary(run_id) do
-    Observability.with_run_metadata(run_stub(run_id, nil), fn ->
-      try do
-        case StepExecutor.compensate(run_id, overrides) do
-          :ok ->
-            :ok
-
-          {:error, reason} = error ->
-            Logger.error("compensation execution failed: #{inspect(reason)}")
-            error
-        end
-      rescue
-        exception ->
-          Logger.error("""
-          unexpected compensation exception: #{Exception.format(:error, exception, __STACKTRACE__)}
-          """)
-
-          {:error, {:exception, Exception.message(exception)}}
-      end
-    end)
   end
 
   @doc """
@@ -199,10 +134,6 @@ defmodule SquidMesh.Runtime.Runner do
     |> Keyword.put(:read_model, :read_model)
   end
 
-  defp run_stub(run_id, step) do
-    %SquidMesh.Run{id: run_id, workflow: nil, trigger: nil, status: nil, current_step: step}
-  end
-
   defp start_cron_run(workflow, trigger, schedule_context, overrides) do
     SquidMesh.start_run_with_initial_context(
       workflow,
@@ -213,15 +144,6 @@ defmodule SquidMesh.Runtime.Runner do
     )
   end
 
-  defp cron_start_result(
-         {:duplicate_schedule_start, %SquidMesh.Run{id: run_id, context: context}}
-       ) do
-    case schedule_idempotency(context) do
-      :skip_duplicate -> {:ok, {:skipped_schedule_start, run_id}}
-      _other -> {:ok, {:duplicate_schedule_start, run_id}}
-    end
-  end
-
   defp cron_start_result({:duplicate_schedule_start, %Snapshot{run_id: run_id, context: context}}) do
     case schedule_idempotency(context) do
       :skip_duplicate -> {:ok, {:skipped_schedule_start, run_id}}
@@ -229,7 +151,6 @@ defmodule SquidMesh.Runtime.Runner do
     end
   end
 
-  defp cron_start_result(%SquidMesh.Run{}), do: :ok
   defp cron_start_result(%Snapshot{}), do: :ok
 
   defp schedule_idempotency(context) when is_map(context) do
@@ -242,8 +163,6 @@ defmodule SquidMesh.Runtime.Runner do
       strategy -> strategy
     end
   end
-
-  defp schedule_idempotency(_context), do: nil
 
   defp schedule_context(context) do
     case Map.fetch(context, :schedule) do

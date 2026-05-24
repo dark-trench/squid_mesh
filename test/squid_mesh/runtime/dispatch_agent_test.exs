@@ -888,12 +888,16 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
   defp table_name(:thread_meta), do: :squid_mesh_dispatch_agent_test_thread_meta
 
   defp cleanup_storage do
-    for suffix <- [:checkpoints, :threads, :thread_meta] do
+    Enum.each([:checkpoints, :threads, :thread_meta], fn suffix ->
       table = table_name(suffix)
 
-      if :ets.whereis(table) != :undefined do
-        :ets.delete(table)
+      try do
+        if :ets.whereis(table) != :undefined do
+          :ets.delete(table)
+        end
+      rescue
+        ArgumentError -> :ok
       end
-    end
+    end)
   end
 end

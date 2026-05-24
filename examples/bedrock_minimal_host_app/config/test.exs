@@ -16,7 +16,6 @@ config :bedrock_minimal_host_app, BedrockMinimalHostApp.SquidMeshExecutor,
   topic: "squid_mesh:payload"
 
 config :squid_mesh,
-  repo: BedrockMinimalHostApp.Repo,
-  executor: BedrockMinimalHostApp.SquidMeshExecutor
+  repo: BedrockMinimalHostApp.Repo
 
 config :logger, level: :warning

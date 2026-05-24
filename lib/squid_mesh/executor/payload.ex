@@ -8,50 +8,16 @@ defmodule SquidMesh.Executor.Payload do
   the runner is responsible for loading the workflow definition and applying the
   runtime rules.
 
-  Step and compensation payloads identify existing durable runs. Cron payloads
-  identify a workflow trigger activation that will create a new run when
-  delivered. Cron payloads may also include scheduler metadata such as a stable
-  signal id and intended schedule window. That metadata is not workflow input;
-  the runtime persists it under `run.context.schedule` before dispatching the
-  first workflow step.
+  Cron payloads identify a workflow trigger activation that will create a new
+  run when delivered. Cron payloads may also include scheduler metadata such as
+  a stable signal id and intended schedule window. That metadata is not workflow
+  input; the runtime persists it under `run.context.schedule` before dispatching
+  the first workflow step.
   """
-
-  alias SquidMesh.Run
 
   @type t :: %{
           required(String.t()) => String.t() | boolean() | map()
         }
-
-  @doc """
-  Builds the executor payload for one workflow step attempt.
-
-  The payload contains only the durable run id and serialized step name. It is
-  safe to persist in a host job backend and later pass to
-  `SquidMesh.Runtime.Runner.perform/2`.
-  """
-  @spec step(Run.t(), atom() | String.t()) :: t()
-  def step(%Run{id: run_id}, step) do
-    %{
-      "kind" => "step",
-      "run_id" => run_id,
-      "step" => SquidMesh.Workflow.Definition.serialize_step(step)
-    }
-  end
-
-  @doc """
-  Builds the executor payload for compensation after a failed run.
-
-  Compensation reuses the run's durable history to decide which completed
-  reversible steps need follow-up work, so the queued payload only needs the run
-  id and work kind.
-  """
-  @spec compensation(Run.t()) :: t()
-  def compensation(%Run{id: run_id}) do
-    %{
-      "kind" => "compensation",
-      "run_id" => run_id
-    }
-  end
 
   @doc """
   Builds the executor payload for a cron trigger activation.

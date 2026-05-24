@@ -10,11 +10,10 @@ defmodule SquidMesh.Config do
   alias SquidMesh.Runtime.Journal.Options
 
   @type stale_step_timeout :: non_neg_integer() | :disabled
-  @type runtime :: :runtime_tables | :journal
-  @type read_model :: :runtime_tables | :read_model
+  @type runtime :: :journal
+  @type read_model :: :read_model
   @type raw_config :: [
           repo: module(),
-          executor: module() | nil,
           stale_step_timeout: stale_step_timeout(),
           runtime: runtime(),
           read_model: read_model(),
@@ -23,7 +22,6 @@ defmodule SquidMesh.Config do
         ]
   @type t :: %__MODULE__{
           repo: module(),
-          executor: module() | nil,
           stale_step_timeout: stale_step_timeout(),
           runtime: runtime(),
           read_model: read_model(),
@@ -33,7 +31,6 @@ defmodule SquidMesh.Config do
 
   defstruct [
     :repo,
-    :executor,
     :journal_storage,
     stale_step_timeout: :disabled,
     runtime: :journal,
@@ -45,8 +42,8 @@ defmodule SquidMesh.Config do
   @default_runtime :journal
   @default_read_model :read_model
   @default_queue "default"
-  @runtimes [:runtime_tables, :journal]
-  @read_models [:runtime_tables, :read_model]
+  @runtimes [:journal]
+  @read_models [:read_model]
 
   @type config_error :: {:missing_config, [atom()]} | {:invalid_config, keyword()}
 
@@ -54,8 +51,8 @@ defmodule SquidMesh.Config do
   Loads Squid Mesh configuration from the host application environment.
 
   Optional overrides are merged after application configuration so tests and
-  embedding applications can supply runtime-specific repositories or executors
-  without mutating global application state.
+  embedding applications can supply runtime-specific repositories without
+  mutating global application state.
   """
   @spec load(keyword()) :: {:ok, t()} | {:error, config_error()}
   def load(overrides \\ []) do
@@ -73,12 +70,11 @@ defmodule SquidMesh.Config do
          {:ok, read_model} <-
            validate_read_model(Keyword.get(config, :read_model, @default_read_model)),
          {:ok, queue} <- validate_queue(Keyword.get(config, :queue, @default_queue)),
-         {:ok, journal_storage} <- validate_journal_storage(config, runtime, read_model),
-         {:ok, executor} <- validate_executor_config(config, runtime) do
+         :ok <- reject_legacy_executor(config),
+         {:ok, journal_storage} <- validate_journal_storage(config, runtime, read_model) do
       {:ok,
        %__MODULE__{
          repo: Keyword.fetch!(config, :repo),
-         executor: executor,
          stale_step_timeout: stale_step_timeout,
          runtime: runtime,
          read_model: read_model,
@@ -156,16 +152,8 @@ defmodule SquidMesh.Config do
     end
   end
 
-  defp validate_journal_storage(config, runtime, read_model) do
-    if journal_storage_required?(runtime, read_model) do
-      validate_required_journal_storage(config)
-    else
-      {:ok, nil}
-    end
-  end
-
-  defp journal_storage_required?(runtime, read_model) do
-    runtime == :journal or read_model == :read_model
+  defp validate_journal_storage(config, :journal, :read_model) do
+    validate_required_journal_storage(config)
   end
 
   defp validate_required_journal_storage(config) do
@@ -200,40 +188,9 @@ defmodule SquidMesh.Config do
     end
   end
 
-  defp validate_executor_config(config, :runtime_tables) do
-    case Keyword.fetch(config, :executor) do
-      {:ok, executor} -> validate_executor(executor)
-      :error -> {:error, {:missing_config, [:executor]}}
-    end
-  end
-
-  defp validate_executor_config(config, :journal) do
-    case Keyword.fetch(config, :executor) do
-      {:ok, executor} -> validate_executor(executor)
-      :error -> {:ok, nil}
-    end
-  end
-
-  defp validate_executor(executor) when is_atom(executor) do
-    with {:module, ^executor} <- Code.ensure_loaded(executor),
-         [] <- missing_callbacks(executor) do
-      {:ok, executor}
-    else
-      {:error, _reason} ->
-        {:error, {:invalid_config, [executor: {:module_not_loaded, executor}]}}
-
-      missing when is_list(missing) ->
-        {:error, {:invalid_config, [executor: {:missing_callbacks, missing}]}}
-    end
-  end
-
-  defp validate_executor(invalid) do
-    {:error, {:invalid_config, [executor: invalid]}}
-  end
-
-  defp missing_callbacks(executor) do
-    SquidMesh.Executor.required_callbacks()
-    |> Enum.reject(fn {function, arity} -> function_exported?(executor, function, arity) end)
-    |> Enum.map(fn {function, _arity} -> function end)
+  defp reject_legacy_executor(config) do
+    if Keyword.has_key?(config, :executor),
+      do: {:error, {:invalid_config, [executor: :unsupported]}},
+      else: :ok
   end
 end

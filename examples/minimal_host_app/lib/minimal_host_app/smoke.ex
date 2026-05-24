@@ -20,7 +20,7 @@ defmodule MinimalHostApp.Smoke do
   @journal_executor_queue_prefix "minimal-host-app-journal-smoke"
   @journal_executor_storage {SquidMesh.Runtime.Journal.Storage.Ecto, repo: Repo}
 
-  @spec run!() :: SquidMesh.Run.t()
+  @spec run!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   def run! do
     RuntimeHarness.ensure_runtime_started()
 
@@ -40,11 +40,11 @@ defmodule MinimalHostApp.Smoke do
     with {:ok, run} <- WorkflowRuns.start_payment_recovery(attrs),
          :ok <- RuntimeHarness.wait_for_execution(),
          {:ok, inspected_run} <-
-           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts) do
-      IO.puts("started run #{run.id} for #{inspect(run.workflow)}")
+           RuntimeHarness.await_terminal_run(run.run_id, attempts: @poll_attempts) do
+      IO.puts("started run #{run.run_id} for #{inspect(run.workflow)}")
       RuntimeHarness.stop_gateway_server(server_pid)
 
-      unless inspected_run.id == run.id and inspected_run.status == :completed do
+      unless inspected_run.run_id == run.run_id and inspected_run.status == :completed do
         raise "unexpected smoke result"
       end
 
@@ -56,19 +56,19 @@ defmodule MinimalHostApp.Smoke do
   end
 
   @spec run_all!() :: %{
-          payment_recovery: SquidMesh.Run.t(),
-          dependency_recovery: SquidMesh.Run.t(),
-          manual_approval: SquidMesh.Run.t(),
-          manual_digest: SquidMesh.Run.t(),
-          local_ledger_checkout: SquidMesh.Run.t(),
-          local_ledger_rollback: SquidMesh.Run.t(),
-          saga_checkout: SquidMesh.Run.t(),
+          payment_recovery: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          dependency_recovery: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          manual_approval: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          manual_digest: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          local_ledger_checkout: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          local_ledger_rollback: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          saga_checkout: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_executor: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_recovery: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_cancellation: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_replay: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_cron_digest: SquidMesh.ReadModel.Inspection.Snapshot.t(),
-          daily_digest: SquidMesh.Run.t()
+          daily_digest: SquidMesh.ReadModel.Inspection.Snapshot.t()
         }
   def run_all! do
     payment_recovery = run!()
@@ -87,7 +87,7 @@ defmodule MinimalHostApp.Smoke do
     with :ok <- run_cron_digest(),
          {:ok, cron_run} <-
            await_daily_digest_run(existing_daily_digest_run_ids, @poll_attempts) do
-      unless cron_run.status == :completed and cron_run.trigger == :daily_digest do
+      unless cron_run.status == :completed and cron_run.trigger == "daily_digest" do
         raise "unexpected cron smoke result"
       end
 
@@ -112,7 +112,7 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
-  @spec run_dependency_recovery!() :: SquidMesh.Run.t()
+  @spec run_dependency_recovery!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   def run_dependency_recovery! do
     attrs = %{
       account_id: "acct_dependency_demo",
@@ -123,16 +123,16 @@ defmodule MinimalHostApp.Smoke do
     with {:ok, run} <- WorkflowRuns.start_dependency_recovery(attrs),
          :ok <- RuntimeHarness.wait_for_execution(),
          {:ok, inspected_run} <-
-           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts),
-         {:ok, history_run} <- WorkflowRuns.inspect_run(run.id, include_history: true) do
-      unless inspected_run.id == run.id and inspected_run.status == :completed do
+           RuntimeHarness.await_terminal_run(run.run_id, attempts: @poll_attempts),
+         {:ok, history_run} <- WorkflowRuns.inspect_run(run.run_id, include_history: true) do
+      unless inspected_run.run_id == run.run_id and inspected_run.status == :completed do
         raise "unexpected dependency recovery smoke result"
       end
 
-      unless Enum.map(history_run.steps, &{&1.step, &1.status, &1.depends_on}) == [
-               {:load_account, :completed, []},
-               {:load_invoice, :completed, []},
-               {:prepare_notification, :completed, [:load_account, :load_invoice]}
+      unless Enum.map(history_run.attempts, &{&1.step, &1.status, &1.applied?}) == [
+               {"load_account", :completed, true},
+               {"load_invoice", :completed, true},
+               {"prepare_notification", :completed, true}
              ] do
         raise "unexpected dependency inspection history"
       end
@@ -394,7 +394,7 @@ defmodule MinimalHostApp.Smoke do
     end)
   end
 
-  @spec run_cancellation!() :: SquidMesh.Run.t()
+  @spec run_cancellation!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   def run_cancellation! do
     RuntimeHarness.ensure_runtime_started()
 
@@ -407,24 +407,24 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
-  @spec run_manual_approval!() :: SquidMesh.Run.t()
+  @spec run_manual_approval!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   def run_manual_approval! do
     with {:ok, run} <- WorkflowRuns.start_manual_approval(%{account_id: "acct_manual_demo"}),
-         {:ok, _paused_run} <- await_paused_run(run.id, @poll_attempts),
-         {:ok, explanation} <- WorkflowRuns.explain_run(run.id),
+         {:ok, _paused_run} <- await_paused_run(run.run_id, @poll_attempts),
+         {:ok, explanation} <- WorkflowRuns.explain_run(run.run_id),
          :ok <- ensure_paused_approval_explanation(explanation),
          {:ok, resumed_run} <-
            WorkflowRuns.approve_run(
-             run.id,
+             run.run_id,
              %{actor: "ops_smoke", comment: "approved", metadata: %{ticket: "SMOKE-1"}}
            ),
          :ok <- ensure_resumed(resumed_run),
          :ok <- RuntimeHarness.wait_for_execution(),
          {:ok, inspected_run} <-
-           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts),
-         {:ok, history_run} <- WorkflowRuns.inspect_run(run.id, include_history: true),
+           RuntimeHarness.await_terminal_run(run.run_id, attempts: @poll_attempts),
+         {:ok, history_run} <- WorkflowRuns.inspect_run(run.run_id, include_history: true),
          :ok <- ensure_manual_approval_audit(history_run) do
-      unless inspected_run.id == run.id and inspected_run.status == :completed do
+      unless inspected_run.run_id == run.run_id and inspected_run.status == :completed do
         raise "unexpected manual approval smoke result"
       end
 
@@ -435,15 +435,15 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
-  @spec run_manual_digest!() :: SquidMesh.Run.t()
+  @spec run_manual_digest!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   def run_manual_digest! do
     attrs = %{channel: "ops-manual", digest_date: Date.utc_today() |> Date.to_iso8601()}
 
     with {:ok, run} <- WorkflowRuns.start_manual_digest(attrs),
          :ok <- RuntimeHarness.wait_for_execution(),
          {:ok, inspected_run} <-
-           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts) do
-      unless inspected_run.status == :completed and inspected_run.trigger == :manual_digest do
+           RuntimeHarness.await_terminal_run(run.run_id, attempts: @poll_attempts) do
+      unless inspected_run.status == :completed and inspected_run.trigger == "manual_digest" do
         raise "unexpected manual digest smoke result"
       end
 
@@ -459,7 +459,9 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
-  @spec run_local_ledger_checkout!() :: {SquidMesh.Run.t(), SquidMesh.Run.t()}
+  @spec run_local_ledger_checkout!() ::
+          {SquidMesh.ReadModel.Inspection.Snapshot.t(),
+           SquidMesh.ReadModel.Inspection.Snapshot.t()}
   def run_local_ledger_checkout! do
     committed_attrs = %{account_id: "acct_local_commit", fail_after_reserve: false}
     rolled_back_attrs = %{account_id: "acct_local_rollback", fail_after_reserve: true}
@@ -467,12 +469,12 @@ defmodule MinimalHostApp.Smoke do
     with {:ok, committed_run} <- WorkflowRuns.start_local_ledger_checkout(committed_attrs),
          :ok <- RuntimeHarness.wait_for_execution(),
          {:ok, committed_terminal_run} <-
-           RuntimeHarness.await_terminal_run(committed_run.id, attempts: @poll_attempts),
+           RuntimeHarness.await_terminal_run(committed_run.run_id, attempts: @poll_attempts),
          :ok <- ensure_local_ledger_entries(committed_terminal_run, ["reserve", "capture"]),
          {:ok, rolled_back_run} <- WorkflowRuns.start_local_ledger_checkout(rolled_back_attrs),
          :ok <- RuntimeHarness.wait_for_execution(),
          {:ok, rolled_back_terminal_run} <-
-           RuntimeHarness.await_terminal_run(rolled_back_run.id, attempts: @poll_attempts),
+           RuntimeHarness.await_terminal_run(rolled_back_run.run_id, attempts: @poll_attempts),
          :ok <- ensure_local_ledger_entries(rolled_back_terminal_run, []) do
       unless committed_terminal_run.status == :completed and
                rolled_back_terminal_run.status == :failed do
@@ -487,19 +489,20 @@ defmodule MinimalHostApp.Smoke do
   end
 
   @doc """
-  Runs the saga checkout example and verifies persisted compensation history.
+  Runs the saga checkout example and verifies persisted retry failure history.
   """
-  @spec run_saga_checkout!() :: SquidMesh.Run.t()
+  @spec run_saga_checkout!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   def run_saga_checkout! do
     attrs = %{account_id: "acct_saga_demo", order_id: "ord_saga_demo"}
 
     with {:ok, run} <- WorkflowRuns.start_saga_checkout(attrs),
          :ok <- RuntimeHarness.wait_for_execution(),
          {:ok, inspected_run} <-
-           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts),
-         {:ok, history_run} <- WorkflowRuns.inspect_run(run.id, include_history: true),
-         :ok <- ensure_saga_compensation(history_run) do
-      unless inspected_run.status == :failed and inspected_run.current_step == :capture_payment do
+           RuntimeHarness.await_terminal_run(run.run_id, attempts: @poll_attempts),
+         {:ok, history_run} <- WorkflowRuns.inspect_run(run.run_id, include_history: true),
+         :ok <- ensure_saga_failure_history(history_run) do
+      unless inspected_run.status == :failed and
+               Enum.any?(inspected_run.attempts, &(&1.step == "capture_payment")) do
         raise "unexpected saga checkout smoke result"
       end
 
@@ -534,9 +537,10 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
-  defp mapped_dependency_input?(%SquidMesh.Run{step_runs: step_runs}) when is_list(step_runs) do
-    Enum.any?(step_runs, fn
-      %{step: :prepare_notification, input: input} ->
+  defp mapped_dependency_input?(%SquidMesh.ReadModel.Inspection.Snapshot{attempts: attempts})
+       when is_list(attempts) do
+    Enum.any?(attempts, fn
+      %{step: "prepare_notification", input: input} ->
         input == %{
           account_id: "acct_dependency_demo",
           invoice_id: "inv_dependency_demo",
@@ -576,15 +580,15 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
-  @spec run_cancellation_smoke() :: {:ok, SquidMesh.Run.t()} | {:error, term()}
+  @spec run_cancellation_smoke() ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()} | {:error, term()}
   defp run_cancellation_smoke do
     with {:ok, run} <- WorkflowRuns.start_cancellable_wait(%{account_id: "acct_demo"}),
          :ok <- wait_for_execution(),
-         {:ok, cancelling_run} <- WorkflowRuns.cancel_run(run.id),
+         {:ok, cancelling_run} <- WorkflowRuns.cancel_run(run.run_id),
          :ok <- ensure_cancelling(cancelling_run),
-         :ok <- RuntimeHarness.perform_scheduled_step!(run.id, "record_delivery"),
          {:ok, cancelled_run} <-
-           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts) do
+           RuntimeHarness.await_terminal_run(run.run_id, attempts: @poll_attempts) do
       {:ok, cancelled_run}
     else
       {:error, _reason} = error -> error
@@ -592,19 +596,23 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
-  @spec ensure_cancelling(SquidMesh.Run.t()) :: :ok | {:error, :unexpected_cancellation_status}
-  defp ensure_cancelling(%SquidMesh.Run{status: :cancelling}), do: :ok
-  defp ensure_cancelling(%SquidMesh.Run{}), do: {:error, :unexpected_cancellation_status}
+  @spec ensure_cancelling(SquidMesh.ReadModel.Inspection.Snapshot.t()) ::
+          :ok | {:error, :unexpected_cancellation_status}
+  defp ensure_cancelling(%SquidMesh.ReadModel.Inspection.Snapshot{status: :cancelled}), do: :ok
+
+  defp ensure_cancelling(%SquidMesh.ReadModel.Inspection.Snapshot{}),
+    do: {:error, :unexpected_cancellation_status}
 
   @spec await_paused_run(Ecto.UUID.t(), non_neg_integer()) ::
-          {:ok, SquidMesh.Run.t()} | {:error, term()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()} | {:error, term()}
   defp await_paused_run(_run_id, 0), do: {:error, :timeout}
 
   defp await_paused_run(run_id, attempts_remaining) when attempts_remaining > 0 do
     :ok = RuntimeHarness.wait_for_execution()
+    _result = SquidMesh.execute_next(owner_id: "minimal-host-app-manual-smoke")
 
     case WorkflowRuns.inspect_run(run_id, include_history: true) do
-      {:ok, %SquidMesh.Run{} = run} ->
+      {:ok, %SquidMesh.ReadModel.Inspection.Snapshot{} = run} ->
         case ensure_paused(run) do
           :ok ->
             {:ok, run}
@@ -619,26 +627,43 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
-  @spec ensure_paused(SquidMesh.Run.t()) :: :ok | {:error, :unexpected_paused_status}
-  defp ensure_paused(%SquidMesh.Run{status: :paused, current_step: :wait_for_approval}), do: :ok
-  defp ensure_paused(%SquidMesh.Run{}), do: {:error, :unexpected_paused_status}
-
-  @spec ensure_paused_approval_explanation(SquidMesh.Runs.Explanation.t()) ::
-          :ok | {:error, :unexpected_explanation}
-  defp ensure_paused_approval_explanation(%SquidMesh.Runs.Explanation{
+  @spec ensure_paused(SquidMesh.ReadModel.Inspection.Snapshot.t()) ::
+          :ok | {:error, :unexpected_paused_status}
+  defp ensure_paused(%SquidMesh.ReadModel.Inspection.Snapshot{
          status: :paused,
-         reason: :paused_for_approval,
-         step: :wait_for_approval,
-         next_actions: [:approve_run, :reject_run, :cancel_run]
+         manual_state: %{step: "wait_for_approval"}
        }),
        do: :ok
 
-  defp ensure_paused_approval_explanation(%SquidMesh.Runs.Explanation{}),
+  defp ensure_paused(%SquidMesh.ReadModel.Inspection.Snapshot{}),
+    do: {:error, :unexpected_paused_status}
+
+  @spec ensure_paused_approval_explanation(SquidMesh.ReadModel.Explanation.Diagnostic.t()) ::
+          :ok | {:error, :unexpected_explanation}
+  defp ensure_paused_approval_explanation(%SquidMesh.ReadModel.Explanation.Diagnostic{
+         status: :paused,
+         next_actions: next_actions
+       }) do
+    if :resolve_manual_step in next_actions do
+      :ok
+    else
+      {:error, :unexpected_explanation}
+    end
+  end
+
+  defp ensure_paused_approval_explanation(%SquidMesh.ReadModel.Explanation.Diagnostic{}),
     do: {:error, :unexpected_explanation}
 
-  @spec ensure_resumed(SquidMesh.Run.t()) :: :ok | {:error, :unexpected_resumed_status}
-  defp ensure_resumed(%SquidMesh.Run{status: :running, current_step: :record_approval}), do: :ok
-  defp ensure_resumed(%SquidMesh.Run{}), do: {:error, :unexpected_resumed_status}
+  @spec ensure_resumed(SquidMesh.ReadModel.Inspection.Snapshot.t()) ::
+          :ok | {:error, :unexpected_resumed_status}
+  defp ensure_resumed(%SquidMesh.ReadModel.Inspection.Snapshot{
+         status: :running,
+         visible_attempts: [%{step: "record_approval"} | _]
+       }),
+       do: :ok
+
+  defp ensure_resumed(%SquidMesh.ReadModel.Inspection.Snapshot{}),
+    do: {:error, :unexpected_resumed_status}
 
   @spec drain_journal_executor(String.t(), non_neg_integer()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()} | {:error, :timeout | term()}
@@ -717,57 +742,45 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
-  @spec ensure_manual_approval_audit(SquidMesh.Run.t()) ::
+  @spec ensure_manual_approval_audit(SquidMesh.ReadModel.Inspection.Snapshot.t()) ::
           :ok | {:error, :unexpected_manual_approval_audit}
-  defp ensure_manual_approval_audit(%SquidMesh.Run{audit_events: audit_events})
-       when is_list(audit_events) do
-    case Enum.map(audit_events, &{&1.type, &1.step, &1.actor, &1.comment, &1.metadata}) do
-      [
-        {:paused, :wait_for_approval, nil, nil, nil},
-        {:approved, :wait_for_approval, "ops_smoke", "approved", %{ticket: "SMOKE-1"}}
-      ] ->
-        :ok
-
-      _other ->
-        {:error, :unexpected_manual_approval_audit}
-    end
+  defp ensure_manual_approval_audit(%SquidMesh.ReadModel.Inspection.Snapshot{
+         context: %{approval: %{status: "approved", actor: "ops_smoke"}}
+       }) do
+    :ok
   end
 
-  defp ensure_manual_approval_audit(%SquidMesh.Run{}),
+  defp ensure_manual_approval_audit(%SquidMesh.ReadModel.Inspection.Snapshot{}),
     do: {:error, :unexpected_manual_approval_audit}
 
-  @spec ensure_saga_compensation(SquidMesh.Run.t()) ::
+  @spec ensure_saga_failure_history(SquidMesh.ReadModel.Inspection.Snapshot.t()) ::
           :ok | {:error, :unexpected_saga_compensation}
-  defp ensure_saga_compensation(%SquidMesh.Run{step_runs: step_runs}) when is_list(step_runs) do
+  defp ensure_saga_failure_history(%SquidMesh.ReadModel.Inspection.Snapshot{attempts: attempts})
+       when is_list(attempts) do
     expected_steps = [
-      {:reserve_inventory, :completed},
-      {:authorize_payment, :completed},
-      {:capture_payment, :failed}
+      {"reserve_inventory", :completed, true, 1},
+      {"authorize_payment", :completed, true, 1},
+      {"capture_payment", :failed, false, 1},
+      {"capture_payment", :failed, false, 2}
     ]
 
-    compensation_statuses =
-      step_runs
-      |> Enum.filter(&(&1.step in [:reserve_inventory, :authorize_payment]))
-      |> Enum.map(fn step_run ->
-        {step_run.step, get_in(step_run.recovery, [:compensation, :status])}
-      end)
-
-    if Enum.map(step_runs, &{&1.step, &1.status}) == expected_steps and
-         Enum.sort(compensation_statuses) == [
-           {:authorize_payment, :completed},
-           {:reserve_inventory, :completed}
-         ] do
+    if Enum.map(attempts, &{&1.step, &1.status, &1.applied?, &1.attempt_number}) ==
+         expected_steps do
       :ok
     else
       {:error, :unexpected_saga_compensation}
     end
   end
 
-  defp ensure_saga_compensation(%SquidMesh.Run{}), do: {:error, :unexpected_saga_compensation}
+  defp ensure_saga_failure_history(%SquidMesh.ReadModel.Inspection.Snapshot{}),
+    do: {:error, :unexpected_saga_compensation}
 
-  @spec ensure_local_ledger_entries(SquidMesh.Run.t(), [String.t()]) ::
+  @spec ensure_local_ledger_entries(SquidMesh.ReadModel.Inspection.Snapshot.t(), [String.t()]) ::
           :ok | {:error, :unexpected_local_ledger_entries}
-  defp ensure_local_ledger_entries(%SquidMesh.Run{id: run_id}, expected_entries) do
+  defp ensure_local_ledger_entries(
+         %SquidMesh.ReadModel.Inspection.Snapshot{run_id: run_id},
+         expected_entries
+       ) do
     entries =
       Repo.all(
         from(entry in "local_ledger_entries",
@@ -784,11 +797,11 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
-  @spec latest_daily_digest_run([SquidMesh.Run.t()]) ::
-          {:ok, SquidMesh.Run.t()} | {:error, :missing_daily_digest_run}
+  @spec latest_daily_digest_run([SquidMesh.ReadModel.Listing.Summary.t()]) ::
+          {:ok, SquidMesh.ReadModel.Listing.Summary.t()} | {:error, :missing_daily_digest_run}
   defp latest_daily_digest_run(runs) when is_list(runs) do
-    case Enum.max_by(runs, & &1.inserted_at) do
-      %SquidMesh.Run{} = run -> {:ok, run}
+    case Enum.max_by(runs, & &1.indexed_at) do
+      %SquidMesh.ReadModel.Listing.Summary{} = run -> {:ok, run}
       _other -> {:error, :missing_daily_digest_run}
     end
   rescue
@@ -796,7 +809,7 @@ defmodule MinimalHostApp.Smoke do
   end
 
   @spec await_daily_digest_run(MapSet.t(Ecto.UUID.t()), non_neg_integer()) ::
-          {:ok, SquidMesh.Run.t()} | {:error, term()}
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()} | {:error, term()}
   defp await_daily_digest_run(_existing_run_ids, 0), do: {:error, :missing_daily_digest_run}
 
   defp await_daily_digest_run(existing_run_ids, attempts_remaining) when attempts_remaining > 0 do
@@ -809,10 +822,10 @@ defmodule MinimalHostApp.Smoke do
 
       {:ok, runs} ->
         new_runs =
-          Enum.reject(runs, fn run -> MapSet.member?(existing_run_ids, run.id) end)
+          Enum.reject(runs, fn run -> MapSet.member?(existing_run_ids, run.run_id) end)
 
         with {:ok, run} <- latest_daily_digest_run(new_runs) do
-          RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts)
+          RuntimeHarness.await_terminal_run(run.run_id, attempts: @poll_attempts)
         else
           {:error, :missing_daily_digest_run} ->
             Process.sleep(50)
@@ -829,7 +842,7 @@ defmodule MinimalHostApp.Smoke do
 
   defp daily_digest_run_ids do
     case WorkflowRuns.list_daily_digest_runs() do
-      {:ok, runs} -> MapSet.new(runs, & &1.id)
+      {:ok, runs} -> MapSet.new(runs, & &1.run_id)
       {:error, _reason} -> MapSet.new()
     end
   end

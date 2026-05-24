@@ -7,18 +7,11 @@ defmodule SquidMeshTest do
   alias SquidMesh.ReadModel.Explanation.Diagnostic
   alias SquidMesh.ReadModel.Inspection.Snapshot
   alias SquidMesh.ReadModel.Listing.Summary
-  alias SquidMesh.Run
-  alias SquidMesh.Runs
-  alias SquidMesh.Runs.StepState
   alias SquidMesh.Runtime.DispatchAgent
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.Journal.Executor
   alias SquidMesh.Runtime.Runner
-  alias SquidMesh.Runtime.Unblocker
-  alias SquidMesh.Test.Job
-  alias SquidMesh.Test.StepWorker
-  alias SquidMesh.TestSupport.LazyWorkflow
   alias SquidMesh.Workflow.Definition
 
   defp execute_journal_next(opts), do: Executor.execute_next(opts)
@@ -88,6 +81,48 @@ defmodule SquidMeshTest do
 
       step :check_gateway, PaymentRecoveryWorkflow.CheckGateway, retry: [max_attempts: 2]
       transition :check_gateway, on: :ok, to: :complete
+    end
+  end
+
+  defmodule RepoTransactionWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :repo_transaction do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :record_event, RepoTransactionWorkflow.RecordEvent, transaction: :repo
+      transition :record_event, on: :ok, to: :complete
+    end
+  end
+
+  defmodule RepoTransactionWorkflow.RecordEvent do
+    use SquidMesh.Step,
+      name: :record_event,
+      description: "Records one transactional event",
+      input_schema: [account_id: [type: :string, required: true]],
+      output_schema: [event: [type: :string, required: true]]
+
+    @impl SquidMesh.Step
+    def run(%{account_id: account_id}, %SquidMesh.Step.Context{run_id: run_id}) do
+      now = NaiveDateTime.utc_now(:second)
+
+      SquidMesh.Test.Repo.insert_all("transactional_events", [
+        %{
+          run_id: Ecto.UUID.dump!(run_id),
+          account_id: account_id,
+          event: "recorded",
+          inserted_at: now,
+          updated_at: now
+        }
+      ])
+
+      {:ok, %{event: "recorded"}}
     end
   end
 
@@ -1026,44 +1061,7 @@ defmodule SquidMeshTest do
     end
   end
 
-  defmodule MissingExecutor do
-    @behaviour SquidMesh.Executor
-
-    @impl SquidMesh.Executor
-    def enqueue_step(_config, _run, _step, _opts), do: {:error, :executor_unavailable}
-
-    @impl SquidMesh.Executor
-    def enqueue_steps(_config, _run, _steps, _opts), do: {:error, :executor_unavailable}
-
-    @impl SquidMesh.Executor
-    def enqueue_compensation(_config, _run, _opts), do: {:error, :executor_unavailable}
-
-    @impl SquidMesh.Executor
-    def enqueue_cron(_config, _workflow, _trigger, _opts), do: {:error, :executor_unavailable}
-  end
-
   defmodule IncompleteExecutor do
-    def enqueue_step(_config, _run, _step, _opts), do: {:ok, %{}}
-  end
-
-  defp use_runtime_tables(_context) do
-    preserved_config =
-      for key <- [:runtime, :read_model, :journal_storage], into: %{} do
-        {key, Application.fetch_env(:squid_mesh, key)}
-      end
-
-    Application.put_env(:squid_mesh, :runtime, :runtime_tables)
-    Application.put_env(:squid_mesh, :read_model, :runtime_tables)
-    Application.delete_env(:squid_mesh, :journal_storage)
-
-    on_exit(fn ->
-      Enum.each(preserved_config, fn
-        {key, {:ok, value}} -> Application.put_env(:squid_mesh, key, value)
-        {key, :error} -> Application.delete_env(:squid_mesh, key)
-      end)
-    end)
-
-    :ok
   end
 
   defp without_squid_mesh_env(keys, fun) when is_list(keys) and is_function(fun, 0) do
@@ -1094,11 +1092,10 @@ defmodule SquidMeshTest do
 
   describe "config/1" do
     test "returns the validated host app contract with defaults" do
-      assert {:ok, config} =
-               SquidMesh.config(repo: SquidMesh.Test.Repo, executor: SquidMesh.Test.Executor)
+      assert {:ok, config} = SquidMesh.config(repo: SquidMesh.Test.Repo)
 
       assert config.repo == SquidMesh.Test.Repo
-      assert config.executor == SquidMesh.Test.Executor
+      refute Map.has_key?(config, :executor)
       assert config.stale_step_timeout == :disabled
       assert config.runtime == :journal
       assert config.read_model == :read_model
@@ -1112,7 +1109,7 @@ defmodule SquidMeshTest do
         assert {:ok, config} = SquidMesh.config(repo: SquidMesh.Test.Repo)
 
         assert config.repo == SquidMesh.Test.Repo
-        assert config.executor == nil
+        refute Map.has_key?(config, :executor)
         assert config.runtime == :journal
         assert config.read_model == :read_model
         assert config.journal_storage.adapter == SquidMesh.Runtime.Journal.Storage.Ecto
@@ -1123,7 +1120,6 @@ defmodule SquidMeshTest do
     test "allows host applications to configure stale step timeout" do
       overrides = [
         repo: SquidMesh.Test.Repo,
-        executor: SquidMesh.Test.Executor,
         stale_step_timeout: 60_000
       ]
 
@@ -1137,7 +1133,6 @@ defmodule SquidMeshTest do
 
       overrides = [
         repo: SquidMesh.Test.Repo,
-        executor: SquidMesh.Test.Executor,
         runtime: :journal,
         read_model: :read_model,
         journal_storage: journal_storage,
@@ -1155,8 +1150,7 @@ defmodule SquidMeshTest do
 
     test "infers Ecto journal storage from the configured repo when runtime uses the journal" do
       required = [
-        repo: SquidMesh.Test.Repo,
-        executor: SquidMesh.Test.Executor
+        repo: SquidMesh.Test.Repo
       ]
 
       assert {:ok, config} = SquidMesh.config(Keyword.put(required, :runtime, :journal))
@@ -1168,8 +1162,7 @@ defmodule SquidMeshTest do
 
     test "infers Ecto journal storage from the configured repo when read model uses the journal" do
       required = [
-        repo: SquidMesh.Test.Repo,
-        executor: SquidMesh.Test.Executor
+        repo: SquidMesh.Test.Repo
       ]
 
       assert {:ok, config} = SquidMesh.config(Keyword.put(required, :read_model, :read_model))
@@ -1182,7 +1175,6 @@ defmodule SquidMeshTest do
     test "rejects explicit nil journal storage when configured runtime or read model uses the journal" do
       required = [
         repo: SquidMesh.Test.Repo,
-        executor: SquidMesh.Test.Executor,
         journal_storage: nil
       ]
 
@@ -1193,30 +1185,20 @@ defmodule SquidMeshTest do
                SquidMesh.config(Keyword.put(required, :read_model, :read_model))
     end
 
-    test "runtime-table configuration ignores journal storage settings" do
-      assert {:ok, config} =
+    test "rejects unsupported runtime configuration" do
+      assert {:error, {:invalid_config, [runtime: :unsupported]}} =
                SquidMesh.config(
                  repo: SquidMesh.Test.Repo,
-                 executor: SquidMesh.Test.Executor,
-                 runtime: :runtime_tables,
-                 read_model: :runtime_tables,
-                 journal_storage: nil
+                 runtime: :unsupported
                )
+    end
 
-      assert config.runtime == :runtime_tables
-      assert config.read_model == :runtime_tables
-      assert config.journal_storage == nil
-
-      assert {:ok, config} =
+    test "rejects unsupported read model configuration" do
+      assert {:error, {:invalid_config, [read_model: :unsupported]}} =
                SquidMesh.config(
                  repo: SquidMesh.Test.Repo,
-                 executor: SquidMesh.Test.Executor,
-                 runtime: :runtime_tables,
-                 read_model: :runtime_tables,
-                 journal_storage: :not_used_by_runtime_tables
+                 read_model: :unsupported
                )
-
-      assert config.journal_storage == nil
     end
 
     test "redacts invalid queue settings in config errors" do
@@ -1225,7 +1207,6 @@ defmodule SquidMeshTest do
       assert {:error, {:invalid_config, [queue: :invalid]} = reason} =
                SquidMesh.config(
                  repo: SquidMesh.Test.Repo,
-                 executor: SquidMesh.Test.Executor,
                  queue: secret_queue
                )
 
@@ -1234,7 +1215,6 @@ defmodule SquidMeshTest do
       assert_raise ArgumentError, ~r/queue=:invalid/, fn ->
         SquidMesh.config!(
           repo: SquidMesh.Test.Repo,
-          executor: SquidMesh.Test.Executor,
           queue: secret_queue
         )
       end
@@ -1242,55 +1222,62 @@ defmodule SquidMeshTest do
 
     test "reports missing required configuration keys" do
       original_repo = Application.get_env(:squid_mesh, :repo)
-      original_executor = Application.get_env(:squid_mesh, :executor)
 
       on_exit(fn ->
         Application.put_env(:squid_mesh, :repo, original_repo)
-        Application.put_env(:squid_mesh, :executor, original_executor)
       end)
 
       Application.delete_env(:squid_mesh, :repo)
-      Application.delete_env(:squid_mesh, :executor)
 
       assert {:error, {:missing_config, [:repo]}} = SquidMesh.config()
     end
 
-    test "runtime-table configuration requires a host executor" do
+    test "journal-only configuration does not treat executor as required for unsupported modes" do
       without_squid_mesh_env([:executor], fn ->
-        assert {:error, {:missing_config, [:executor]}} =
-                 SquidMesh.config(repo: SquidMesh.Test.Repo, runtime: :runtime_tables)
+        assert {:error, {:invalid_config, [runtime: :unsupported]}} =
+                 SquidMesh.config(repo: SquidMesh.Test.Repo, runtime: :unsupported)
       end)
     end
 
-    test "reports executor modules missing required callbacks" do
-      assert {:error, {:invalid_config, [executor: {:missing_callbacks, missing}]}} =
+    test "rejects legacy executor module configuration" do
+      assert {:error, {:invalid_config, [executor: :unsupported]}} =
                SquidMesh.config(repo: SquidMesh.Test.Repo, executor: IncompleteExecutor)
-
-      assert :enqueue_steps in missing
-      assert :enqueue_compensation in missing
-      assert :enqueue_cron in missing
-    end
-
-    test "reports unloadable executor modules" do
-      assert {:error,
-              {:invalid_config, [executor: {:module_not_loaded, SquidMeshTest.UnknownExecutor}]}} =
-               SquidMesh.config(
-                 repo: SquidMesh.Test.Repo,
-                 executor: SquidMeshTest.UnknownExecutor
-               )
     end
 
     test "reports invalid stale step timeout settings" do
       assert {:error, {:invalid_config, [stale_step_timeout: -1]}} =
                SquidMesh.config(
                  repo: SquidMesh.Test.Repo,
-                 executor: SquidMesh.Test.Executor,
                  stale_step_timeout: -1
                )
     end
   end
 
   describe "journal default table-runtime parity gaps" do
+    test "runner rejects legacy step and compensation executor payloads" do
+      assert {:error, {:unsupported_executor_payload, "step"}} =
+               Runner.perform(%{
+                 "kind" => "step",
+                 "run_id" => Ecto.UUID.generate(),
+                 "step" => "charge_card"
+               })
+
+      assert {:error, {:unsupported_executor_payload, "compensation"}} =
+               Runner.perform(%{
+                 "kind" => "compensation",
+                 "run_id" => Ecto.UUID.generate()
+               })
+    end
+
+    test "executor payloads expose cron trigger delivery only" do
+      assert Code.ensure_loaded?(Payload)
+      refute function_exported?(Payload, :step, 2)
+      refute function_exported?(Payload, :compensation, 1)
+      assert function_exported?(Payload, :cron, 2)
+      assert function_exported?(Payload, :cron, 3)
+      assert SquidMesh.Executor.required_callbacks() == [enqueue_cron: 4]
+    end
+
     test "list_runs/2 returns an empty journal catalog when no runs exist" do
       assert {:ok, []} =
                SquidMesh.list_runs([], repo: Repo)
@@ -1777,1347 +1764,6 @@ defmodule SquidMeshTest do
     :code.delete(module)
   end
 
-  describe "start_run/3" do
-    setup :use_runtime_tables
-
-    test "persists a new run and returns the public run shape" do
-      payload = %{account_id: "acct_123", invoice_id: "inv_456"}
-
-      assert {:ok, %Run{} = run} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, payload, repo: Repo)
-
-      assert run.workflow == InvoiceReminderWorkflow
-      assert run.trigger == :invoice_delivery
-      assert run.status == :pending
-      assert run.payload == payload
-      assert run.context == %{}
-      assert run.current_step == :load_invoice
-      assert run.last_error == nil
-      assert is_binary(run.id)
-      assert %DateTime{} = run.inserted_at
-      assert %DateTime{} = run.updated_at
-    end
-
-    test "rejects caller-supplied run context through public start options" do
-      payload = %{account_id: "acct_123", invoice_id: "inv_456"}
-
-      assert {:error, {:invalid_option, :context}} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 payload,
-                 repo: Repo,
-                 context: %{schedule: %{signal_id: "fake"}}
-               )
-    end
-
-    test "rejects internal initial context through public start options" do
-      payload = %{account_id: "acct_123", invoice_id: "inv_456"}
-
-      assert {:error, {:invalid_option, :initial_context}} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 payload,
-                 repo: Repo,
-                 initial_context: %{schedule: %{signal_id: "fake"}}
-               )
-    end
-
-    test "rejects modules that do not define the workflow contract" do
-      assert {:error, {:invalid_workflow, String}} =
-               SquidMesh.start_run(String, %{}, repo: Repo)
-    end
-
-    test "loads workflow modules on demand before validating the contract" do
-      :code.purge(LazyWorkflow)
-      :code.delete(LazyWorkflow)
-
-      refute :code.is_loaded(LazyWorkflow)
-
-      assert {:ok, %Run{} = run} =
-               SquidMesh.start_run(LazyWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert run.workflow == LazyWorkflow
-    end
-
-    test "starts a run through an explicit trigger name" do
-      assert {:ok, %Run{} = run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 :invoice_delivery,
-                 %{account_id: "acct_123", invoice_id: "inv_456"},
-                 repo: Repo
-               )
-
-      assert run.trigger == :invoice_delivery
-    end
-
-    test "rejects unknown trigger names" do
-      assert {:error, {:invalid_trigger, :unknown_trigger}} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 :unknown_trigger,
-                 %{account_id: "acct_123", invoice_id: "inv_456"},
-                 repo: Repo
-               )
-    end
-
-    test "rejects non-map payloads" do
-      assert {:error, {:invalid_payload, :expected_map}} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, [:not_a_map], repo: Repo)
-    end
-
-    test "starts from the semantic entry step rather than declaration order" do
-      assert {:ok, run} =
-               SquidMesh.start_run(ReorderedWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert run.current_step == :load_invoice
-    end
-
-    test "rejects payloads with missing required fields" do
-      assert {:error, {:invalid_payload, %{missing_fields: [:invoice_id]}}} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_123"}, repo: Repo)
-    end
-
-    test "rejects payloads with undeclared fields" do
-      assert {:error, {:invalid_payload, %{unknown_fields: [:unexpected]}}} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_456", unexpected: true},
-                 repo: Repo
-               )
-    end
-
-    test "rejects payload fields with invalid types" do
-      assert {:error, {:invalid_payload, %{invalid_types: %{invoice_id: :string}}}} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: 123},
-                 repo: Repo
-               )
-    end
-
-    test "applies payload defaults before persistence" do
-      assert {:ok, %Run{} = run} =
-               SquidMesh.start_run(
-                 WorkflowWithPayloadDefaults,
-                 %{invoice_id: "inv_456"},
-                 repo: Repo
-               )
-
-      assert run.payload == %{
-               team_id: "backend",
-               prompt_date: Date.to_iso8601(Date.utc_today()),
-               invoice_id: "inv_456"
-             }
-    end
-
-    test "allows provided payload values to override defaults" do
-      assert {:ok, %Run{} = run} =
-               SquidMesh.start_run(
-                 WorkflowWithPayloadDefaults,
-                 %{
-                   invoice_id: "inv_456",
-                   team_id: "payments",
-                   prompt_date: "2026-01-15"
-                 },
-                 repo: Repo
-               )
-
-      assert run.payload == %{
-               team_id: "payments",
-               prompt_date: "2026-01-15",
-               invoice_id: "inv_456"
-             }
-    end
-
-    test "rolls back run creation when dispatching the first step fails" do
-      before_count = Repo.aggregate(SquidMesh.Persistence.Run, :count, :id)
-      SquidMesh.Test.Executor.fail_next!()
-
-      assert {:error, {:dispatch_failed, :executor_unavailable}} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_456"},
-                 repo: Repo
-               )
-
-      assert Repo.aggregate(SquidMesh.Persistence.Run, :count, :id) == before_count
-    end
-  end
-
-  describe "cron trigger activation" do
-    setup :use_runtime_tables
-
-    test "starts a cron workflow run from the neutral runner" do
-      assert :ok =
-               Runner.start_cron_trigger(
-                 "Elixir.SquidMeshTest.DailyStandupWorkflow",
-                 "daily_standup",
-                 repo: Repo
-               )
-
-      assert_enqueued(
-        worker: SquidMesh.Test.StepWorker,
-        queue: "squid_mesh",
-        args: %{"step" => "announce_prompt"}
-      )
-
-      assert [%SquidMesh.Persistence.Run{} = persisted_run] = Repo.all(SquidMesh.Persistence.Run)
-
-      assert persisted_run.workflow == "Elixir.SquidMeshTest.DailyStandupWorkflow"
-      assert persisted_run.trigger == "daily_standup"
-      assert persisted_run.input["team_id"] == "backend"
-      assert is_binary(persisted_run.input["prompt_date"])
-    end
-
-    test "starts a selected cron trigger from a multi-trigger workflow" do
-      assert :ok =
-               Runner.start_cron_trigger(
-                 "Elixir.SquidMeshTest.ManualAndScheduledDigestWorkflow",
-                 "scheduled_digest",
-                 repo: Repo
-               )
-
-      assert [%SquidMesh.Persistence.Run{} = persisted_run] = Repo.all(SquidMesh.Persistence.Run)
-
-      assert persisted_run.workflow ==
-               "Elixir.SquidMeshTest.ManualAndScheduledDigestWorkflow"
-
-      assert persisted_run.trigger == "scheduled_digest"
-      assert is_binary(persisted_run.input["window_start_at"])
-      refute Map.has_key?(persisted_run.input, "chat_id")
-    end
-
-    test "persists explicit scheduled signal id before workflow step execution" do
-      payload =
-        Payload.cron(
-          ScheduledContextWorkflow,
-          :scheduled_capture,
-          signal_id: "signal_123",
-          intended_window: %{
-            start_at: "2026-05-15T09:00:00Z",
-            end_at: "2026-05-15T10:00:00Z"
-          }
-        )
-
-      assert :ok = Runner.perform(payload, repo: Repo)
-
-      assert [%SquidMesh.Persistence.Run{} = persisted_run] = Repo.all(SquidMesh.Persistence.Run)
-
-      assert persisted_run.context["schedule"]["signal_id"] == "signal_123"
-      refute String.starts_with?(persisted_run.context["schedule"]["signal_id"], "sha256:")
-      assert persisted_run.context["schedule"]["trigger_name"] == "scheduled_capture"
-      assert persisted_run.context["schedule"]["cron_expression"] == "@hourly"
-      assert persisted_run.context["schedule"]["timezone"] == "Etc/UTC"
-
-      assert persisted_run.context["schedule"]["intended_window"] == %{
-               "start_at" => "2026-05-15T09:00:00Z",
-               "end_at" => "2026-05-15T10:00:00Z"
-             }
-
-      received_at = persisted_run.context["schedule"]["received_at"]
-      assert is_binary(received_at)
-      refute received_at == "2026-05-15T09:00:00Z"
-      assert {:ok, _received_at, 0} = DateTime.from_iso8601(received_at)
-
-      assert {:ok, inspected_run} = SquidMesh.inspect_run(persisted_run.id, repo: Repo)
-
-      assert inspected_run.context.schedule.intended_window.start_at ==
-               "2026-05-15T09:00:00Z"
-
-      assert {:ok, explanation} = SquidMesh.explain_run(persisted_run.id, repo: Repo)
-
-      assert explanation.evidence.run.schedule.signal_id == "signal_123"
-      assert explanation.evidence.run.schedule.trigger_name == "scheduled_capture"
-
-      assert %{success: 1, failure: 0} = SquidMesh.Test.Executor.drain()
-
-      assert {:ok, completed_run} = SquidMesh.inspect_run(persisted_run.id, repo: Repo)
-      assert completed_run.context.schedule_seen == completed_run.context.schedule
-    end
-
-    test "derives stable signal ids from intended schedule windows" do
-      payload =
-        Payload.cron(
-          ScheduledContextWorkflow,
-          :scheduled_capture,
-          intended_window: %{
-            start_at: "2026-05-15T09:00:00Z",
-            end_at: "2026-05-15T10:00:00Z"
-          }
-        )
-
-      assert :ok = Runner.perform(payload, repo: Repo)
-      assert :ok = Runner.perform(payload, repo: Repo)
-
-      assert [%SquidMesh.Persistence.Run{}, %SquidMesh.Persistence.Run{}] =
-               persisted_runs = Repo.all(SquidMesh.Persistence.Run)
-
-      signal_ids =
-        Enum.map(persisted_runs, fn persisted_run ->
-          persisted_run.context["schedule"]["signal_id"]
-        end)
-
-      assert Enum.uniq(signal_ids) == [hd(signal_ids)]
-
-      assert hd(signal_ids) =~
-               ~r/^sha256:[A-Za-z0-9_-]{43}$/
-    end
-
-    test "omits derived signal ids when schedule windows are incomplete" do
-      payload =
-        Payload.cron(
-          ScheduledContextWorkflow,
-          :scheduled_capture,
-          intended_window: %{
-            start_at: "2026-05-15T09:00:00Z"
-          }
-        )
-
-      assert :ok = Runner.perform(payload, repo: Repo)
-
-      assert [%SquidMesh.Persistence.Run{} = persisted_run] = Repo.all(SquidMesh.Persistence.Run)
-
-      refute Map.has_key?(persisted_run.context["schedule"], "signal_id")
-    end
-
-    test "scopes derived signal ids by workflow" do
-      intended_window = %{
-        start_at: "2026-05-15T09:00:00Z",
-        end_at: "2026-05-15T10:00:00Z"
-      }
-
-      payload =
-        Payload.cron(
-          ScheduledContextWorkflow,
-          :scheduled_capture,
-          intended_window: intended_window
-        )
-
-      other_payload =
-        Payload.cron(
-          AnotherScheduledContextWorkflow,
-          :scheduled_capture,
-          intended_window: intended_window
-        )
-
-      assert :ok = Runner.perform(payload, repo: Repo)
-      assert :ok = Runner.perform(other_payload, repo: Repo)
-
-      signal_ids =
-        SquidMesh.Persistence.Run
-        |> Repo.all()
-        |> Enum.map(fn persisted_run -> persisted_run.context["schedule"]["signal_id"] end)
-
-      assert length(Enum.uniq(signal_ids)) == 2
-    end
-
-    test "rejects malformed scheduler signal ids" do
-      payload =
-        ScheduledContextWorkflow
-        |> Payload.cron(:scheduled_capture)
-        |> Map.put("signal_id", 123)
-
-      assert {:error, {:invalid_schedule_signal_id, 123}} =
-               Runner.perform(payload, repo: Repo)
-
-      assert [] = Repo.all(SquidMesh.Persistence.Run)
-    end
-
-    test "preserves atom-keyed scheduler metadata from delivered cron payloads" do
-      payload =
-        ScheduledContextWorkflow
-        |> Payload.cron(:scheduled_capture)
-        |> Map.put(:signal_id, "signal_123")
-        |> Map.put(:intended_window, %{
-          start_at: "2026-05-15T09:00:00Z",
-          end_at: "2026-05-15T10:00:00Z"
-        })
-
-      assert :ok = Runner.perform(payload, repo: Repo)
-
-      assert [%SquidMesh.Persistence.Run{} = persisted_run] = Repo.all(SquidMesh.Persistence.Run)
-
-      assert persisted_run.context["schedule"]["signal_id"] == "signal_123"
-
-      assert persisted_run.context["schedule"]["intended_window"] == %{
-               "start_at" => "2026-05-15T09:00:00Z",
-               "end_at" => "2026-05-15T10:00:00Z"
-             }
-    end
-  end
-
-  describe "inspect_run/2" do
-    setup :use_runtime_tables
-
-    test "fetches a persisted run by id" do
-      assert {:ok, created_run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_123"},
-                 repo: Repo
-               )
-
-      assert {:ok, %Run{} = inspected_run} = SquidMesh.inspect_run(created_run.id, repo: Repo)
-
-      assert inspected_run == created_run
-    end
-
-    test "runtime-table read model ignores projection-only options" do
-      assert {:ok, created_run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_123"},
-                 repo: Repo
-               )
-
-      assert {:ok, %Run{} = inspected_run} =
-               SquidMesh.inspect_run(created_run.id,
-                 read_model: :runtime_tables,
-                 journal_storage: :not_used_by_runtime_tables,
-                 queue: "default",
-                 now: ~U[2026-05-15 00:00:00Z],
-                 repo: Repo
-               )
-
-      assert inspected_run.id == created_run.id
-    end
-
-    test "returns not found when the run does not exist" do
-      assert {:error, :not_found} =
-               SquidMesh.inspect_run(Ecto.UUID.generate(), repo: Repo)
-    end
-
-    test "returns a structured error for malformed run ids" do
-      assert {:error, :invalid_run_id} = SquidMesh.inspect_run("not-a-uuid", repo: Repo)
-    end
-
-    test "returns stable workflow and step identifiers from persisted runs" do
-      assert {:ok, created_run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_456"},
-                 repo: Repo
-               )
-
-      persisted_run = Repo.get!(SquidMesh.Persistence.Run, created_run.id)
-
-      assert persisted_run.workflow == "Elixir.SquidMeshTest.InvoiceReminderWorkflow"
-      assert persisted_run.current_step == "load_invoice"
-
-      assert {:ok, inspected_run} = SquidMesh.inspect_run(created_run.id, repo: Repo)
-
-      assert inspected_run.workflow == InvoiceReminderWorkflow
-      assert inspected_run.trigger == :invoice_delivery
-      assert inspected_run.current_step == :load_invoice
-    end
-
-    test "optionally includes step and attempt history" do
-      assert {:ok, created_run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_123"},
-                 repo: Repo
-               )
-
-      assert %{success: 2, failure: 0} =
-               SquidMesh.Test.Executor.drain()
-
-      assert {:ok, inspected_run} =
-               SquidMesh.inspect_run(created_run.id, include_history: true, repo: Repo)
-
-      assert Enum.map(inspected_run.steps, &{&1.step, &1.status, &1.depends_on}) == [
-               {:load_invoice, :completed, []},
-               {:send_email, :completed, []}
-             ]
-
-      assert [%SquidMesh.Steps.Execution{}, %SquidMesh.Steps.Execution{}] =
-               inspected_run.step_runs
-
-      assert Enum.map(inspected_run.step_runs, &{&1.step, &1.status}) == [
-               {:load_invoice, :completed},
-               {:send_email, :completed}
-             ]
-
-      assert Enum.all?(inspected_run.step_runs, fn step_run ->
-               match?([%SquidMesh.Steps.Attempt{}], step_run.attempts)
-             end)
-
-      assert Enum.map(inspected_run.step_runs, fn step_run ->
-               {step_run.step, Enum.map(step_run.attempts, & &1.attempt_number)}
-             end) == [
-               {:load_invoice, [1]},
-               {:send_email, [1]}
-             ]
-
-      assert inspected_run.audit_events == []
-    end
-
-    test "surfaces paused and resumed audit events for manual pause workflows" do
-      assert {:ok, run} =
-               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
-               })
-
-      assert {:ok, paused_run} =
-               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
-
-      assert paused_run.status == :paused
-
-      assert Enum.map(paused_run.audit_events, &{&1.type, &1.step, &1.actor}) == [
-               {:paused, :wait_for_approval, nil}
-             ]
-
-      assert {:ok, resumed_run} =
-               SquidMesh.unblock_run(
-                 run.id,
-                 %{
-                   actor: "ops_123",
-                   comment: "resume requested",
-                   metadata: %{ticket: "ops-123"}
-                 },
-                 repo: Repo
-               )
-
-      assert resumed_run.status == :running
-
-      assert %{success: success, failure: 0} =
-               SquidMesh.Test.Executor.drain()
-
-      assert success >= 1
-
-      assert {:ok, completed_run} =
-               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
-
-      assert Enum.map(completed_run.audit_events, &{&1.type, &1.step, &1.actor, &1.comment}) == [
-               {:paused, :wait_for_approval, nil, nil},
-               {:resumed, :wait_for_approval, "ops_123", "resume requested"}
-             ]
-
-      assert Enum.map(completed_run.audit_events, & &1.metadata) == [
-               nil,
-               %{ticket: "ops-123"}
-             ]
-    end
-
-    test "surfaces irreversible recovery policy in step history" do
-      assert {:ok, created_run} =
-               SquidMesh.start_run(
-                 IrreversibleWorkflow,
-                 %{account_id: "acct_123"},
-                 repo: Repo
-               )
-
-      assert %{success: 2, failure: 0} =
-               SquidMesh.Test.Executor.drain()
-
-      assert {:ok, inspected_run} =
-               SquidMesh.inspect_run(created_run.id, include_history: true, repo: Repo)
-
-      assert %StepState{recovery: %{replay: :manual_review_required}} =
-               Enum.find(inspected_run.steps, &(&1.step == :capture_payment))
-
-      assert %SquidMesh.Steps.Execution{recovery: %{irreversible?: true, compensatable?: false}} =
-               Enum.find(inspected_run.step_runs, &(&1.step == :capture_payment))
-    end
-
-    test "surfaces paused audit events even when the workflow definition can no longer load" do
-      assert {:ok, run} =
-               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
-               })
-
-      Repo.update_all(
-        from(run_record in SquidMesh.Persistence.Run, where: run_record.id == ^run.id),
-        set: [workflow: "Elixir.Missing.Workflow"]
-      )
-
-      assert {:ok, paused_run} =
-               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
-
-      assert paused_run.workflow == "Elixir.Missing.Workflow"
-      assert paused_run.status == :paused
-
-      assert Enum.map(paused_run.audit_events, &{&1.type, &1.step}) == [
-               {:paused, "wait_for_approval"}
-             ]
-    end
-
-    test "reconstructs completed pause audit events from persisted resume metadata when the workflow definition can no longer load" do
-      assert {:ok, run} =
-               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
-               })
-
-      assert {:ok, _resumed_run} =
-               SquidMesh.unblock_run(run.id, %{actor: "ops_123", comment: "resume requested"},
-                 repo: Repo
-               )
-
-      assert %{success: success, failure: 0} =
-               SquidMesh.Test.Executor.drain()
-
-      assert success >= 1
-
-      assert {1, _rows} =
-               Repo.update_all(
-                 from(step_run in SquidMesh.Persistence.StepRun,
-                   where:
-                     step_run.run_id == ^run.id and step_run.step == "wait_for_approval" and
-                       step_run.status == "completed"
-                 ),
-                 set: [manual: nil]
-               )
-
-      Repo.update_all(
-        from(run_record in SquidMesh.Persistence.Run, where: run_record.id == ^run.id),
-        set: [workflow: "Elixir.Missing.Workflow"]
-      )
-
-      assert {:ok, completed_run} =
-               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
-
-      assert completed_run.workflow == "Elixir.Missing.Workflow"
-
-      assert Enum.map(completed_run.audit_events, &{&1.type, &1.step, &1.actor, &1.comment}) == [
-               {:paused, "wait_for_approval", nil, nil},
-               {:resumed, "wait_for_approval", nil, nil}
-             ]
-    end
-
-    test "reconstructs legacy approval audit events when the workflow definition can no longer load" do
-      assert {:ok, run} =
-               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
-               })
-
-      assert {:ok, _approved_run} =
-               SquidMesh.approve_run(run.id, %{actor: "ops_123", comment: "approved"}, repo: Repo)
-
-      assert %{success: success, failure: 0} =
-               SquidMesh.Test.Executor.drain()
-
-      assert success >= 1
-
-      assert {1, _rows} =
-               Repo.update_all(
-                 from(step_run in SquidMesh.Persistence.StepRun,
-                   where:
-                     step_run.run_id == ^run.id and step_run.step == "wait_for_review" and
-                       step_run.status == "completed"
-                 ),
-                 set: [manual: nil]
-               )
-
-      Repo.update_all(
-        from(run_record in SquidMesh.Persistence.Run, where: run_record.id == ^run.id),
-        set: [workflow: "Elixir.Missing.Workflow"]
-      )
-
-      assert {:ok, completed_run} =
-               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
-
-      assert completed_run.workflow == "Elixir.Missing.Workflow"
-
-      assert Enum.map(completed_run.audit_events, &{&1.type, &1.step, &1.actor, &1.comment}) == [
-               {:paused, "wait_for_review", nil, nil},
-               {:approved, "wait_for_review", "ops_123", "approved"}
-             ]
-    end
-
-    test "falls back to legacy approval output when persisted manual audit metadata is corrupted" do
-      assert {:ok, run} =
-               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
-               })
-
-      assert {:ok, _approved_run} =
-               SquidMesh.approve_run(run.id, %{actor: "ops_123", comment: "approved"}, repo: Repo)
-
-      assert %{success: success, failure: 0} =
-               SquidMesh.Test.Executor.drain()
-
-      assert success >= 1
-
-      assert {1, _rows} =
-               Repo.update_all(
-                 from(step_run in SquidMesh.Persistence.StepRun,
-                   where:
-                     step_run.run_id == ^run.id and step_run.step == "wait_for_review" and
-                       step_run.status == "completed"
-                 ),
-                 set: [manual: %{"event" => "unknown", "actor" => "ignored"}]
-               )
-
-      assert {:ok, completed_run} =
-               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
-
-      assert Enum.map(completed_run.audit_events, &{&1.type, &1.step, &1.actor, &1.comment}) == [
-               {:paused, :wait_for_review, nil, nil},
-               {:approved, :wait_for_review, "ops_123", "approved"}
-             ]
-    end
-  end
-
-  describe "inspect_run_graph/2" do
-    setup :use_runtime_tables
-
-    test "returns graph-oriented state for a completed transition workflow" do
-      assert {:ok, created_run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_123"},
-                 repo: Repo
-               )
-
-      assert %{success: 2, failure: 0} =
-               SquidMesh.Test.Executor.drain()
-
-      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
-               SquidMesh.inspect_run_graph(created_run.id, repo: Repo)
-
-      assert graph.run_id == created_run.id
-      assert graph.workflow == InvoiceReminderWorkflow
-      assert graph.source == :runtime_tables
-      assert graph.status == :completed
-      assert graph.current_node_id == nil
-      assert graph.current_node_ids == []
-
-      nodes = Map.new(graph.nodes, &{&1.id, &1})
-      edges = Map.new(graph.edges, &{&1.id, &1})
-
-      assert nodes["load_invoice"].status == :completed
-      assert nodes["send_email"].status == :completed
-
-      assert edges["load_invoice:ok:send_email"].type == :transition
-      assert edges["load_invoice:ok:send_email"].status == :selected
-      assert edges["send_email:ok:complete"].to == "complete"
-      assert edges["send_email:ok:complete"].status == :selected
-
-      refute nodes["load_invoice"].output
-      assert nodes["load_invoice"].attempts == []
-
-      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph_with_history} =
-               SquidMesh.inspect_run_graph(created_run.id, include_history: true, repo: Repo)
-
-      nodes_with_history = Map.new(graph_with_history.nodes, &{&1.id, &1})
-
-      assert nodes_with_history["load_invoice"].output.invoice.status == "open"
-
-      assert [%{attempt_number: 1, status: :completed}] =
-               nodes_with_history["load_invoice"].attempts
-    end
-
-    test "returns dependency edges from runtime-table state" do
-      assert {:ok, created_run} =
-               SquidMesh.start_run(
-                 JournalDependencyWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_123"},
-                 repo: Repo
-               )
-
-      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
-               SquidMesh.inspect_run_graph(created_run.id, repo: Repo)
-
-      nodes = Map.new(graph.nodes, &{&1.id, &1})
-      edges = Map.new(graph.edges, &{&1.id, &1})
-
-      assert nodes["load_account"].status in [:pending, :running]
-      assert nodes["load_invoice"].status in [:pending, :running]
-      assert nodes["send_email"].status == :waiting
-      assert MapSet.new(graph.current_node_ids) == MapSet.new(["load_account", "load_invoice"])
-      assert nodes["load_account"].current?
-      assert nodes["load_invoice"].current?
-      refute nodes["send_email"].current?
-      assert edges["load_account:dependency:send_email"].status == :pending
-      assert edges["load_invoice:dependency:send_email"].status == :pending
-
-      SquidMesh.Test.Executor.drain()
-    end
-
-    test "surfaces paused manual state only when history is requested" do
-      assert {:ok, run} =
-               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
-               })
-
-      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
-               SquidMesh.inspect_run_graph(run.id, repo: Repo)
-
-      nodes = Map.new(graph.nodes, &{&1.id, &1})
-
-      assert graph.current_node_id == "wait_for_review"
-      assert nodes["wait_for_review"].status == :paused
-      refute nodes["wait_for_review"].manual_state
-
-      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph_with_history} =
-               SquidMesh.inspect_run_graph(run.id, include_history: true, repo: Repo)
-
-      nodes_with_history = Map.new(graph_with_history.nodes, &{&1.id, &1})
-
-      assert nodes_with_history["wait_for_review"].manual_state == %{
-               status: :paused,
-               step: "wait_for_review"
-             }
-    end
-
-    test "keeps runtime-table retrying nodes non-terminal" do
-      assert {:ok, run} =
-               SquidMesh.start_run(JournalRetryWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "retry_gateway"}
-               })
-
-      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
-               SquidMesh.inspect_run_graph(run.id, repo: Repo)
-
-      nodes = Map.new(graph.nodes, &{&1.id, &1})
-      edges = Map.new(graph.edges, &{&1.id, &1})
-
-      assert graph.status == :retrying
-      assert graph.current_node_id == "retry_gateway"
-      assert nodes["retry_gateway"].status == :retrying
-      assert nodes["retry_gateway"].current?
-      assert edges["retry_gateway:ok:complete"].status == :pending
-
-      SquidMesh.Test.Executor.drain()
-    end
-  end
-
-  describe "list_runs/2" do
-    setup :use_runtime_tables
-
-    test "returns runs newest first" do
-      assert {:ok, first_run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_123"},
-                 repo: Repo
-               )
-
-      Process.sleep(1)
-
-      assert {:ok, second_run} =
-               SquidMesh.start_run(PaymentRecoveryWorkflow, %{account_id: "acct_456"}, repo: Repo)
-
-      assert {:ok, runs} = SquidMesh.list_runs([], repo: Repo)
-
-      assert Enum.map(runs, & &1.id) == [second_run.id, first_run.id]
-    end
-
-    test "filters runs by workflow" do
-      assert {:ok, _first_run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_123"},
-                 repo: Repo
-               )
-
-      assert {:ok, second_run} =
-               SquidMesh.start_run(PaymentRecoveryWorkflow, %{account_id: "acct_456"}, repo: Repo)
-
-      assert {:ok, runs} =
-               SquidMesh.list_runs([workflow: PaymentRecoveryWorkflow], repo: Repo)
-
-      assert Enum.map(runs, & &1.id) == [second_run.id]
-      assert Enum.map(runs, & &1.workflow) == [PaymentRecoveryWorkflow]
-    end
-
-    test "filters runs by status" do
-      assert {:ok, pending_run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_123"},
-                 repo: Repo
-               )
-
-      assert {:ok, _failed_run} = Runs.Store.transition_run(Repo, pending_run.id, :failed)
-
-      assert {:ok, runs} = SquidMesh.list_runs([status: :failed], repo: Repo)
-
-      assert Enum.map(runs, & &1.id) == [pending_run.id]
-      assert Enum.map(runs, & &1.status) == [:failed]
-    end
-
-    test "limits the number of returned runs" do
-      assert {:ok, _first_run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_123"},
-                 repo: Repo
-               )
-
-      Process.sleep(1)
-
-      assert {:ok, second_run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_456", invoice_id: "inv_456"},
-                 repo: Repo
-               )
-
-      assert {:ok, runs} = SquidMesh.list_runs([limit: 1], repo: Repo)
-
-      assert Enum.map(runs, & &1.id) == [second_run.id]
-    end
-  end
-
-  describe "cancel_run/2" do
-    setup :use_runtime_tables
-
-    test "cancels pending runs through the public API" do
-      assert {:ok, run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_123"},
-                 repo: Repo
-               )
-
-      assert {:ok, cancelled_run} = SquidMesh.cancel_run(run.id, repo: Repo)
-
-      assert cancelled_run.id == run.id
-      assert cancelled_run.status == :cancelled
-    end
-
-    test "marks active runs as cancelling through the public API" do
-      assert {:ok, run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_123"},
-                 repo: Repo
-               )
-
-      assert {:ok, running_run} = Runs.Store.transition_run(Repo, run.id, :running)
-      assert {:ok, cancelling_run} = SquidMesh.cancel_run(running_run.id, repo: Repo)
-
-      assert cancelling_run.status == :cancelling
-    end
-
-    test "returns not found for missing runs" do
-      assert {:error, :not_found} = SquidMesh.cancel_run(Ecto.UUID.generate(), repo: Repo)
-    end
-
-    test "returns a structured error for malformed run ids" do
-      assert {:error, :invalid_run_id} = SquidMesh.cancel_run("not-a-uuid", repo: Repo)
-    end
-
-    test "finalizes paused step history when cancelling a paused run" do
-      assert {:ok, run} =
-               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
-               })
-
-      assert {:ok, cancelled_run} = SquidMesh.cancel_run(run.id, repo: Repo)
-      assert cancelled_run.status == :cancelled
-
-      assert {:ok, inspected_run} =
-               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
-
-      paused_step = Enum.find(inspected_run.step_runs, &(&1.step == :wait_for_approval))
-
-      assert paused_step.status == :failed
-      assert paused_step.output == nil
-
-      assert paused_step.last_error == %{
-               message: "run cancelled while paused",
-               reason: "cancelled"
-             }
-
-      assert Enum.map(paused_step.attempts, &{&1.attempt_number, &1.status, &1.error}) == [
-               {1, :failed, %{message: "run cancelled while paused", reason: "cancelled"}}
-             ]
-    end
-  end
-
-  describe "replay_run/2" do
-    setup :use_runtime_tables
-
-    test "creates a new run linked to the source run through the public API" do
-      assert {:ok, source_run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_123"},
-                 repo: Repo
-               )
-
-      assert {:ok, replay_run} = SquidMesh.replay_run(source_run.id, repo: Repo)
-
-      assert replay_run.id != source_run.id
-      assert replay_run.workflow == InvoiceReminderWorkflow
-      assert replay_run.trigger == :invoice_delivery
-      assert replay_run.status == :pending
-      assert replay_run.payload == source_run.payload
-      assert replay_run.current_step == :load_invoice
-      assert replay_run.replayed_from_run_id == source_run.id
-    end
-
-    test "returns not found when replaying a missing run" do
-      assert {:error, :not_found} = SquidMesh.replay_run(Ecto.UUID.generate(), repo: Repo)
-    end
-
-    test "returns a structured error for malformed run ids" do
-      assert {:error, :invalid_run_id} = SquidMesh.replay_run("not-a-uuid", repo: Repo)
-    end
-
-    test "rolls back replay creation when dispatching the replayed run fails" do
-      assert {:ok, source_run} =
-               Runs.Store.create_run(
-                 Repo,
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_123"}
-               )
-
-      before_count = Repo.aggregate(SquidMesh.Persistence.Run, :count, :id)
-
-      assert {:error, {:dispatch_failed, :executor_unavailable}} =
-               SquidMesh.replay_run(
-                 source_run.id,
-                 repo: Repo,
-                 executor: MissingExecutor
-               )
-
-      assert Repo.aggregate(SquidMesh.Persistence.Run, :count, :id) == before_count
-    end
-
-    test "blocks replay by default after completed irreversible steps" do
-      assert {:ok, source_run} =
-               SquidMesh.start_run(
-                 IrreversibleWorkflow,
-                 %{account_id: "acct_123"},
-                 repo: Repo
-               )
-
-      assert %{success: 2, failure: 0} =
-               SquidMesh.Test.Executor.drain()
-
-      before_count = Repo.aggregate(SquidMesh.Persistence.Run, :count, :id)
-
-      assert {:error,
-              {:unsafe_replay,
-               %{
-                 message:
-                   "replay requires explicit approval after irreversible or non-compensatable steps",
-                 steps: [
-                   %{
-                     step: :capture_payment,
-                     irreversible?: true,
-                     compensatable?: false,
-                     replay: :manual_review_required,
-                     recovery: :manual_intervention
-                   }
-                 ]
-               }}} = SquidMesh.replay_run(source_run.id, repo: Repo)
-
-      assert Repo.aggregate(SquidMesh.Persistence.Run, :count, :id) == before_count
-    end
-
-    test "uses persisted recovery policy when checking replay safety" do
-      assert {:ok, source_run} =
-               SquidMesh.start_run(
-                 InvoiceReminderWorkflow,
-                 %{account_id: "acct_123", invoice_id: "inv_123"},
-                 repo: Repo
-               )
-
-      assert %{success: 2, failure: 0} =
-               SquidMesh.Test.Executor.drain()
-
-      assert {1, _rows} =
-               Repo.update_all(
-                 from(step_run in SquidMesh.Persistence.StepRun,
-                   where:
-                     step_run.run_id == ^source_run.id and step_run.step == "send_email" and
-                       step_run.status == "completed"
-                 ),
-                 set: [
-                   recovery: %{
-                     "irreversible?" => false,
-                     "compensatable?" => false,
-                     "replay" => "manual_review_required",
-                     "recovery" => "manual_intervention"
-                   }
-                 ]
-               )
-
-      assert {:error, {:unsafe_replay, %{steps: [%{step: :send_email}]}}} =
-               SquidMesh.replay_run(source_run.id, repo: Repo)
-    end
-
-    test "allows replay after irreversible steps only when explicitly requested" do
-      assert {:ok, source_run} =
-               SquidMesh.start_run(
-                 IrreversibleWorkflow,
-                 %{account_id: "acct_123"},
-                 repo: Repo
-               )
-
-      assert %{success: 2, failure: 0} =
-               SquidMesh.Test.Executor.drain()
-
-      assert {:ok, replay_run} =
-               SquidMesh.replay_run(source_run.id, repo: Repo, allow_irreversible: true)
-
-      assert replay_run.replayed_from_run_id == source_run.id
-      assert replay_run.current_step == :load_account
-    end
-
-    test "does not treat non-boolean allow_irreversible values as approval" do
-      assert {:ok, source_run} =
-               SquidMesh.start_run(
-                 IrreversibleWorkflow,
-                 %{account_id: "acct_123"},
-                 repo: Repo
-               )
-
-      assert %{success: 2, failure: 0} =
-               SquidMesh.Test.Executor.drain()
-
-      before_count = Repo.aggregate(SquidMesh.Persistence.Run, :count, :id)
-
-      assert {:error, {:unsafe_replay, %{steps: [%{step: :capture_payment}]}}} =
-               SquidMesh.replay_run(source_run.id, repo: Repo, allow_irreversible: "true")
-
-      assert Repo.aggregate(SquidMesh.Persistence.Run, :count, :id) == before_count
-    end
-  end
-
-  describe "unblock_run/2" do
-    setup :use_runtime_tables
-
-    test "resumes paused runs through the public API" do
-      assert {:ok, run} =
-               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
-               })
-
-      assert {:ok, paused_run} = SquidMesh.inspect_run(run.id, repo: Repo)
-      assert paused_run.status == :paused
-
-      assert {:ok, unblocked_run} = SquidMesh.unblock_run(run.id, repo: Repo)
-
-      assert unblocked_run.id == run.id
-      assert unblocked_run.status == :running
-      assert unblocked_run.current_step == :record_delivery
-    end
-
-    test "rolls back unblock when dispatching the resumed step fails" do
-      assert {:ok, run} =
-               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
-               })
-
-      assert {:ok, paused_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
-      assert paused_run.status == :paused
-
-      assert {:error, {:dispatch_failed, :executor_unavailable}} =
-               SquidMesh.unblock_run(run.id, repo: Repo, executor: MissingExecutor)
-
-      assert {:ok, current_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
-      assert current_run.status == :paused
-      assert current_run.current_step == :wait_for_approval
-
-      paused_step = Enum.find(current_run.step_runs, &(&1.step == :wait_for_approval))
-      assert paused_step.status == :running
-      assert Enum.map(paused_step.attempts, & &1.status) == [:running]
-    end
-
-    test "returns not found for missing runs" do
-      assert {:error, :not_found} = SquidMesh.unblock_run(Ecto.UUID.generate(), repo: Repo)
-    end
-
-    test "returns a structured error for malformed run ids" do
-      assert {:error, :invalid_run_id} = SquidMesh.unblock_run("not-a-uuid", repo: Repo)
-    end
-
-    test "returns a structured error when the paused run workflow can no longer be loaded" do
-      assert {:ok, run} =
-               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
-               })
-
-      Repo.update_all(
-        from(run_record in SquidMesh.Persistence.Run, where: run_record.id == ^run.id),
-        set: [workflow: "Elixir.Missing.Workflow"]
-      )
-
-      assert {:error, {:invalid_workflow, "Elixir.Missing.Workflow"}} =
-               SquidMesh.unblock_run(run.id, repo: Repo)
-    end
-
-    test "returns a structured error when the paused step no longer resolves to built-in :pause" do
-      assert {:ok, run} =
-               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
-               })
-
-      Repo.update_all(
-        from(run_record in SquidMesh.Persistence.Run, where: run_record.id == ^run.id),
-        set: [current_step: "record_delivery"]
-      )
-
-      assert {:error, {:invalid_step, :record_delivery}} =
-               SquidMesh.unblock_run(run.id, repo: Repo)
-    end
-
-    test "does not mutate pause state when a stale unblock races with cancellation" do
-      assert {:ok, run} =
-               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
-               })
-
-      assert {:ok, paused_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
-      assert paused_run.status == :paused
-
-      assert {:ok, cancelled_run} = SquidMesh.cancel_run(run.id, repo: Repo)
-      assert cancelled_run.status == :cancelled
-
-      assert {:error, {:invalid_transition, :cancelled, :running}} =
-               Unblocker.unblock(SquidMesh.config!(repo: Repo), paused_run)
-
-      assert {:ok, current_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
-      assert current_run.status == :cancelled
-
-      paused_step = Enum.find(current_run.step_runs, &(&1.step == :wait_for_approval))
-      assert paused_step.status == :failed
-      assert paused_step.output == nil
-
-      assert Enum.map(paused_step.attempts, &{&1.status, &1.error}) == [
-               {:failed, %{message: "run cancelled while paused", reason: "cancelled"}}
-             ]
-    end
-  end
-
-  describe "approve_run/3 and reject_run/3" do
-    setup :use_runtime_tables
-
-    test "approves paused approval runs through the public API" do
-      assert {:ok, run} =
-               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
-               })
-
-      assert {:ok, paused_run} = SquidMesh.inspect_run(run.id, repo: Repo)
-      assert paused_run.status == :paused
-
-      assert {:ok, approved_run} =
-               SquidMesh.approve_run(
-                 run.id,
-                 %{actor: "ops_123", comment: "approved"},
-                 repo: Repo
-               )
-
-      assert approved_run.id == run.id
-      assert approved_run.status == :running
-      assert approved_run.current_step == :record_approval
-    end
-
-    test "rejects paused approval runs through the public API" do
-      assert {:ok, run} =
-               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
-               })
-
-      assert {:ok, paused_run} = SquidMesh.inspect_run(run.id, repo: Repo)
-      assert paused_run.status == :paused
-
-      assert {:ok, rejected_run} =
-               SquidMesh.reject_run(
-                 run.id,
-                 %{actor: "ops_456", comment: "rejected"},
-                 repo: Repo
-               )
-
-      assert rejected_run.id == run.id
-      assert rejected_run.status == :running
-      assert rejected_run.current_step == :record_rejection
-    end
-
-    test "returns a structured error when the approval workflow can no longer be loaded" do
-      assert {:ok, run} =
-               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
-               })
-
-      Repo.update_all(
-        from(run_record in SquidMesh.Persistence.Run, where: run_record.id == ^run.id),
-        set: [workflow: "Elixir.Missing.Workflow"]
-      )
-
-      assert {:error, {:invalid_workflow, "Elixir.Missing.Workflow"}} =
-               SquidMesh.approve_run(run.id, %{actor: "ops_123"}, repo: Repo)
-    end
-
-    test "returns a structured error for malformed approval run ids" do
-      assert {:error, :invalid_run_id} =
-               SquidMesh.approve_run("not-a-uuid", %{actor: "ops_123"}, repo: Repo)
-    end
-
-    test "returns a structured error for malformed rejection run ids" do
-      assert {:error, :invalid_run_id} =
-               SquidMesh.reject_run("not-a-uuid", %{actor: "ops_123"}, repo: Repo)
-    end
-
-    test "rejects empty actor maps for approval decisions" do
-      assert {:ok, run} =
-               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
-
-      assert :ok =
-               StepWorker.perform(%Job{
-                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
-               })
-
-      assert {:error, {:invalid_review, %{actor: :required}}} =
-               SquidMesh.approve_run(run.id, %{actor: %{}}, repo: Repo)
-    end
-  end
-
   describe "read model" do
     @read_model_storage {Jido.Storage.ETS, table: :squid_mesh_read_model_squid_mesh_test}
     @read_model_run_id "run_123"
@@ -3158,9 +1804,7 @@ defmodule SquidMeshTest do
                snapshot.visible_attempts
     end
 
-    test "start_run/3 can use the journal runtime without writing legacy runtime tables" do
-      legacy_counts_before = legacy_runtime_counts()
-
+    test "start_run/3 appends journal start and dispatch facts" do
       assert {:ok, %Snapshot{} = snapshot} =
                SquidMesh.start_run(
                  PaymentRecoveryWorkflow,
@@ -3222,13 +1866,9 @@ defmodule SquidMeshTest do
       assert SquidMesh.Runtime.RunIndexProjection.run_ids(run_index_projection) == [
                snapshot.run_id
              ]
-
-      assert legacy_runtime_counts() == legacy_counts_before
     end
 
     test "list_runs/2 lists journal runs for one workflow newest first" do
-      legacy_counts_before = legacy_runtime_counts()
-
       assert {:ok, %Snapshot{} = older_run} =
                SquidMesh.start_run(
                  PaymentRecoveryWorkflow,
@@ -3261,7 +1901,6 @@ defmodule SquidMeshTest do
       assert Enum.all?([first, second], &(&1.workflow == Atom.to_string(PaymentRecoveryWorkflow)))
       assert Enum.all?([first, second], &(&1.queue == @read_model_queue))
       assert Enum.all?([first, second], &(&1.status == :running))
-      assert legacy_runtime_counts() == legacy_counts_before
     end
 
     test "list_runs/2 lists journal runs across workflows from the global catalog" do
@@ -4207,8 +2846,6 @@ defmodule SquidMeshTest do
         queue: configured_queue
       )
 
-      legacy_counts_before = legacy_runtime_counts()
-
       assert {:ok, %Snapshot{} = started} =
                SquidMesh.start_run(
                  PaymentRecoveryWorkflow,
@@ -4248,8 +2885,6 @@ defmodule SquidMeshTest do
       assert completed.run_id == started.run_id
       assert completed.terminal?
       assert completed.terminal_status == :completed
-
-      assert legacy_runtime_counts() == legacy_counts_before
     end
 
     test "journal runtime executes built-in log steps" do
@@ -5863,13 +4498,12 @@ defmodule SquidMeshTest do
       assert snapshot.status == :running
     end
 
-    test "table runtime start rejects journal-only options" do
-      assert {:error, {:invalid_option, {:runtime_tables, [:journal_storage]}}} =
+    test "start_run/3 rejects unsupported runtime mode" do
+      assert {:error, {:invalid_option, {:runtime, :invalid}}} =
                SquidMesh.start_run(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
-                 runtime: :runtime_tables,
-                 journal_storage: @read_model_storage
+                 runtime: :unsupported
                )
     end
 
@@ -6137,9 +4771,7 @@ defmodule SquidMeshTest do
       assert scheduled_run_ids == Enum.sort(started_run_ids)
     end
 
-    test "execute_next/1 runs and applies one visible journal attempt without writing legacy runtime tables" do
-      legacy_counts_before = legacy_runtime_counts()
-
+    test "execute_next/1 runs and applies one visible journal attempt" do
       assert {:ok, %Snapshot{} = started_snapshot} =
                SquidMesh.start_run(
                  PaymentRecoveryWorkflow,
@@ -6198,8 +4830,89 @@ defmodule SquidMeshTest do
                :attempt_claimed,
                :attempt_completed
              ]
+    end
 
-      assert legacy_runtime_counts() == legacy_counts_before
+    test "execute_next/1 rolls back repo transaction writes when journal completion aborts" do
+      Repo.delete_all("transactional_events")
+
+      queue = "repo-transaction-#{System.unique_integer([:positive])}"
+      storage = {SquidMesh.Runtime.Journal.Storage.Ecto, repo: Repo}
+
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 RepoTransactionWorkflow,
+                 :repo_transaction,
+                 %{account_id: "acct_repo_txn"},
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 now: @read_model_started_at
+               )
+
+      test_after_transaction_step = fn %{run_id: run_id} ->
+        assert run_id == started_snapshot.run_id
+        {:error, :simulated_crash}
+      end
+
+      assert {:error, {:test_after_transaction_step, :simulated_crash}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 owner_id: "repo-txn-worker",
+                 lease_for: 1,
+                 now: @read_model_visible_at,
+                 test_after_transaction_step: test_after_transaction_step
+               )
+
+      assert transactional_events(started_snapshot.run_id) == []
+
+      assert {:ok, %Snapshot{} = completed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 owner_id: "repo-txn-worker-retry",
+                 now: DateTime.add(@read_model_visible_at, 2, :second)
+               )
+
+      assert completed_snapshot.run_id == started_snapshot.run_id
+      assert completed_snapshot.status == :completed
+      assert transactional_events(started_snapshot.run_id) == ["recorded"]
+    end
+
+    test "execute_next/1 fails repo transaction steps closed for non-Ecto journal storage" do
+      Repo.delete_all("transactional_events")
+
+      queue = "repo-transaction-unsupported-#{System.unique_integer([:positive])}"
+
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start_run(
+                 RepoTransactionWorkflow,
+                 :repo_transaction,
+                 %{account_id: "acct_repo_txn_unsupported"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = failed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: queue,
+                 owner_id: "repo-txn-worker",
+                 now: @read_model_visible_at
+               )
+
+      assert failed_snapshot.run_id == started_snapshot.run_id
+      assert failed_snapshot.status == :failed
+      assert transactional_events(started_snapshot.run_id) == []
+
+      assert [%{status: :failed, error: error}] = failed_snapshot.attempts
+      assert error.code == "unsupported_repo_transaction_storage"
+      assert error.retryable? == false
     end
 
     test "execute_next/1 plans and schedules the successor step after a journal completion" do
@@ -8177,6 +6890,12 @@ defmodule SquidMeshTest do
 
       assert {:error, {:invalid_option, {:read_model, :invalid}}} =
                SquidMesh.explain_run(@read_model_run_id, read_model: :unknown)
+
+      assert {:error, {:invalid_option, {:read_model, :invalid}}} =
+               SquidMesh.inspect_run(@read_model_run_id, read_model: :unsupported)
+
+      assert {:error, {:invalid_option, {:read_model, :invalid}}} =
+               SquidMesh.explain_run(@read_model_run_id, read_model: :unsupported)
     end
 
     test "read model APIs redact invalid read_model values" do
@@ -8317,14 +7036,6 @@ defmodule SquidMeshTest do
              )
   end
 
-  defp legacy_runtime_counts do
-    %{
-      runs: Repo.aggregate(SquidMesh.Persistence.Run, :count, :id),
-      step_runs: Repo.aggregate(SquidMesh.Persistence.StepRun, :count, :id),
-      step_attempts: Repo.aggregate(SquidMesh.Persistence.StepAttempt, :count, :id)
-    }
-  end
-
   defp read_model_run_started do
     read_model_entry!(:run_started, %{
       run_id: @read_model_run_id,
@@ -8370,6 +7081,16 @@ defmodule SquidMeshTest do
 
   defp claim_token_hash(token) do
     Base.encode16(:crypto.hash(:sha256, token), case: :lower)
+  end
+
+  defp transactional_events(run_id) do
+    Repo.all(
+      from(event in "transactional_events",
+        where: event.run_id == type(^run_id, Ecto.UUID),
+        order_by: event.id,
+        select: event.event
+      )
+    )
   end
 
   defp journal_start_runnable(run_id, account_id \\ "acct_123") do

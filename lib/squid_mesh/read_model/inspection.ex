@@ -2,11 +2,11 @@ defmodule SquidMesh.ReadModel.Inspection do
   @moduledoc """
   Projection-backed inspection for the Jido-native runtime path.
 
-  The current public `SquidMesh.inspect_run/2` API reads the stable Postgres
-  runtime tables. This module is the read-model boundary for the
-  Jido-native runtime: it rebuilds workflow and dispatch agents from
-  `Jido.Storage`, combines their projections, and returns a factual snapshot of
-  one run.
+  The current public `SquidMesh.inspect_run/2` API reads the durable Jido
+  journal through the configured `Jido.Storage`. This module is the read-model
+  boundary for the Jido-native runtime: it rebuilds workflow and dispatch
+  agents from journal entries, combines their projections, and returns a
+  factual snapshot of one run.
 
   The snapshot is intentionally read-only. It does not recover missing dispatch
   entries, apply completed results, or mutate checkpoints. Recovery remains
@@ -194,9 +194,19 @@ defmodule SquidMesh.ReadModel.Inspection do
   defp applied_result_context(%WorkflowAgent.Projection{} = projection) do
     projection
     |> WorkflowAgent.Projection.applied_results()
-    |> Map.values()
+    |> Enum.sort_by(fn {runnable_key, _result} ->
+      {applied_result_sort_value(projection, runnable_key), runnable_key}
+    end)
+    |> Enum.map(fn {_runnable_key, result} -> result end)
     |> Enum.filter(&is_map/1)
     |> Enum.reduce(%{}, &Map.merge(&2, &1))
+  end
+
+  defp applied_result_sort_value(%WorkflowAgent.Projection{} = projection, runnable_key) do
+    case WorkflowAgent.Projection.applied_at(projection, runnable_key) do
+      %DateTime{} = applied_at -> DateTime.to_unix(applied_at, :microsecond)
+      _missing -> -1
+    end
   end
 
   defp idle_snapshot_reason(workflow_projection, scheduled_attempts, attempts) do

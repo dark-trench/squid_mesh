@@ -16,6 +16,11 @@ defmodule Mix.Tasks.SquidMesh.Install do
 
   @shortdoc "Installs Squid Mesh migrations into the host application"
   @schema_migration_name "create_squid_mesh_schema.exs"
+  @required_schema_markers [
+    "create table(:squid_mesh_journal_threads",
+    "create table(:squid_mesh_journal_entries",
+    "create table(:squid_mesh_journal_checkpoints"
+  ]
 
   use Mix.Task
 
@@ -39,7 +44,7 @@ defmodule Mix.Tasks.SquidMesh.Install do
 
     base_timestamp = timestamp()
 
-    if migration_installed?(dest_dir) do
+    if current_schema_installed?(dest_dir) do
       Mix.shell().info("* skipping #{@schema_migration_name} (already installed)")
     else
       new_filename = "#{base_timestamp}_#{@schema_migration_name}"
@@ -57,22 +62,27 @@ defmodule Mix.Tasks.SquidMesh.Install do
 
           config :squid_mesh,
             repo: YourApp.Repo,
-            executor: YourApp.SquidMeshExecutor
+            runtime: :journal,
+            read_model: :read_model
 
-          config :your_app, YourApp.SquidMeshExecutor,
-            queue: :squid_mesh
+      3. Start your chosen executor and have workers call
+         `SquidMesh.execute_next(owner_id: "your-worker-id")` when capacity is
+         available. Bedrock is the recommended executor for distributed hosts.
 
-      3. Implement `YourApp.SquidMeshExecutor` with `@behaviour SquidMesh.Executor`
-      4. Have your queued job call `SquidMesh.Runtime.Runner.perform(payload)`
-
-    See docs/host_app_integration.md for a copy-paste executor skeleton.
+    See docs/host_app_integration.md for a copy-paste host setup.
     """)
   end
 
-  defp migration_installed?(dest_dir) do
+  defp current_schema_installed?(dest_dir) do
     dest_dir
     |> File.ls!()
-    |> Enum.any?(&String.ends_with?(&1, @schema_migration_name))
+    |> Enum.filter(&String.ends_with?(&1, @schema_migration_name))
+    |> Enum.any?(&current_schema_migration?(dest_dir, &1))
+  end
+
+  defp current_schema_migration?(dest_dir, filename) do
+    body = File.read!(Path.join(dest_dir, filename))
+    Enum.all?(@required_schema_markers, &String.contains?(body, &1))
   end
 
   defp source_filename do

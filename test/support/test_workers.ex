@@ -8,11 +8,6 @@ defmodule SquidMesh.Test.StepWorker do
     Runner.perform(args)
   end
 
-  def perform(%{args: %{"run_id" => run_id, "step" => step}})
-      when is_binary(run_id) and is_binary(step) do
-    Runner.execute_step(run_id, step)
-  end
-
   def perform(%{args: args}) do
     {:error, {:invalid_job_args, args}}
   end
