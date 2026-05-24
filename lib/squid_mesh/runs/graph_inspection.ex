@@ -2,7 +2,7 @@ defmodule SquidMesh.Runs.GraphInspection do
   @moduledoc """
   Graph-oriented inspection output for one workflow run.
 
-  This projection is read-only and executor-agnostic. It is built from the
+  This projection is read-only and backend-neutral. It is built from the
   journal inspection data returned by `SquidMesh.inspect_run/2`, then overlays
   the declared workflow graph when the workflow module can still be loaded.
   """
