@@ -459,6 +459,20 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              })
   end
 
+  test "the cron delivery adapter reports adapter metadata" do
+    assert {:ok, metadata} =
+             MinimalHostApp.SquidMeshExecutor.enqueue_cron(
+               %{},
+               DailyDigest,
+               :daily_digest,
+               signal_id: "minimal-host-app:metadata-test"
+             )
+
+    assert metadata.adapter == MinimalHostApp.SquidMeshExecutor
+    assert metadata.queue == :squid_mesh
+    assert metadata.worker == "MinimalHostApp.Workers.SquidMeshWorker"
+  end
+
   test "generates a new reboot signal id for each cron plugin boot" do
     first_signal_id = plugin_reboot_signal_id()
     second_signal_id = plugin_reboot_signal_id()
