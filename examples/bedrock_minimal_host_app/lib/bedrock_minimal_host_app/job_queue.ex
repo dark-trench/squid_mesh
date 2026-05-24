@@ -1,6 +1,6 @@
 defmodule BedrockMinimalHostApp.JobQueue do
   @moduledoc """
-  Bedrock-backed job queue for Squid Mesh executor payloads and stress probes.
+  Bedrock-backed job queue for Squid Mesh delivery payloads and stress probes.
   """
 
   use Bedrock.JobQueue,
