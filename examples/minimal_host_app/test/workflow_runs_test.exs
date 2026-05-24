@@ -448,6 +448,17 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert inspected_run.context.schedule.idempotency_key == signal_id
   end
 
+  test "the host worker forwards non-cron payload errors from the runtime" do
+    assert {:error, {:invalid_squid_mesh_payload, %{"kind" => "step", "run_id" => _run_id}}} =
+             SquidMeshWorker.perform(%Job{
+               args: %{
+                 "kind" => "step",
+                 "run_id" => Ecto.UUID.generate(),
+                 "step" => "charge_card"
+               }
+             })
+  end
+
   test "generates a new reboot signal id for each cron plugin boot" do
     first_signal_id = plugin_reboot_signal_id()
     second_signal_id = plugin_reboot_signal_id()
