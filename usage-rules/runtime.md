@@ -36,10 +36,3 @@
   provide ordered appends, conflict detection, deterministic replay, durable
   checkpoint reads, and trusted configuration.
 - Never derive `journal_storage` from request input.
-
-## Removed Runtime Surface
-
-- Do not add runtime-table execution paths.
-- Do not add stale-step timeout reclaim as public config.
-- Do not add table-backed run, step, or attempt stores as runtime authority.
-- Do not route normal step execution through `SquidMesh.Executor`.
