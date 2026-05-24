@@ -1,6 +1,6 @@
 defmodule SquidMesh.ReadModel.Explanation do
   @moduledoc """
-  Projection-backed explanation for the Jido-native runtime path.
+  Projection-backed explanation for the journal-backed runtime.
 
   `SquidMesh.ReadModel.Inspection` answers what durable journal
   projections currently show. This module answers why that state matters to an

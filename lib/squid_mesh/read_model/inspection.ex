@@ -1,10 +1,10 @@
 defmodule SquidMesh.ReadModel.Inspection do
   @moduledoc """
-  Projection-backed inspection for the Jido-native runtime path.
+  Projection-backed inspection for the journal-backed runtime.
 
   The current public `SquidMesh.inspect_run/2` API reads the durable Jido
   journal through the configured `Jido.Storage`. This module is the read-model
-  boundary for the Jido-native runtime: it rebuilds workflow and dispatch
+  boundary for the journal-backed runtime: it rebuilds workflow and dispatch
   agents from journal entries, combines their projections, and returns a
   factual snapshot of one run.
 
