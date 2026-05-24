@@ -818,7 +818,7 @@ defmodule SquidMeshTest do
         end
       end
 
-      step :announce_prompt, :log, message: "posting digest"
+      step :announce_prompt, :log, message: "posting digest", level: :warning
       transition :announce_prompt, on: :ok, to: :complete
     end
   end
@@ -877,6 +877,26 @@ defmodule SquidMeshTest do
 
       transition :wait_for_approval, on: :ok, to: :record_delivery
       transition :record_delivery, on: :ok, to: :complete
+    end
+  end
+
+  defmodule WaitWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :wait_for_settlement, :wait, duration: 250
+      step :record_settlement, :log, message: "settlement recorded", level: :info
+
+      transition :wait_for_settlement, on: :ok, to: :record_settlement
+      transition :record_settlement, on: :ok, to: :complete
     end
   end
 
@@ -2424,6 +2444,57 @@ defmodule SquidMeshTest do
       assert legacy_runtime_counts() == legacy_counts_before
     end
 
+    test "journal runtime executes built-in log steps" do
+      run_id = Ecto.UUID.generate()
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 ManualAndScheduledDigestWorkflow,
+                 :manual_digest,
+                 %{chat_id: 123},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert snapshot.run_id == run_id
+      assert [%{step: "announce_prompt", status: :available}] = snapshot.visible_attempts
+
+      log =
+        capture_log([level: :warning], fn ->
+          assert {:ok, %Snapshot{} = completed_snapshot} =
+                   execute_journal_next(
+                     runtime: :journal,
+                     journal_storage: @read_model_storage,
+                     queue: @read_model_queue,
+                     owner_id: "journal-log-test",
+                     now: @read_model_started_at,
+                     finished_at: @read_model_visible_at
+                   )
+
+          send(self(), {:completed_snapshot, completed_snapshot})
+        end)
+
+      assert log =~ "posting digest"
+      assert_receive {:completed_snapshot, %Snapshot{} = completed_snapshot}
+
+      assert completed_snapshot.run_id == run_id
+      assert completed_snapshot.terminal?
+      assert completed_snapshot.terminal_status == :completed
+      assert completed_snapshot.visible_attempts == []
+
+      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :run_terminal
+             ]
+    end
+
     test "inspect_run_graph/2 identifies claimed journal attempts as the current node" do
       assert {:ok, %Snapshot{} = snapshot} =
                SquidMesh.start_run(
@@ -2714,21 +2785,29 @@ defmodule SquidMeshTest do
                Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
     end
 
-    test "journal runtime start rejects built-in steps before persisting runnables" do
-      run_id = Ecto.UUID.generate()
+    test "journal runtime start rejects unsupported built-in steps before persisting runnables" do
+      cases = [
+        {PauseWorkflow, :wait_for_approval, :pause},
+        {WaitWorkflow, :wait_for_settlement, :wait},
+        {ApprovalWorkflow, :wait_for_review, :approval}
+      ]
 
-      assert {:error, {:unsupported_journal_step, :wait_for_approval, :pause}} =
-               SquidMesh.start_run(
-                 PauseWorkflow,
-                 %{account_id: "acct_123"},
-                 runtime: :journal,
-                 journal_storage: @read_model_storage,
-                 queue: @read_model_queue,
-                 now: @read_model_started_at,
-                 run_id: run_id
-               )
+      for {workflow, step_name, step_kind} <- cases do
+        run_id = Ecto.UUID.generate()
 
-      assert {:error, :not_found} = Journal.load_entries(@read_model_storage, {:run, run_id})
+        assert {:error, {:unsupported_journal_step, ^step_name, ^step_kind}} =
+                 SquidMesh.start_run(
+                   workflow,
+                   %{account_id: "acct_123"},
+                   runtime: :journal,
+                   journal_storage: @read_model_storage,
+                   queue: @read_model_queue,
+                   now: @read_model_started_at,
+                   run_id: run_id
+                 )
+
+        assert {:error, :not_found} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      end
 
       assert {:error, :not_found} =
                Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
