@@ -69,6 +69,7 @@ defmodule SquidMesh.MixProject do
         "README.md",
         "docs/getting_started.md",
         "docs/getting_started.livemd",
+        "docs/workflow_authoring.livemd",
         "docs/architecture.md",
         "docs/jido_runtime_architecture.md",
         "docs/durable_dispatch_protocol.md",
@@ -93,6 +94,34 @@ defmodule SquidMesh.MixProject do
         "CONTRIBUTING.md",
         "CODE_OF_CONDUCT.md",
         "LICENSE"
+      ],
+      groups_for_extras: [
+        "Start Here": [
+          "docs/index.md",
+          "README.md",
+          "docs/getting_started.md"
+        ],
+        Livebooks: ~r/\.livemd$/,
+        Guides: [
+          "docs/host_app_integration.md",
+          "docs/workflow_authoring.md",
+          "docs/operations.md",
+          "docs/observability.md"
+        ],
+        Reference: [
+          "docs/graph_inspection.md",
+          "docs/reference_workflows.md",
+          "docs/tool_adapters.md",
+          "docs/compatibility.md",
+          "docs/production_readiness.md"
+        ],
+        Internals: [
+          "docs/architecture.md",
+          "docs/jido_runtime_architecture.md",
+          "docs/durable_dispatch_protocol.md",
+          "docs/positioning.md"
+        ],
+        "AI Usage Rules": ~r"usage-rules"
       ]
     ]
   end

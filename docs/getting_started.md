@@ -69,27 +69,27 @@ Read next: [Host app integration](host_app_integration.md).
 Workflow authors should think in business steps, not agents or jobs:
 
 ```elixir
-defmodule Billing.Workflows.PaymentRecovery do
+defmodule MiddleEarth.Workflows.RingErrand do
   use SquidMesh.Workflow
 
   workflow do
-    trigger :payment_recovery do
+    trigger :leave_shire do
       manual()
 
       payload do
-        field :account_id, :string
-        field :invoice_id, :string
+        field :bearer, :string, default: "Frodo"
+        field :ring_id, :string
       end
     end
 
-    step :load_invoice, Billing.Steps.LoadInvoice
-    step :check_gateway, Billing.Steps.CheckGateway,
+    step :pack_lembas, Hobbiton.Steps.PackLembas
+    step :cross_moria, Fellowship.Steps.CrossMoria,
       retry: [max_attempts: 3]
-    step :notify_customer, Billing.Steps.NotifyCustomer
+    step :reach_mordor, Mordor.Steps.ReachMordor
 
-    transition :load_invoice, on: :ok, to: :check_gateway
-    transition :check_gateway, on: :ok, to: :notify_customer
-    transition :notify_customer, on: :ok, to: :complete
+    transition :pack_lembas, on: :ok, to: :cross_moria
+    transition :cross_moria, on: :ok, to: :reach_mordor
+    transition :reach_mordor, on: :ok, to: :complete
   end
 end
 ```
@@ -98,7 +98,9 @@ Prefer `use SquidMesh.Step` for custom step modules. Raw `Jido.Action` modules
 remain available for interop, but the Squid Mesh step contract keeps workflow
 code easier to read.
 
-Read next: [Workflow authoring](workflow_authoring.md).
+Read next: [Workflow authoring](workflow_authoring.md), or run the
+[workflow-authoring Livebook](workflow_authoring.livemd) for an interactive
+dependency and input-mapping walkthrough.
 
 ## 3. Start And Drain A Run
 
@@ -107,9 +109,9 @@ Manual triggers start through the public API:
 ```elixir
 {:ok, run} =
   SquidMesh.start_run(
-    Billing.Workflows.PaymentRecovery,
-    :payment_recovery,
-    %{account_id: "acct_123", invoice_id: "inv_456"}
+    MiddleEarth.Workflows.RingErrand,
+    :leave_shire,
+    %{ring_id: "one-ring"}
   )
 ```
 
@@ -160,22 +162,22 @@ accidents.
 Use retries for recoverable steps:
 
 ```elixir
-step :check_gateway, Billing.Steps.CheckGateway,
+step :cross_moria, Fellowship.Steps.CrossMoria,
   retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
 ```
 
 Use waits for workflow-scale delays:
 
 ```elixir
-step :wait_for_settlement, :wait, duration: 30_000
+step :wait_for_gandalf, :wait, duration: 30_000
 ```
 
 Use recovery markers when an error path has a business meaning:
 
 ```elixir
-transition :capture_payment,
+transition :cross_moria,
   on: :error,
-  to: :issue_credit,
+  to: :walk_home_awkwardly,
   recovery: :compensation
 ```
 
@@ -190,10 +192,10 @@ Read next: [Operations](operations.md).
 Manual steps are durable workflow state:
 
 ```elixir
-step :wait_for_review, :approval
+approval_step :wait_for_council, output: :approval
 
-transition :wait_for_review, on: :approved, to: :release_order
-transition :wait_for_review, on: :rejected, to: :cancel_order
+transition :wait_for_council, on: :ok, to: :cross_moria
+transition :wait_for_council, on: :error, to: :walk_home_awkwardly
 ```
 
 Operators resolve them through public APIs:
@@ -255,6 +257,8 @@ and the [Bedrock minimal host app](../examples/bedrock_minimal_host_app/README.m
 
 - New host app setup: [Host app integration](host_app_integration.md)
 - Workflow syntax and examples: [Workflow authoring](workflow_authoring.md)
+- Interactive workflow authoring:
+  [Workflow authoring Livebook](workflow_authoring.livemd)
 - Executable product examples: [Reference workflows](reference_workflows.md)
 - Runtime internals: [Jido runtime architecture](jido_runtime_architecture.md)
 - Journal protocol details: [Durable dispatch protocol](durable_dispatch_protocol.md)

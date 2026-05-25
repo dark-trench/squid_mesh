@@ -72,49 +72,50 @@ Workflow steps do the domain work. The common authoring path is
 interop.
 
 ```elixir
-defmodule SquidMeshLivebook.FetchEmail do
+defmodule SquidMeshLivebook.PackLembas do
   use SquidMesh.Step,
-    name: :fetch_email,
-    description: "Loads one email",
+    name: :pack_lembas,
+    description: "Packs provisions for the errand",
     input_schema: [
-      email_id: [type: :string, required: true]
+      ring_id: [type: :string, required: true]
     ],
     output_schema: [
-      email: [type: :map, required: true]
+      provisions: [type: :map, required: true]
     ]
 
   @impl SquidMesh.Step
-  def run(%{email_id: email_id}, %SquidMesh.Step.Context{}) do
+  def run(%{ring_id: ring_id}, %SquidMesh.Step.Context{}) do
     {:ok,
      %{
-       email: %{
-         id: email_id,
-         subject: "Need invoice copy",
-         sender: "customer@example.com"
+       provisions: %{
+         ring_id: ring_id,
+         lembas_count: 11,
+         packed_by: "Sam"
        }
      }}
   end
 end
 
-defmodule SquidMeshLivebook.DraftReply do
+defmodule SquidMeshLivebook.CrossMoria do
   use SquidMesh.Step,
-    name: :draft_reply,
-    description: "Drafts a customer reply",
+    name: :cross_moria,
+    description: "Crosses Moria with the packed provisions",
     input_schema: [
-      email: [type: :map, required: true]
+      provisions: [type: :map, required: true]
     ],
     output_schema: [
-      draft: [type: :map, required: true]
+      moria: [type: :map, required: true]
     ]
 
   @impl SquidMesh.Step
-  def run(%{email: email}, %SquidMesh.Step.Context{run_id: run_id}) do
+  def run(%{provisions: provisions}, %SquidMesh.Step.Context{run_id: run_id}) do
     {:ok,
      %{
-       draft: %{
+       moria: %{
          run_id: run_id,
-         to: email.sender,
-         body: "Thanks - I found your invoice."
+         ring_id: provisions.ring_id,
+         status: "crossed",
+         lembas_left: provisions.lembas_count - 3
        }
      }}
   end
@@ -127,23 +128,23 @@ A workflow declares the trigger, payload, steps, and transitions. The workflow
 definition says what should happen; the journal records what did happen.
 
 ```elixir
-defmodule SquidMeshLivebook.EmailReplyWorkflow do
+defmodule SquidMeshLivebook.RingErrandWorkflow do
   use SquidMesh.Workflow
 
   workflow do
-    trigger :manual_reply do
+    trigger :leave_shire do
       manual()
 
       payload do
-        field :email_id, :string
+        field :ring_id, :string
       end
     end
 
-    step :fetch_email, SquidMeshLivebook.FetchEmail
-    step :draft_reply, SquidMeshLivebook.DraftReply
+    step :pack_lembas, SquidMeshLivebook.PackLembas
+    step :cross_moria, SquidMeshLivebook.CrossMoria
 
-    transition :fetch_email, on: :ok, to: :draft_reply
-    transition :draft_reply, on: :ok, to: :complete
+    transition :pack_lembas, on: :ok, to: :cross_moria
+    transition :cross_moria, on: :ok, to: :complete
   end
 end
 ```
@@ -155,7 +156,7 @@ tooling can inspect without parsing the module source. It is also the contract
 visual editors and runtime-authored workflows will build on.
 
 ```elixir
-{:ok, spec} = SquidMesh.Workflow.to_spec(SquidMeshLivebook.EmailReplyWorkflow)
+{:ok, spec} = SquidMesh.Workflow.to_spec(SquidMeshLivebook.RingErrandWorkflow)
 
 %{
   workflow: spec.workflow,
@@ -181,8 +182,8 @@ Manual triggers start through the public API. This workflow has one trigger, so
 ```elixir
 {:ok, run} =
   SquidMesh.start_run(
-    SquidMeshLivebook.EmailReplyWorkflow,
-    %{email_id: "email_123"},
+    SquidMeshLivebook.RingErrandWorkflow,
+    %{ring_id: "one-ring"},
     opts
   )
 
@@ -197,7 +198,7 @@ Manual triggers start through the public API. This workflow has one trigger, so
 }
 ```
 
-The first snapshot already has one visible attempt: `fetch_email`. Visible
+The first snapshot already has one visible attempt: `pack_lembas`. Visible
 attempts are work the host can claim now. Scheduled attempts are work that
 exists but should not be claimed until `next_visible_at`.
 
@@ -208,7 +209,7 @@ one visible journal attempt, runs the step, records the result, and makes the
 next attempt visible when the workflow should continue.
 
 A run is the whole workflow instance. An attempt is one executable unit of work
-inside that run, such as the visible `:fetch_email` or `:draft_reply` step.
+inside that run, such as the visible `:pack_lembas` or `:cross_moria` step.
 
 ```elixir
 worker_opts = Keyword.put(opts, :owner_id, "livebook-worker")
@@ -229,8 +230,8 @@ worker_opts = Keyword.put(opts, :owner_id, "livebook-worker")
 }
 ```
 
-After the first call, the `fetch_email` attempt has been applied and the
-`draft_reply` attempt becomes visible. After the second call, the run is
+After the first call, the `pack_lembas` attempt has been applied and the
+`cross_moria` attempt becomes visible. After the second call, the run is
 terminal. The third call returns `:none` because this queue has no visible work
 left.
 
@@ -310,40 +311,40 @@ useful when the workflow should continue later, while the journal remains the
 source of truth.
 
 ```elixir
-defmodule SquidMeshLivebook.RecordFollowUp do
+defmodule SquidMeshLivebook.RecordGandalfArrival do
   use SquidMesh.Step,
-    name: :record_follow_up,
-    description: "Records that a delayed follow-up became visible",
+    name: :record_gandalf_arrival,
+    description: "Records that the delayed rendezvous became visible",
     input_schema: [
-      email_id: [type: :string, required: true]
+      ring_id: [type: :string, required: true]
     ],
     output_schema: [
-      follow_up: [type: :map, required: true]
+      rendezvous: [type: :map, required: true]
     ]
 
   @impl SquidMesh.Step
-  def run(%{email_id: email_id}, %SquidMesh.Step.Context{}) do
-    {:ok, %{follow_up: %{email_id: email_id, status: "ready"}}}
+  def run(%{ring_id: ring_id}, %SquidMesh.Step.Context{}) do
+    {:ok, %{rendezvous: %{ring_id: ring_id, status: "wizard arrived"}}}
   end
 end
 
-defmodule SquidMeshLivebook.FollowUpWorkflow do
+defmodule SquidMeshLivebook.GandalfRendezvousWorkflow do
   use SquidMesh.Workflow
 
   workflow do
-    trigger :manual_follow_up do
+    trigger :wait_for_wizard do
       manual()
 
       payload do
-        field :email_id, :string
+        field :ring_id, :string
       end
     end
 
-    step :wait_for_follow_up, :wait, duration: 1_000
-    step :record_follow_up, SquidMeshLivebook.RecordFollowUp
+    step :wait_for_gandalf, :wait, duration: 1_000
+    step :record_gandalf_arrival, SquidMeshLivebook.RecordGandalfArrival
 
-    transition :wait_for_follow_up, on: :ok, to: :record_follow_up
-    transition :record_follow_up, on: :ok, to: :complete
+    transition :wait_for_gandalf, on: :ok, to: :record_gandalf_arrival
+    transition :record_gandalf_arrival, on: :ok, to: :complete
   end
 end
 
@@ -353,8 +354,8 @@ wakeup_worker_opts = Keyword.put(wakeup_opts, :owner_id, "livebook-worker")
 
 {:ok, wakeup_run} =
   SquidMesh.start_run(
-    SquidMeshLivebook.FollowUpWorkflow,
-    %{email_id: "email_789"},
+    SquidMeshLivebook.GandalfRendezvousWorkflow,
+    %{ring_id: "one-ring"},
     wakeup_opts
   )
 
@@ -369,19 +370,19 @@ wakeup_worker_opts = Keyword.put(wakeup_opts, :owner_id, "livebook-worker")
 }
 ```
 
-The wait step completed, then Squid Mesh scheduled `record_follow_up` for later.
+The wait step completed, then Squid Mesh scheduled `record_gandalf_arrival` for later.
 Until `next_visible_at`, workers should see no visible work for that queue.
 
 ```elixir
 {:ok, :none} = SquidMesh.execute_next(wakeup_worker_opts)
 
-{:ok, completed_follow_up} =
+{:ok, completed_rendezvous} =
   SquidMesh.execute_next(Keyword.put(wakeup_worker_opts, :now, scheduled_run.next_visible_at))
 
 %{
-  status: completed_follow_up.status,
-  reason: completed_follow_up.reason,
-  attempts: Enum.map(completed_follow_up.attempts, &SquidMeshLivebook.Output.attempt/1)
+  status: completed_rendezvous.status,
+  reason: completed_rendezvous.reason,
+  attempts: Enum.map(completed_rendezvous.attempts, &SquidMeshLivebook.Output.attempt/1)
 }
 ```
 
@@ -391,12 +392,12 @@ Approval steps pause the workflow until an operator approves or rejects the run.
 This is durable workflow state, not a transient process wait.
 
 ```elixir
-defmodule SquidMeshLivebook.RecordApproval do
+defmodule SquidMeshLivebook.RecordCouncilApproval do
   use SquidMesh.Step,
-    name: :record_approval,
-    description: "Records an approved reply",
+    name: :record_council_approval,
+    description: "Records an approved errand",
     input_schema: [
-      email_id: [type: :string, required: true],
+      ring_id: [type: :string, required: true],
       approval: [type: :map, required: true]
     ],
     output_schema: [
@@ -404,17 +405,17 @@ defmodule SquidMeshLivebook.RecordApproval do
     ]
 
   @impl SquidMesh.Step
-  def run(%{email_id: email_id, approval: approval}, %SquidMesh.Step.Context{}) do
-    {:ok, %{recorded: %{email_id: email_id, decision: approval.decision}}}
+  def run(%{ring_id: ring_id, approval: approval}, %SquidMesh.Step.Context{}) do
+    {:ok, %{recorded: %{ring_id: ring_id, decision: approval.decision}}}
   end
 end
 
-defmodule SquidMeshLivebook.RecordRejection do
+defmodule SquidMeshLivebook.RecordCouncilRejection do
   use SquidMesh.Step,
-    name: :record_rejection,
-    description: "Records a rejected reply",
+    name: :record_council_rejection,
+    description: "Records a rejected errand",
     input_schema: [
-      email_id: [type: :string, required: true],
+      ring_id: [type: :string, required: true],
       approval: [type: :map, required: true]
     ],
     output_schema: [
@@ -422,31 +423,31 @@ defmodule SquidMeshLivebook.RecordRejection do
     ]
 
   @impl SquidMesh.Step
-  def run(%{email_id: email_id, approval: approval}, %SquidMesh.Step.Context{}) do
-    {:ok, %{recorded: %{email_id: email_id, decision: approval.decision}}}
+  def run(%{ring_id: ring_id, approval: approval}, %SquidMesh.Step.Context{}) do
+    {:ok, %{recorded: %{ring_id: ring_id, decision: approval.decision}}}
   end
 end
 
-defmodule SquidMeshLivebook.ApprovalWorkflow do
+defmodule SquidMeshLivebook.CouncilApprovalWorkflow do
   use SquidMesh.Workflow
 
   workflow do
-    trigger :manual_review do
+    trigger :council_review do
       manual()
 
       payload do
-        field :email_id, :string
+        field :ring_id, :string
       end
     end
 
-    approval_step :wait_for_review, output: :approval
-    step :record_approval, SquidMeshLivebook.RecordApproval
-    step :record_rejection, SquidMeshLivebook.RecordRejection
+    approval_step :wait_for_council, output: :approval
+    step :record_council_approval, SquidMeshLivebook.RecordCouncilApproval
+    step :record_council_rejection, SquidMeshLivebook.RecordCouncilRejection
 
-    transition :wait_for_review, on: :ok, to: :record_approval
-    transition :wait_for_review, on: :error, to: :record_rejection
-    transition :record_approval, on: :ok, to: :complete
-    transition :record_rejection, on: :ok, to: :complete
+    transition :wait_for_council, on: :ok, to: :record_council_approval
+    transition :wait_for_council, on: :error, to: :record_council_rejection
+    transition :record_council_approval, on: :ok, to: :complete
+    transition :record_council_rejection, on: :ok, to: :complete
   end
 end
 
@@ -455,8 +456,8 @@ approval_worker_opts = Keyword.put(approval_opts, :owner_id, "livebook-worker")
 
 {:ok, approval_run} =
   SquidMesh.start_run(
-    SquidMeshLivebook.ApprovalWorkflow,
-    %{email_id: "email_456"},
+    SquidMeshLivebook.CouncilApprovalWorkflow,
+    %{ring_id: "one-ring"},
     approval_opts
   )
 
@@ -488,8 +489,8 @@ approval_worker_opts = Keyword.put(approval_opts, :owner_id, "livebook-worker")
 
 The paused snapshot exposes `manual_state`, so a host UI can render the
 operator decision boundary. `approve_run/3` records the decision and makes the
-approval path visible. The next worker execution runs `record_approval` and
-finishes the workflow.
+approval path visible. The next worker execution runs `record_council_approval`
+and finishes the workflow.
 
 ## What To Read Next
 
