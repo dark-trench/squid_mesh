@@ -6,6 +6,37 @@ The format is based on Keep a Changelog and the project follows Semantic
 Versioning, including prerelease tags while the runtime remains in early
 development.
 
+## [0.1.0-beta.2] - 2026-05-25
+
+### Added
+- UI-friendly graph inspection map serialization through
+  `SquidMesh.Runs.GraphInspection.to_map/1`, including documented node and edge
+  shapes for dashboards, CLIs, and visual workflow tools.
+- Reference workflow documentation for approval, recovery, dependency, saga,
+  and scheduled workflow examples in the minimal host app.
+- Getting Started and Workflow Authoring Livebooks that execute against the
+  journal runtime and show visible attempts, scheduled wakeups, graph output,
+  manual approval state, normalized specs, dependency joins, and nested input
+  mappings.
+- Discord notification workflow regression coverage for multiline message
+  payloads.
+
+### Changed
+- Documentation is reorganized around reader intent, with clearer README entry
+  points, a structured docs home, grouped ExDoc extras, updated observability
+  guidance, and Mermaid architecture diagrams.
+- Getting-started and workflow-authoring examples now keep a consistent fantasy
+  workflow thread while demonstrating the current DSL and runtime inspection
+  APIs.
+- Dependency versions were refreshed for Jido, Req, and ExDoc within the
+  existing supported constraints.
+
+### Fixed
+- Discord notification payloads now send real multiline content instead of
+  literal escaped newline sequences.
+- Documentation snippets that inspect, cancel, replay, explain, or graph runs
+  now consistently use the current `run_id` field.
+
 ## [0.1.0-beta.1] - 2026-05-24
 
 ### Added
