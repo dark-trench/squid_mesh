@@ -109,6 +109,12 @@ inputs, outputs, attempts, or claim metadata. Dashboards can call
 and `queue` to `inspect_run(run_id, queue: queue, include_history: true)` or
 `inspect_run_graph(run_id, queue: queue)` for detail views.
 
+Do not serialize inspection or graph detail directly to untrusted clients.
+Host apps should authorize the caller, select only the fields the view needs,
+and redact host-domain inputs, outputs, errors, manual metadata, idempotency
+keys, and claim identifiers before returning the payload. See
+[Observability](observability.md#redaction-and-field-selection).
+
 ## Runtime Boundaries
 
 Most host apps can use Squid Mesh without writing Jido agents, storage calls, or
