@@ -1,0 +1,317 @@
+# Getting Started With Squid Mesh
+
+This Livebook introduces the core Squid Mesh model through a small workflow you
+can run without creating a Phoenix app or a Postgres database.
+
+The examples use ETS-backed journal storage to keep setup light. Real host apps
+should use the Ecto/Postgres journal storage described in the host app
+integration guide.
+
+## Install
+
+```elixir
+Mix.install([
+  {:squid_mesh, github: "dark-trench/squid_mesh", branch: "main"}
+])
+```
+
+## Runtime Setup
+
+Squid Mesh normally reads runtime configuration from the host application. In
+this notebook, we configure it directly and use an ETS table for durable facts
+inside the current Livebook session.
+
+```elixir
+storage = {Jido.Storage.ETS, table: :squid_mesh_getting_started_livebook}
+
+# This placeholder satisfies the library config contract for the notebook.
+# A real host app should configure its actual Ecto repo instead.
+defmodule SquidMeshLivebook.Repo do
+end
+
+Application.put_env(:squid_mesh, :repo, SquidMeshLivebook.Repo)
+Application.put_env(:squid_mesh, :runtime, :journal)
+Application.put_env(:squid_mesh, :read_model, :read_model)
+Application.put_env(:squid_mesh, :journal_storage, storage)
+Application.put_env(:squid_mesh, :queue, "livebook")
+
+opts = [
+  runtime: :journal,
+  journal_storage: storage,
+  queue: "livebook"
+]
+```
+
+## Define Steps
+
+Workflow steps do the domain work. The common authoring path is
+`use SquidMesh.Step`; raw `Jido.Action` modules are only needed for explicit
+interop.
+
+```elixir
+defmodule SquidMeshLivebook.FetchEmail do
+  use SquidMesh.Step,
+    name: :fetch_email,
+    description: "Loads one email",
+    input_schema: [
+      email_id: [type: :string, required: true]
+    ],
+    output_schema: [
+      email: [type: :map, required: true]
+    ]
+
+  @impl SquidMesh.Step
+  def run(%{email_id: email_id}, %SquidMesh.Step.Context{}) do
+    {:ok,
+     %{
+       email: %{
+         id: email_id,
+         subject: "Need invoice copy",
+         sender: "customer@example.com"
+       }
+     }}
+  end
+end
+
+defmodule SquidMeshLivebook.DraftReply do
+  use SquidMesh.Step,
+    name: :draft_reply,
+    description: "Drafts a customer reply",
+    input_schema: [
+      email: [type: :map, required: true]
+    ],
+    output_schema: [
+      draft: [type: :map, required: true]
+    ]
+
+  @impl SquidMesh.Step
+  def run(%{email: email}, %SquidMesh.Step.Context{run_id: run_id}) do
+    {:ok,
+     %{
+       draft: %{
+         run_id: run_id,
+         to: email.sender,
+         body: "Thanks - I found your invoice."
+       }
+     }}
+  end
+end
+```
+
+## Define A Workflow
+
+A workflow declares the trigger, payload, steps, and transitions. The workflow
+definition says what should happen; the journal records what did happen.
+
+```elixir
+defmodule SquidMeshLivebook.EmailReplyWorkflow do
+  use SquidMesh.Workflow
+
+  workflow do
+    trigger :manual_reply do
+      manual()
+
+      payload do
+        field :email_id, :string
+      end
+    end
+
+    step :fetch_email, SquidMeshLivebook.FetchEmail
+    step :draft_reply, SquidMeshLivebook.DraftReply
+
+    transition :fetch_email, on: :ok, to: :draft_reply
+    transition :draft_reply, on: :ok, to: :complete
+  end
+end
+```
+
+## Start A Run
+
+Manual triggers start through the public API. This workflow has one trigger, so
+`start_run/3` uses it as the default trigger.
+
+```elixir
+{:ok, run} =
+  SquidMesh.start_run(
+    SquidMeshLivebook.EmailReplyWorkflow,
+    %{email_id: "email_123"},
+    opts
+  )
+
+Map.take(run, [:run_id, :status, :reason, :visible_attempts])
+```
+
+## Execute Visible Work
+
+Workers provide capacity by calling `SquidMesh.execute_next/1`. Each call claims
+one visible journal attempt, runs the step, records the result, and makes the
+next attempt visible when the workflow should continue.
+
+A run is the whole workflow instance. An attempt is one executable unit of work
+inside that run, such as the visible `:fetch_email` or `:draft_reply` step.
+
+```elixir
+worker_opts = Keyword.put(opts, :owner_id, "livebook-worker")
+
+{:ok, first_step} = SquidMesh.execute_next(worker_opts)
+{:ok, completed_run} = SquidMesh.execute_next(worker_opts)
+{:ok, no_more_work} = SquidMesh.execute_next(worker_opts)
+
+%{
+  first_step_status: first_step.status,
+  visible_next_step: List.first(first_step.visible_attempts).step,
+  completed_status: completed_run.status,
+  no_more_work: no_more_work
+}
+```
+
+## Inspect The Run
+
+Inspection reads durable journal facts. Use it for dashboards, support tools,
+and operator-facing detail pages.
+
+```elixir
+{:ok, inspected} =
+  SquidMesh.inspect_run(
+    run.run_id,
+    Keyword.merge(opts, include_history: true)
+  )
+
+%{
+  status: inspected.status,
+  reason: inspected.reason,
+  context: inspected.context,
+  attempts: Enum.map(inspected.attempts, &Map.take(&1, [:step, :status]))
+}
+```
+
+## Inspect The Graph
+
+Graph inspection gives UI builders a node and edge view of the same run.
+
+```elixir
+{:ok, graph} = SquidMesh.inspect_run_graph(run.run_id, opts)
+
+%{
+  source: graph.source,
+  current_node_id: graph.current_node_id,
+  nodes: Enum.map(graph.nodes, &Map.take(&1, [:id, :status])),
+  edges: Enum.map(graph.edges, &Map.take(&1, [:id, :status]))
+}
+```
+
+## Explain The State
+
+Explanation condenses the run into a reason and diagnostics that are easier to
+show to operators.
+
+```elixir
+{:ok, explanation} = SquidMesh.explain_run(run.run_id, opts)
+
+%{
+  status: explanation.status,
+  reason: explanation.reason,
+  summary: explanation.summary
+}
+```
+
+## Add A Human Approval Boundary
+
+Approval steps pause the workflow until an operator approves or rejects the run.
+This is durable workflow state, not a transient process wait.
+
+```elixir
+defmodule SquidMeshLivebook.RecordApproval do
+  use SquidMesh.Step,
+    name: :record_approval,
+    description: "Records an approved reply",
+    input_schema: [
+      email_id: [type: :string, required: true],
+      approval: [type: :map, required: true]
+    ],
+    output_schema: [
+      recorded: [type: :map, required: true]
+    ]
+
+  @impl SquidMesh.Step
+  def run(%{email_id: email_id, approval: approval}, %SquidMesh.Step.Context{}) do
+    {:ok, %{recorded: %{email_id: email_id, decision: approval.decision}}}
+  end
+end
+
+defmodule SquidMeshLivebook.RecordRejection do
+  use SquidMesh.Step,
+    name: :record_rejection,
+    description: "Records a rejected reply",
+    input_schema: [
+      email_id: [type: :string, required: true],
+      approval: [type: :map, required: true]
+    ],
+    output_schema: [
+      recorded: [type: :map, required: true]
+    ]
+
+  @impl SquidMesh.Step
+  def run(%{email_id: email_id, approval: approval}, %SquidMesh.Step.Context{}) do
+    {:ok, %{recorded: %{email_id: email_id, decision: approval.decision}}}
+  end
+end
+
+defmodule SquidMeshLivebook.ApprovalWorkflow do
+  use SquidMesh.Workflow
+
+  workflow do
+    trigger :manual_review do
+      manual()
+
+      payload do
+        field :email_id, :string
+      end
+    end
+
+    approval_step :wait_for_review, output: :approval
+    step :record_approval, SquidMeshLivebook.RecordApproval
+    step :record_rejection, SquidMeshLivebook.RecordRejection
+
+    transition :wait_for_review, on: :ok, to: :record_approval
+    transition :wait_for_review, on: :error, to: :record_rejection
+    transition :record_approval, on: :ok, to: :complete
+    transition :record_rejection, on: :ok, to: :complete
+  end
+end
+
+approval_opts = Keyword.put(opts, :queue, "livebook-approval")
+approval_worker_opts = Keyword.put(approval_opts, :owner_id, "livebook-worker")
+
+{:ok, approval_run} =
+  SquidMesh.start_run(
+    SquidMeshLivebook.ApprovalWorkflow,
+    %{email_id: "email_456"},
+    approval_opts
+  )
+
+{:ok, paused_run} = SquidMesh.execute_next(approval_worker_opts)
+
+{:ok, resumed_run} =
+  SquidMesh.approve_run(
+    approval_run.run_id,
+    %{actor: "ops_123", comment: "looks good"},
+    approval_opts
+  )
+
+{:ok, approved_run} = SquidMesh.execute_next(approval_worker_opts)
+
+%{
+  paused_status: paused_run.status,
+  resumed_status: resumed_run.status,
+  completed_status: approved_run.status,
+  manual_state_after_resume: resumed_run.manual_state
+}
+```
+
+## What To Read Next
+
+- [Getting Started](getting_started.md)
+- [Workflow Authoring](workflow_authoring.md)
+- [Host App Integration](host_app_integration.md)
+- [Runtime Architecture](jido_runtime_architecture.md)
