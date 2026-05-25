@@ -39,6 +39,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Check Discord notification formatting
+        run: bash .github/tests/discord_notifications_test.sh
+
       - name: Setup Elixir
         uses: ./.github/actions/setup-elixir
         with:

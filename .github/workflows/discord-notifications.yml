@@ -31,12 +31,12 @@ jobs:
 
           case "$EVENT_NAME" in
             watch)
-              content="⭐ **${ACTOR}** starred **${REPO}**\nhttps://github.com/${REPO}\nhttps://github.com/${ACTOR}"
+              content="$(printf '⭐ **%s** starred **%s**\nhttps://github.com/%s\nhttps://github.com/%s' "$ACTOR" "$REPO" "$REPO" "$ACTOR")"
               ;;
             issues)
               title="$(jq -r '.issue.title' "$GITHUB_EVENT_PATH")"
               url="$(jq -r '.issue.html_url' "$GITHUB_EVENT_PATH")"
-              content="📝 New issue in **${REPO}** by **${ACTOR}**\n${title}\n${url}"
+              content="$(printf '📝 New issue in **%s** by **%s**\n%s\n%s' "$REPO" "$ACTOR" "$title" "$url")"
               ;;
             pull_request)
               action="$(jq -r '.action' "$GITHUB_EVENT_PATH")"
@@ -51,12 +51,12 @@ jobs:
               if [ "$action" = "ready_for_review" ]; then
                 label="PR ready for review"
               fi
-              content="🔀 ${label} in **${REPO}** by **${ACTOR}**\n${title}\n${url}"
+              content="$(printf '🔀 %s in **%s** by **%s**\n%s\n%s' "$label" "$REPO" "$ACTOR" "$title" "$url")"
               ;;
             release)
               tag="$(jq -r '.release.tag_name' "$GITHUB_EVENT_PATH")"
               url="$(jq -r '.release.html_url' "$GITHUB_EVENT_PATH")"
-              content="🚀 **${REPO}** released **${tag}**\n${url}"
+              content="$(printf '🚀 **%s** released **%s**\n%s' "$REPO" "$tag" "$url")"
               ;;
             workflow_run)
               conclusion="$(jq -r '.workflow_run.conclusion' "$GITHUB_EVENT_PATH")"
@@ -67,7 +67,7 @@ jobs:
               if [ "$conclusion" != "failure" ] || [ "$branch" != "$default_branch" ]; then
                 exit 0
               fi
-              content="❌ **${workflow}** failed on **${branch}** for **${REPO}**\n${url}"
+              content="$(printf '❌ **%s** failed on **%s** for **%s**\n%s' "$workflow" "$branch" "$REPO" "$url")"
               ;;
           esac
 
