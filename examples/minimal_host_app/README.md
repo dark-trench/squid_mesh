@@ -220,8 +220,10 @@ The reference workflow and step modules live in:
 ## Reference Workflows
 
 These workflows are the reference shapes for the product lane described in
-[Positioning](../../docs/positioning.md). They stay Squid Mesh-native in the
-happy path and show the runtime features the example app is meant to prove.
+[Positioning](../../docs/positioning.md) and the
+[Reference workflows](../../docs/reference_workflows.md) guide. They stay Squid
+Mesh-native in the happy path and show the runtime features the example app is
+meant to prove.
 
 | Workflow | What it proves | Source |
 | --- | --- | --- |
