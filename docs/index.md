@@ -37,6 +37,7 @@ Start a workflow through the public API, execute visible work with
 `SquidMesh.execute_next/1`, then inspect the run history and graph.
 
 - [Getting started: start and drain](getting_started.md#3-start-and-drain-a-run)
+- [Graph inspection contract](graph_inspection.md)
 - [Architecture: execution flow](architecture.md#execution-flow)
 
 ### 5. Add Reliability
@@ -107,6 +108,8 @@ guidance.
 
 - [Workflow authoring](workflow_authoring.md) - DSL, payloads, transitions,
   conditions, dependencies, retries, cron, and examples
+- [Graph inspection contract](graph_inspection.md) - stable node and edge
+  payload shape for host UIs and workflow tools
 - [Host app integration](host_app_integration.md) - install, config, worker
   loops, cron payloads, Bedrock setup, and Phoenix/OTP host shapes
 - [Supported baseline](compatibility.md) - supported toolchain and runtime

@@ -1,0 +1,180 @@
+# Graph Inspection Contract
+
+`SquidMesh.inspect_run_graph/2` returns a graph-oriented view of one durable
+workflow run. Use it when a host app, CLI, dashboard, or visual workflow tool
+needs nodes and edges instead of raw journal history.
+
+The public API still returns structs:
+
+```elixir
+{:ok, graph} = SquidMesh.inspect_run_graph(run_id)
+```
+
+Use `SquidMesh.Runs.GraphInspection.to_map/1` at the host boundary when a UI
+needs a stable map payload:
+
+```elixir
+{:ok, graph} = SquidMesh.inspect_run_graph(run_id)
+payload = SquidMesh.Runs.GraphInspection.to_map(graph)
+```
+
+That keeps existing struct callers compatible while giving UI serializers an
+explicit shape.
+
+## Top-Level Shape
+
+The map shape is:
+
+```elixir
+%{
+  run_id: "run_123",
+  workflow: "Elixir.MyApp.Workflows.EmailReply",
+  source: :read_model,
+  status: :running,
+  current_node_id: "draft_reply",
+  current_node_ids: ["draft_reply"],
+  terminal?: false,
+  nodes: [...],
+  edges: [...],
+  anomalies: []
+}
+```
+
+Workflow modules are serialized with `Atom.to_string/1`, so Elixir modules use
+the normal `"Elixir."` prefix. Persisted serialized workflow definitions keep
+their stored string value.
+
+`current_node_id` is the first active node for simple callers.
+`current_node_ids` preserves parallel runnable nodes in dependency workflows.
+`terminal?` is true when the run is in a terminal state such as `:completed`,
+`:failed`, or `:cancelled`.
+
+## Node Shape
+
+Nodes represent workflow steps:
+
+```elixir
+%{
+  id: "draft_reply",
+  status: :running,
+  current?: true,
+  input: nil,
+  output: nil,
+  error: nil,
+  recovery: nil,
+  transition: nil,
+  manual_state: nil,
+  attempts: []
+}
+```
+
+Node status values are:
+
+- `:waiting` - no runnable work has been recorded for the node
+- `:pending` - work is visible or scheduled
+- `:running` - a worker has an active claim
+- `:retrying` - a failed attempt scheduled another try
+- `:paused` - the node is waiting for manual intervention
+- `:completed` - durable terminal step success exists
+- `:failed` - durable terminal step failure exists
+
+By default, inputs, outputs, errors, manual state, and attempt details are nil
+or empty because they can contain host-domain data. Request details explicitly:
+
+```elixir
+{:ok, graph} = SquidMesh.inspect_run_graph(run_id, include_history: true)
+payload = SquidMesh.Runs.GraphInspection.to_map(graph)
+```
+
+With history enabled, a node can include fields such as:
+
+```elixir
+%{
+  id: "review_draft",
+  status: :paused,
+  current?: true,
+  manual_state: %{step: "review_draft", kind: :approval},
+  attempts: [%{attempt_number: 1, status: :completed}],
+  output: %{drafts: [%{subject: "hello"}]}
+}
+```
+
+Host apps should still authorize and redact this payload before exposing it
+outside trusted operator surfaces.
+
+## Edge Shape
+
+Edges represent transitions or dependencies:
+
+```elixir
+%{
+  id: "fetch_emails:ok:draft_reply",
+  from: "fetch_emails",
+  to: "draft_reply",
+  type: :transition,
+  status: :selected,
+  selected?: true,
+  skipped?: false,
+  pending?: false,
+  blocked?: false,
+  outcome: :ok,
+  condition: nil,
+  recovery: nil
+}
+```
+
+Edge status values are:
+
+- `:selected` - durable step state proves this path was taken
+- `:skipped` - a sibling path or terminal outcome won
+- `:pending` - the source step or dependency has not terminally resolved
+- `:blocked` - a dependency failed before this edge could become runnable
+
+Conditional transition edges include their condition and deterministic ids:
+
+```elixir
+%{
+  id: "classify:ok:auto_approve:condition:0",
+  from: "classify",
+  to: "auto_approve",
+  type: :transition,
+  outcome: :ok,
+  condition: %{path: [:routing, :decision], equals: "auto"},
+  status: :selected,
+  selected?: true,
+  skipped?: false,
+  pending?: false,
+  blocked?: false
+}
+```
+
+Dependency workflows use dependency edges:
+
+```elixir
+%{
+  id: "load_invoice:dependency:send_email",
+  from: "load_invoice",
+  to: "send_email",
+  type: :dependency,
+  outcome: nil,
+  status: :pending,
+  selected?: false,
+  skipped?: false,
+  pending?: true,
+  blocked?: false
+}
+```
+
+## Compatibility
+
+The graph map contract is intended for host UI and tooling integration. Squid
+Mesh may add optional fields in future releases, but the existing field names,
+identifier semantics, node statuses, edge statuses, and default detail redaction
+are stable compatibility points.
+
+If the workflow module can no longer be loaded, Squid Mesh still returns any
+durable node state it can infer from the run. `edges` is empty in that degraded
+state because topology belongs to the workflow definition.
+
+The default payload does not include claim tokens, storage configuration,
+adapter internals, process identifiers, or raw journal entries.

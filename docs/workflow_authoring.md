@@ -486,6 +486,9 @@ node-and-edge view without reverse-engineering step history:
 {:ok, graph} = SquidMesh.inspect_run_graph(run_id)
 ```
 
+For the stable host UI map shape, see the
+[graph inspection contract](graph_inspection.md).
+
 The graph is derived from the same durable state as `inspect_run/2`. The default
 Jido-native read model rebuilds graph state from journal projections and infers
 Ecto storage from the configured repo. To override storage or queue for a

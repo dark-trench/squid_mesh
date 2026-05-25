@@ -33,4 +33,25 @@ defmodule SquidMesh.Runs.GraphInspection.Edge do
     :condition,
     :recovery
   ]
+
+  @doc """
+  Converts a graph edge into the stable host UI map shape.
+  """
+  @spec to_map(t()) :: map()
+  def to_map(%__MODULE__{} = edge) do
+    %{
+      id: edge.id,
+      from: edge.from,
+      to: edge.to,
+      type: edge.type,
+      status: edge.status,
+      selected?: edge.status == :selected,
+      skipped?: edge.status == :skipped,
+      pending?: edge.status == :pending,
+      blocked?: edge.status == :blocked,
+      outcome: edge.outcome,
+      condition: edge.condition,
+      recovery: edge.recovery
+    }
+  end
 end

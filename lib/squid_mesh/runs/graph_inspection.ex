@@ -67,6 +67,30 @@ defmodule SquidMesh.Runs.GraphInspection do
     }
   end
 
+  @doc """
+  Converts graph inspection data into a stable map for host UI serializers.
+
+  `inspect_run_graph/2` continues to return the graph structs for existing
+  callers. Host apps that need a JSON-ready dashboard payload can call this
+  function at their HTTP or LiveView boundary after applying their own
+  authorization and redaction policy.
+  """
+  @spec to_map(t()) :: map()
+  def to_map(%__MODULE__{} = graph) do
+    %{
+      run_id: graph.run_id,
+      workflow: workflow_name(graph.workflow),
+      source: graph.source,
+      status: graph.status,
+      current_node_id: graph.current_node_id,
+      current_node_ids: graph.current_node_ids,
+      terminal?: graph.terminal?,
+      nodes: Enum.map(graph.nodes, &Node.to_map/1),
+      edges: Enum.map(graph.edges, &Edge.to_map/1),
+      anomalies: graph.anomalies
+    }
+  end
+
   defp snapshot_nodes(%Snapshot{} = snapshot, definition, include_details?) do
     attempts_by_step = Enum.group_by(snapshot.attempts, &Map.fetch!(&1, :step))
 
@@ -329,6 +353,9 @@ defmodule SquidMesh.Runs.GraphInspection do
   end
 
   defp load_definition(_workflow), do: nil
+
+  defp workflow_name(workflow) when is_atom(workflow), do: Atom.to_string(workflow)
+  defp workflow_name(workflow), do: workflow
 
   defp normalize_id(nil), do: nil
   defp normalize_id(step) when is_atom(step), do: Atom.to_string(step)
