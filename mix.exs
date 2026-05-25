@@ -77,6 +77,7 @@ defmodule SquidMesh.MixProject do
         "docs/tool_adapters.md",
         "docs/observability.md",
         "docs/workflow_authoring.md",
+        "docs/graph_inspection.md",
         "docs/host_app_integration.md",
         "docs/operations.md",
         "docs/production_readiness.md",
