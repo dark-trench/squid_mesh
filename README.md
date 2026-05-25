@@ -33,9 +33,11 @@ history, retries, approvals, replay, cancellation, and operator inspection.
 
 It sits between a job backend and a standalone workflow service: more
 structured and inspectable than a job queue, but still embedded in the host app
-instead of running as a separate platform. Jido, Runic, and Spark are foundation
-layers in the current architecture; Reactor, Ash Reactor, Sage, and FlowStone
-solve adjacent orchestration problems at different abstraction layers.
+instead of running as a separate platform.
+
+Internally, Squid Mesh builds on Jido for the action/runtime foundation, Runic
+for workflow planning, and Spark for the DSL authoring surface. For comparison
+with adjacent orchestration tools, see the [Positioning guide](docs/positioning.md).
 
 ## Getting Started
 
@@ -153,7 +155,7 @@ Requirements:
 ```elixir
 defp deps do
   [
-    {:squid_mesh, "~> 0.1.0-beta.1"}
+    {:squid_mesh, "~> 0.1.0-beta.2"}
   ]
 end
 ```
@@ -166,7 +168,7 @@ host app defines raw Jido actions directly, add `:jido` explicitly as well:
 defp deps do
   [
     {:jido, "~> 2.0"},
-    {:squid_mesh, "~> 0.1.0-beta.1"}
+    {:squid_mesh, "~> 0.1.0-beta.2"}
   ]
 end
 ```
