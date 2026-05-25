@@ -489,6 +489,9 @@ node-and-edge view without reverse-engineering step history:
 For the stable host UI map shape, see the
 [graph inspection contract](graph_inspection.md).
 
+For executable approval, recovery, dependency, saga, and scheduled workflow
+examples, see [reference workflows](reference_workflows.md).
+
 The graph is derived from the same durable state as `inspect_run/2`. The default
 Jido-native read model rebuilds graph state from journal projections and infers
 Ecto storage from the configured repo. To override storage or queue for a

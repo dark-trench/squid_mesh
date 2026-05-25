@@ -255,6 +255,7 @@ and the [Bedrock minimal host app](../examples/bedrock_minimal_host_app/README.m
 
 - New host app setup: [Host app integration](host_app_integration.md)
 - Workflow syntax and examples: [Workflow authoring](workflow_authoring.md)
+- Executable product examples: [Reference workflows](reference_workflows.md)
 - Runtime internals: [Jido runtime architecture](jido_runtime_architecture.md)
 - Journal protocol details: [Durable dispatch protocol](durable_dispatch_protocol.md)
 - Operating guidance: [Operations](operations.md)

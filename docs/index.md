@@ -13,6 +13,7 @@ journal runtime, and host execution.
 
 - [Getting started](getting_started.md)
 - [Getting started Livebook](getting_started.livemd)
+- [Reference workflows](reference_workflows.md)
 - [Positioning](positioning.md)
 
 ### 2. Install Squid Mesh In A Host App
@@ -108,6 +109,8 @@ guidance.
 
 - [Workflow authoring](workflow_authoring.md) - DSL, payloads, transitions,
   conditions, dependencies, retries, cron, and examples
+- [Reference workflows](reference_workflows.md) - executable approval,
+  recovery, dependency, saga, and scheduled workflow examples
 - [Graph inspection contract](graph_inspection.md) - stable node and edge
   payload shape for host UIs and workflow tools
 - [Host app integration](host_app_integration.md) - install, config, worker
@@ -120,9 +123,8 @@ guidance.
 
 ## Example Workflow Shapes
 
-- scheduled RSS digest delivery
-- issue triage or planning workflows
-- recovery, approval, and back-office workflows inside Phoenix apps
+- [Reference workflows](reference_workflows.md) for scheduled digest delivery,
+  recovery, approval, dependency joins, and saga compensation inside a host app
 
 ## Example Apps
 

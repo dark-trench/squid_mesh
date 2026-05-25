@@ -40,6 +40,29 @@ opts = [
   journal_storage: storage,
   queue: "livebook"
 ]
+
+defmodule SquidMeshLivebook.Output do
+  def attempt(attempt) do
+    Map.take(attempt, [
+      :step,
+      :status,
+      :attempt_number,
+      :visible_at,
+      :wakeup_emitted?,
+      :applied?
+    ])
+  end
+
+  def runnable(runnable) do
+    Map.take(runnable, [:runnable_key, :key, :step, :status, :visible_at])
+  end
+
+  def node(node), do: Map.take(node, [:id, :status, :current?])
+
+  def edge(edge) do
+    Map.take(edge, [:id, :from, :to, :type, :status, :selected?, :pending?])
+  end
+end
 ```
 
 ## Define Steps
@@ -125,6 +148,31 @@ defmodule SquidMeshLivebook.EmailReplyWorkflow do
 end
 ```
 
+## Inspect The Workflow Spec
+
+The DSL compiles into a normalized workflow spec. This is the data shape that
+tooling can inspect without parsing the module source. It is also the contract
+visual editors and runtime-authored workflows will build on.
+
+```elixir
+{:ok, spec} = SquidMesh.Workflow.to_spec(SquidMeshLivebook.EmailReplyWorkflow)
+
+%{
+  workflow: spec.workflow,
+  triggers: Enum.map(spec.triggers, &Map.take(&1, [:name, :type, :payload])),
+  payload: spec.payload,
+  steps: Enum.map(spec.steps, &Map.take(&1, [:name, :module, :opts])),
+  transitions: spec.transitions,
+  entry_steps: spec.entry_steps
+}
+```
+
+`triggers` describe how a run can start. `payload` is the external input
+contract. `steps` are executable workflow nodes. `transitions` describe durable
+progression from one step outcome to the next node or to `:complete`.
+
+For deeper authoring rules, see [Workflow Authoring](workflow_authoring.md).
+
 ## Start A Run
 
 Manual triggers start through the public API. This workflow has one trigger, so
@@ -138,8 +186,20 @@ Manual triggers start through the public API. This workflow has one trigger, so
     opts
   )
 
-Map.take(run, [:run_id, :status, :reason, :visible_attempts])
+%{
+  run_id: run.run_id,
+  status: run.status,
+  reason: run.reason,
+  planned_runnables: run.planned_runnables,
+  visible_attempts: Enum.map(run.visible_attempts, &SquidMeshLivebook.Output.attempt/1),
+  scheduled_attempts: run.scheduled_attempts,
+  next_visible_at: run.next_visible_at
+}
 ```
+
+The first snapshot already has one visible attempt: `fetch_email`. Visible
+attempts are work the host can claim now. Scheduled attempts are work that
+exists but should not be claimed until `next_visible_at`.
 
 ## Execute Visible Work
 
@@ -159,11 +219,20 @@ worker_opts = Keyword.put(opts, :owner_id, "livebook-worker")
 
 %{
   first_step_status: first_step.status,
-  visible_next_step: List.first(first_step.visible_attempts).step,
+  first_step_reason: first_step.reason,
+  visible_after_first_step: Enum.map(first_step.visible_attempts, &SquidMeshLivebook.Output.attempt/1),
+  applied_after_first_step: first_step.applied_runnable_keys,
   completed_status: completed_run.status,
+  completed_reason: completed_run.reason,
+  completed_attempts: Enum.map(completed_run.attempts, &SquidMeshLivebook.Output.attempt/1),
   no_more_work: no_more_work
 }
 ```
+
+After the first call, the `fetch_email` attempt has been applied and the
+`draft_reply` attempt becomes visible. After the second call, the run is
+terminal. The third call returns `:none` because this queue has no visible work
+left.
 
 ## Inspect The Run
 
@@ -181,9 +250,17 @@ and operator-facing detail pages.
   status: inspected.status,
   reason: inspected.reason,
   context: inspected.context,
-  attempts: Enum.map(inspected.attempts, &Map.take(&1, [:step, :status]))
+  planned_runnables: Enum.map(inspected.planned_runnables, &SquidMeshLivebook.Output.runnable/1),
+  visible_attempts: Enum.map(inspected.visible_attempts, &SquidMeshLivebook.Output.attempt/1),
+  scheduled_attempts: Enum.map(inspected.scheduled_attempts, &SquidMeshLivebook.Output.attempt/1),
+  attempts: Enum.map(inspected.attempts, &SquidMeshLivebook.Output.attempt/1),
+  next_visible_at: inspected.next_visible_at
 }
 ```
+
+`context` is the durable run context assembled from completed step outputs.
+`attempts` is historical evidence. `visible_attempts` and `scheduled_attempts`
+explain what can run now versus what needs a later wakeup.
 
 ## Inspect The Graph
 
@@ -191,14 +268,20 @@ Graph inspection gives UI builders a node and edge view of the same run.
 
 ```elixir
 {:ok, graph} = SquidMesh.inspect_run_graph(run.run_id, opts)
+graph_payload = SquidMesh.Runs.GraphInspection.to_map(graph)
 
 %{
   source: graph.source,
   current_node_id: graph.current_node_id,
-  nodes: Enum.map(graph.nodes, &Map.take(&1, [:id, :status])),
-  edges: Enum.map(graph.edges, &Map.take(&1, [:id, :status]))
+  nodes: Enum.map(graph_payload.nodes, &SquidMeshLivebook.Output.node/1),
+  edges: Enum.map(graph_payload.edges, &SquidMeshLivebook.Output.edge/1)
 }
 ```
+
+The graph contract is the shape a host UI can serialize after applying its own
+authorization and redaction policy. See the
+[Graph Inspection Contract](graph_inspection.md) for the full node and edge
+shape.
 
 ## Explain The State
 
@@ -211,7 +294,94 @@ show to operators.
 %{
   status: explanation.status,
   reason: explanation.reason,
-  summary: explanation.summary
+  summary: explanation.summary,
+  next_actions: explanation.next_actions,
+  evidence: explanation.evidence
+}
+```
+
+Use explanation output when a support or operator surface needs to answer "what
+is the runtime waiting for?" without exposing raw journal entries.
+
+## See A Scheduled Wakeup
+
+Wait steps turn workflow-scale delays into future-visible attempts. They are
+useful when the workflow should continue later, while the journal remains the
+source of truth.
+
+```elixir
+defmodule SquidMeshLivebook.RecordFollowUp do
+  use SquidMesh.Step,
+    name: :record_follow_up,
+    description: "Records that a delayed follow-up became visible",
+    input_schema: [
+      email_id: [type: :string, required: true]
+    ],
+    output_schema: [
+      follow_up: [type: :map, required: true]
+    ]
+
+  @impl SquidMesh.Step
+  def run(%{email_id: email_id}, %SquidMesh.Step.Context{}) do
+    {:ok, %{follow_up: %{email_id: email_id, status: "ready"}}}
+  end
+end
+
+defmodule SquidMeshLivebook.FollowUpWorkflow do
+  use SquidMesh.Workflow
+
+  workflow do
+    trigger :manual_follow_up do
+      manual()
+
+      payload do
+        field :email_id, :string
+      end
+    end
+
+    step :wait_for_follow_up, :wait, duration: 1_000
+    step :record_follow_up, SquidMeshLivebook.RecordFollowUp
+
+    transition :wait_for_follow_up, on: :ok, to: :record_follow_up
+    transition :record_follow_up, on: :ok, to: :complete
+  end
+end
+
+wakeup_time = DateTime.utc_now()
+wakeup_opts = Keyword.merge(opts, queue: "livebook-wakeup", now: wakeup_time)
+wakeup_worker_opts = Keyword.put(wakeup_opts, :owner_id, "livebook-worker")
+
+{:ok, wakeup_run} =
+  SquidMesh.start_run(
+    SquidMeshLivebook.FollowUpWorkflow,
+    %{email_id: "email_789"},
+    wakeup_opts
+  )
+
+{:ok, scheduled_run} = SquidMesh.execute_next(wakeup_worker_opts)
+
+%{
+  run_id: wakeup_run.run_id,
+  reason: scheduled_run.reason,
+  visible_attempts: scheduled_run.visible_attempts,
+  scheduled_attempts: Enum.map(scheduled_run.scheduled_attempts, &SquidMeshLivebook.Output.attempt/1),
+  next_visible_at: scheduled_run.next_visible_at
+}
+```
+
+The wait step completed, then Squid Mesh scheduled `record_follow_up` for later.
+Until `next_visible_at`, workers should see no visible work for that queue.
+
+```elixir
+{:ok, :none} = SquidMesh.execute_next(wakeup_worker_opts)
+
+{:ok, completed_follow_up} =
+  SquidMesh.execute_next(Keyword.put(wakeup_worker_opts, :now, scheduled_run.next_visible_at))
+
+%{
+  status: completed_follow_up.status,
+  reason: completed_follow_up.reason,
+  attempts: Enum.map(completed_follow_up.attempts, &SquidMeshLivebook.Output.attempt/1)
 }
 ```
 
@@ -292,6 +462,8 @@ approval_worker_opts = Keyword.put(approval_opts, :owner_id, "livebook-worker")
 
 {:ok, paused_run} = SquidMesh.execute_next(approval_worker_opts)
 
+{:ok, paused_explanation} = SquidMesh.explain_run(approval_run.run_id, approval_opts)
+
 {:ok, resumed_run} =
   SquidMesh.approve_run(
     approval_run.run_id,
@@ -303,15 +475,27 @@ approval_worker_opts = Keyword.put(approval_opts, :owner_id, "livebook-worker")
 
 %{
   paused_status: paused_run.status,
+  paused_reason: paused_run.reason,
+  manual_state: paused_run.manual_state,
+  paused_summary: paused_explanation.summary,
+  paused_next_actions: paused_explanation.next_actions,
   resumed_status: resumed_run.status,
+  visible_after_approval: Enum.map(resumed_run.visible_attempts, &SquidMeshLivebook.Output.attempt/1),
   completed_status: approved_run.status,
   manual_state_after_resume: resumed_run.manual_state
 }
 ```
 
+The paused snapshot exposes `manual_state`, so a host UI can render the
+operator decision boundary. `approve_run/3` records the decision and makes the
+approval path visible. The next worker execution runs `record_approval` and
+finishes the workflow.
+
 ## What To Read Next
 
 - [Getting Started](getting_started.md)
 - [Workflow Authoring](workflow_authoring.md)
+- [Reference Workflows](reference_workflows.md)
+- [Graph Inspection Contract](graph_inspection.md)
 - [Host App Integration](host_app_integration.md)
 - [Runtime Architecture](jido_runtime_architecture.md)
