@@ -1,134 +1,101 @@
-# Squid Mesh Manual
+# Squid Mesh Documentation
 
-This manual is organized as numbered lessons. Read them in order if you are new
-to Squid Mesh, or jump to the reference sections when you already know the
-runtime model.
+Squid Mesh is an embedded durable workflow runtime for Elixir applications. The
+docs are organized by how readers usually arrive: first learning the model,
+then installing it in a host app, then authoring workflows, operating them, and
+finally reading internals when contributing to the runtime.
 
-## Lessons
+## Start Here
 
-### 1. Understand The Model
+New to Squid Mesh:
 
-Start with the product shape and the three boundaries: workflow definition,
-journal runtime, and host execution.
+1. [Getting started](getting_started.md) - learn the model, install the
+   runtime, start a run, drain work, inspect state, and add reliability.
+2. [Getting started Livebook](getting_started.livemd) - run a small workflow
+   interactively and inspect the output.
+3. [Reference workflows](reference_workflows.md) - see realistic approval,
+   recovery, dependency, saga, and scheduled workflows in the example host app.
+4. [Positioning](positioning.md) - understand where Squid Mesh sits relative to
+   Jido, Runic, Spark, job queues, Reactor, and workflow services.
 
-- [Getting started](getting_started.md)
-- [Getting started Livebook](getting_started.livemd)
-- [Reference workflows](reference_workflows.md)
-- [Positioning](positioning.md)
+## Learn By Doing
 
-### 2. Install Squid Mesh In A Host App
+Livebooks are best for concepts that benefit from running code and inspecting
+the resulting workflow state.
 
-Add the dependency, install the migration, configure the repo and queue, and
-start a worker loop that drains journal attempts.
+- [Getting started Livebook](getting_started.livemd) - first workflow, visible
+  attempts, scheduled wakeups, graph inspection, explanation output, and manual
+  approval.
+- [Workflow authoring Livebook](workflow_authoring.livemd) - DSL structure,
+  normalized workflow specs, dependency joins, input mappings, execution, and
+  graph output.
 
-- [Host app integration](host_app_integration.md)
-- [Supported baseline](compatibility.md)
+## Guides
 
-### 3. Write Your First Workflow
+Use these when building or embedding Squid Mesh in an application.
 
-Define manual triggers, payload fields, steps, transitions, and custom
-`SquidMesh.Step` modules.
-
-- [Workflow authoring](workflow_authoring.md#define-a-workflow)
-- [Workflow authoring: triggers](workflow_authoring.md#triggers)
-
-### 4. Run, Drain, Inspect, And Explain
-
-Start a workflow through the public API, execute visible work with
-`SquidMesh.execute_next/1`, then inspect the run history and graph.
-
-- [Getting started: start and drain](getting_started.md#3-start-and-drain-a-run)
-- [Graph inspection contract](graph_inspection.md)
-- [Architecture: execution flow](architecture.md#execution-flow)
-
-### 5. Add Reliability
-
-Add bounded retries, waits, idempotent external side effects, replay safety, and
-explicit recovery routes.
-
-- [Operations: retries and backoff](operations.md#retries-and-backoff)
-- [Operations: replay after irreversible side effects](operations.md#replay-after-irreversible-side-effects)
-- [Tool adapters](tool_adapters.md)
-
-### 6. Add Human Review
-
-Use pause and approval steps when a run needs operator input, then expose the
-public resume, approve, and reject APIs through your host app boundary.
-
-- [Getting started: human boundaries](getting_started.md#6-add-human-boundaries)
-- [Host app integration: audit history](host_app_integration.md#minimal-otp-host-skeleton)
-
-### 7. Add Cron Activation
-
-Declare cron triggers in workflow modules while keeping recurring scheduling in
-the host app.
-
-- [Workflow authoring: cron](workflow_authoring.md#triggers)
-- [Host app integration: cron payload contract](host_app_integration.md#cron-payload-contract)
-
-### 8. Add Backend-Owned Leases When Needed
-
-Keep basic hosts simple with an `execute_next/1` worker loop. Use Bedrock when a
-host wants durable backend delivery, delayed visibility, heartbeats, retry
-requeue, dead-letter handling, and lease ownership.
-
-- [Host app integration: Bedrock lease backend setup](host_app_integration.md#bedrock-lease-backend-setup)
-- [Bedrock minimal host app](../examples/bedrock_minimal_host_app/README.md)
-
-### 9. Operate The Runtime
-
-Size worker pools, watch visible attempt depth, capture telemetry, and understand
-what Squid Mesh does and does not guarantee.
-
-- [Operations guide](operations.md)
-- [Observability](observability.md)
-- [Production readiness](production_readiness.md)
-
-### 10. Read The Internals
-
-Use these when contributing to the runtime or building tooling such as
-SquidSonar.
-
-- [Architecture](architecture.md)
-- [Jido runtime architecture](jido_runtime_architecture.md)
-- [Durable dispatch protocol](durable_dispatch_protocol.md)
-
-### 11. Give AI Agents The Right Rules
-
-Use package-style usage rules when an AI coding agent is changing Squid Mesh or
-building with it. The main file captures the common contract, and the topic
-files split runtime, host app, workflow authoring, testing, docs, and tooling
-guidance.
-
-- [Squid Mesh usage rules](../usage-rules.md)
-- [Runtime usage rules](../usage-rules/runtime.md)
-- [Testing usage rules](../usage-rules/testing.md)
-- [Documentation usage rules](../usage-rules/documentation.md)
+- [Host app integration](host_app_integration.md) - installation,
+  configuration, worker loops, cron payloads, Phoenix/OTP host shapes, and
+  optional Bedrock-backed leases.
+- [Workflow authoring](workflow_authoring.md) - DSL syntax, payloads, triggers,
+  steps, transitions, retries, waits, dependencies, mapping, compensation, and
+  current boundaries.
+- [Operations](operations.md) - retries, idempotency, replay, local
+  transactions, leases, waits, cron activation, and production concerns.
+- [Observability](observability.md) - durable read-model surfaces,
+  field-selection and redaction guidance, operator explanations, graph output,
+  host-owned telemetry, and logs.
 
 ## Reference
 
-- [Workflow authoring](workflow_authoring.md) - DSL, payloads, transitions,
-  conditions, dependencies, retries, cron, and examples
-- [Reference workflows](reference_workflows.md) - executable approval,
-  recovery, dependency, saga, and scheduled workflow examples
-- [Graph inspection contract](graph_inspection.md) - stable node and edge
-  payload shape for host UIs and workflow tools
-- [Host app integration](host_app_integration.md) - install, config, worker
-  loops, cron payloads, Bedrock setup, and Phoenix/OTP host shapes
-- [Supported baseline](compatibility.md) - supported toolchain and runtime
-  assumptions
-- [Positioning](positioning.md) - product lane and adjacent project comparison
-- [Production readiness](production_readiness.md) - current release bar
-- [Usage rules](../usage-rules.md) - condensed rules for AI agents and tooling
+Use these as stable contracts when implementing host integrations or tooling.
 
-## Example Workflow Shapes
-
-- [Reference workflows](reference_workflows.md) for scheduled digest delivery,
-  recovery, approval, dependency joins, and saga compensation inside a host app
+- [Graph inspection contract](graph_inspection.md) - node and edge map shapes
+  for dashboards and visual workflow tools.
+- [Reference workflows](reference_workflows.md) - executable product examples
+  backed by the minimal host app.
+- [Tool adapters](tool_adapters.md) - normalized result and error shape for
+  external tool wrappers.
+- [Supported baseline](compatibility.md) - supported Elixir, OTP, Jido, Ecto,
+  Postgres, and adapter expectations.
+- [Production readiness](production_readiness.md) - current readiness bar and
+  verification entry points.
 
 ## Example Apps
 
-- [Minimal host app](../examples/minimal_host_app/README.md) for a standalone
-  development harness
-- [Bedrock minimal host app](../examples/bedrock_minimal_host_app/README.md)
-  for backend-owned delivery and lease coverage
+Use the example apps when you want an executable host boundary rather than a
+small notebook.
+
+- [Minimal host app](../examples/minimal_host_app/README.md) - standalone
+  recovery, approvals, cron, local transactions, replay, smoke, resilience, and
+  soak coverage.
+- [Bedrock minimal host app](../examples/bedrock_minimal_host_app/README.md) -
+  Bedrock-backed delivery, leases, delayed visibility, retry requeue,
+  dead-letter handling, and cron payload mapping.
+
+## Internals
+
+These pages are for contributors, adapter authors, and advanced users who need
+to reason about runtime durability.
+
+- [Architecture](architecture.md) - high-level components, responsibilities,
+  execution flow, and recovery boundary.
+- [Jido runtime architecture](jido_runtime_architecture.md) - journal runtime,
+  agents, projections, dispatch, leases, failure handling, and roadmap
+  alignment.
+- [Durable dispatch protocol](durable_dispatch_protocol.md) - journal threads,
+  commit order, claims, leases, heartbeats, retries, manual boundaries, and
+  terminal fencing.
+
+## AI Agent Usage Rules
+
+Package-style rules help coding agents use and modify Squid Mesh without
+guessing the runtime boundaries.
+
+- [Usage rules](../usage-rules.md)
+- [Runtime rules](../usage-rules/runtime.md)
+- [Host app rules](../usage-rules/host-apps.md)
+- [Workflow authoring rules](../usage-rules/workflow-authoring.md)
+- [Testing rules](../usage-rules/testing.md)
+- [Documentation rules](../usage-rules/documentation.md)
+- [Tooling rules](../usage-rules/tooling.md)

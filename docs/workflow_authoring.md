@@ -2,6 +2,12 @@
 
 This guide covers the workflow contract that Squid Mesh supports today.
 
+> ### Learn with Livebook
+>
+> The workflow-authoring Livebook walks through a dependency workflow from DSL
+> declaration to normalized spec, input mapping, execution, and graph output.
+> [![Run in Livebook](https://livebook.dev/badge/v1/pink.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fdark-trench%2Fsquid_mesh%2Fblob%2Fmain%2Fdocs%2Fworkflow_authoring.livemd)
+
 ## Formatter Setup
 
 Squid Mesh exports formatter rules for workflow DSL calls. Host apps can import

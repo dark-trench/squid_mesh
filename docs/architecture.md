@@ -114,6 +114,27 @@ Postgres owns:
 
 ## Execution Flow
 
+```mermaid
+flowchart TB
+    api["Public API<br/>start_run / inspect_run / explain_run"]
+    runtime["Squid Mesh runtime<br/>plans work, applies results, retries, pauses, cancels, completes"]
+    journals["Jido journals<br/>runs, attempts, claims, heartbeats, completions, failures, terminal state"]
+    worker["Host workers<br/>SquidMesh.execute_next/1"]
+    leases["Lease boundary<br/>SquidMesh.Executor.Leases"]
+    adapter["Backend adapter<br/>queue, delay, cron delivery, lease mechanics"]
+    storage["Backend storage<br/>jobs, leases, worker liveness, delivery metadata"]
+
+    api --> runtime
+    runtime --> journals
+    journals --> worker
+    worker --> journals
+    journals --> leases
+    leases --> journals
+    worker --> adapter
+    leases --> adapter
+    adapter --> storage
+```
+
 1. A host application starts a run through `SquidMesh.start_run/2`, `start_run/3`, or `start_run/4`.
 2. Squid Mesh validates the workflow definition and payload.
 3. The journal runtime appends run and runnable facts to the host repo through
