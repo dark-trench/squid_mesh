@@ -6,6 +6,13 @@ The format is based on Keep a Changelog and the project follows Semantic
 Versioning, including prerelease tags while the runtime remains in early
 development.
 
+## [0.1.0-beta.3] - 2026-05-25
+
+### Changed
+- README community links now live in a dedicated Community section instead of
+  the status badge row.
+- Install snippets now reference `0.1.0-beta.3`.
+
 ## [0.1.0-beta.2] - 2026-05-25
 
 ### Added
