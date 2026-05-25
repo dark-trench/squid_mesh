@@ -213,10 +213,11 @@ Recommended practice:
 
 At minimum, production deployments should capture:
 
-- run lifecycle telemetry
-- step lifecycle telemetry
+- run counts by workflow, queue, and status
 - visible-attempt depth and journal worker throughput
-- structured logs with run and step metadata
+- scheduled attempts, expired claims, and manual intervention queues
+- terminal outcomes, anomalies, and operator explanations
+- host-owned telemetry and structured logs around worker boundaries
 
 Recommended reading:
 

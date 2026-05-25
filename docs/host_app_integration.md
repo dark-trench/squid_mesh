@@ -219,9 +219,9 @@ The cron callback receives:
 - `opts[:signal_id]` - optional stable scheduler signal id for a cron activation
 - `opts[:intended_window]` - optional logical schedule window for a cron activation
 
-Return `{:ok, metadata}` after enqueueing. Metadata is included in dispatch
-telemetry, so useful values are `:job_id`, `:queue`, `:worker`, and
-`:scheduled_at`.
+Return `{:ok, metadata}` after enqueueing. Metadata is returned to the caller and
+can be included in host-owned logs or telemetry, so useful values are `:job_id`,
+`:queue`, `:worker`, and `:scheduled_at`.
 
 The queued job should deliver the stored payload back to Squid Mesh without
 knowing workflow details:
