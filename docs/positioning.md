@@ -143,6 +143,13 @@ Mesh focuses on long-running, inspectable, host-app workflow state.
 | [Spark](https://hex.pm/packages/spark) | Declarative Elixir DSL and extension framework. | Authoring foundation. Squid Mesh uses Spark to define the workflow DSL and normalized workflow spec. |
 | Durable backend adapters | Concrete delivery mechanics such as queues, scheduled work, leases, redelivery, and worker infrastructure. | Delivery foundation. Squid Mesh keeps this boundary backend-neutral and recommends Bedrock as the reference lease backend today. |
 
+For application teams, these foundations are implementation boundaries rather
+than prerequisites for the happy path. Use Squid Mesh APIs and workflow modules
+first. Reach for Jido details only when replacing storage or contributing to the
+runtime. Reach for Bedrock or another lease-capable backend only when a simple
+host worker loop does not provide enough delivery and worker-ownership
+semantics.
+
 ## Adjacent Choices
 
 | Project | Primary fit | Relationship to Squid Mesh |

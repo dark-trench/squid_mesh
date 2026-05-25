@@ -109,6 +109,33 @@ inputs, outputs, attempts, or claim metadata. Dashboards can call
 and `queue` to `inspect_run(run_id, queue: queue, include_history: true)` or
 `inspect_run_graph(run_id, queue: queue)` for detail views.
 
+## Runtime Boundaries
+
+Most host apps can use Squid Mesh without writing Jido agents, storage calls, or
+Bedrock code. The public integration boundary is:
+
+- workflow modules declare triggers, payloads, steps, transitions, retries, and
+  manual controls
+- host code starts runs and exposes inspection through `SquidMesh.start_run/3`,
+  `SquidMesh.list_runs/2`, `SquidMesh.inspect_run/2`,
+  `SquidMesh.inspect_run_graph/2`, and `SquidMesh.explain_run/2`
+- host workers provide execution capacity by calling `SquidMesh.execute_next/1`
+- host schedulers may deliver cron activations with
+  `SquidMesh.Executor.Payload.cron/3` and `SquidMesh.Runtime.Runner.perform/2`
+
+Jido is the runtime foundation behind that boundary. Squid Mesh uses Jido
+journals, storage callbacks, actions, and rebuildable agents internally so run
+state can be reconstructed from durable facts. Users only need to learn those
+details when they are contributing to the runtime, replacing the default journal
+storage adapter, or debugging low-level runtime behavior.
+
+Bedrock is optional. Use the basic `execute_next/1` worker loop when a host only
+needs Squid Mesh to claim visible journal work from the configured storage. Use
+Bedrock or another lease-capable backend when the host needs backend-owned
+delivery, delayed visibility, worker leases, heartbeats, retry requeue,
+dead-letter handling, or stale-worker recovery outside the Squid Mesh journal.
+Those backend concerns belong in adapter modules, not workflow modules.
+
 ## Journal Worker Contract
 
 Step execution is pulled by host-owned workers. A minimal worker can be a small
@@ -376,11 +403,11 @@ defp deps do
   [
     {:ecto_sql, "~> 3.13"},
     {:postgrex, "~> 0.20"},
-    {:jido, "~> 2.0"},
     {:squid_mesh, "~> 0.1.0-beta.1"}
   ]
 end
 ```
+Add `:jido` only when the host app defines raw `Jido.Action` steps directly.
 Add the host job backend separately.
 
 Application supervision shape:
@@ -456,11 +483,14 @@ that Squid Mesh usually sits behind a context or controller boundary.
 
 Typical shape:
 
-- add `:squid_mesh` and `:jido` to the Phoenix app
+- add `:squid_mesh` to the Phoenix app
 - keep using the Phoenix app's existing `Repo`
 - start a supervised worker that calls `SquidMesh.execute_next/1`
 - configure `:squid_mesh` to use that `Repo`
 - expose workflow operations through a context or controller
+
+Add `:jido` explicitly only when the Phoenix app defines raw `Jido.Action`
+modules as an interop path.
 
 Context boundary:
 
