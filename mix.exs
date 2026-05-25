@@ -67,7 +67,7 @@ defmodule SquidMesh.MixProject do
       extras: [
         "docs/index.md",
         "README.md",
-        "docs/learning_path.md",
+        "docs/getting_started.md",
         "docs/architecture.md",
         "docs/durable_dispatch_protocol.md",
         "docs/positioning.md",
