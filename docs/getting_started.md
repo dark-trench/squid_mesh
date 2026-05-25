@@ -1,8 +1,8 @@
-# Learning Path
+# Getting Started
 
-This guide gives new workflow authors and host-app maintainers an ordered path
-through Squid Mesh. It starts with the product model, then adds runtime,
-reliability, and operations concepts only when they become useful.
+This is the first guide for workflow authors and host-app maintainers. It starts
+with the product model, then adds runtime, reliability, and operations concepts
+only when they become useful.
 
 ## Mental Model
 

@@ -11,7 +11,7 @@ runtime model.
 Start with the product shape and the three boundaries: workflow definition,
 journal runtime, and host execution.
 
-- [Learning path](learning_path.md)
+- [Getting started](getting_started.md)
 - [Positioning](positioning.md)
 
 ### 2. Install Squid Mesh In A Host App
@@ -35,7 +35,7 @@ Define manual triggers, payload fields, steps, transitions, and custom
 Start a workflow through the public API, execute visible work with
 `SquidMesh.execute_next/1`, then inspect the run history and graph.
 
-- [Learning path: start and drain](learning_path.md#3-start-and-drain-a-run)
+- [Getting started: start and drain](getting_started.md#3-start-and-drain-a-run)
 - [Architecture: execution flow](architecture.md#execution-flow)
 
 ### 5. Add Reliability
@@ -52,7 +52,7 @@ explicit recovery routes.
 Use pause and approval steps when a run needs operator input, then expose the
 public resume, approve, and reject APIs through your host app boundary.
 
-- [Learning path: human boundaries](learning_path.md#6-add-human-boundaries)
+- [Getting started: human boundaries](getting_started.md#6-add-human-boundaries)
 - [Host app integration: audit history](host_app_integration.md#minimal-otp-host-skeleton)
 
 ### 7. Add Cron Activation

@@ -3,7 +3,7 @@
 ## Manual Structure
 
 - Use `docs/index.md` as the numbered lesson map.
-- Use `docs/learning_path.md` as the narrative onboarding guide.
+- Use `docs/getting_started.md` as the narrative onboarding guide.
 - Keep README concise and point deeper readers to the manual.
 - Keep durable reference details in focused docs such as architecture,
   operations, workflow authoring, and host app integration.

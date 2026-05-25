@@ -293,7 +293,7 @@ Payload validation runs before the run is persisted.
 
 ## Steps
 
-Each `step` is declared in the Spark-backed workflow spec and is either:
+Each `step` is declared in the workflow spec and is either:
 
 - a native Squid Mesh step module that performs domain work
 - a built-in primitive supplied by the runtime
@@ -667,9 +667,9 @@ reverse completion order. In this example it voids the payment authorization,
 then releases inventory. Failed steps are not compensated because their forward
 effect did not complete.
 
-Compensation callbacks are `Jido.Action` modules. They receive the original
-payload, current run context, the completed step's input and output, and the
-terminal failure:
+Compensation callbacks use the same step module contract as normal workflow
+steps. They receive the original payload, current run context, the completed
+step's input and output, and the terminal failure:
 
 ```elixir
 def run(%{step: %{output: %{inventory_reservation: reservation}}}, _context) do
@@ -717,21 +717,27 @@ target step in event metadata.
 
 ## Step Modules
 
-Custom steps typically use `Jido.Action` and return workflow output in a plain
-map.
+Custom steps should usually use `SquidMesh.Step` and return workflow output in a
+plain map.
 
 ```elixir
 defmodule Billing.Steps.CheckGatewayStatus do
-  use Jido.Action,
-    name: "check_gateway_status",
+  use SquidMesh.Step,
+    name: :check_gateway_status,
     description: "Checks gateway state",
-    schema: [
+    input_schema: [
       invoice: [type: :map, required: true],
       gateway_url: [type: :string, required: true]
+    ],
+    output_schema: [
+      gateway_check: [type: :map, required: true]
     ]
 
   @impl true
-  def run(%{invoice: invoice, gateway_url: gateway_url}, _context) do
+  def run(
+        %{invoice: invoice, gateway_url: gateway_url},
+        %SquidMesh.Step.Context{}
+      ) do
     case SquidMesh.Tools.invoke(SquidMesh.Tools.HTTP, %{method: :get, url: gateway_url}) do
       {:ok, result} ->
         {:ok, %{gateway_check: %{invoice_id: invoice.id, status: result.payload.body}}}
@@ -747,6 +753,7 @@ Step result contract:
 
 - success: `{:ok, map()}`
 - failure: `{:error, map()}`
+- retryable failure: `{:retry, reason}` or `{:retry, reason, opts}`
 
 ## Data Flow Between Steps
 

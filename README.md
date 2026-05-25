@@ -41,8 +41,8 @@ solve adjacent orchestration problems at different abstraction layers.
 
 Start with the manual and the example host apps:
 
-1. Read the [Squid Mesh Manual](docs/index.md) and the
-   [Learning Path](docs/learning_path.md).
+1. Read the [Squid Mesh Manual](docs/index.md) and
+   [Getting Started](docs/getting_started.md).
 2. Use the [Minimal Host App](examples/minimal_host_app/README.md) to see
    manual approval, dependency recovery, saga compensation, local repo
    transactions, cron delivery, restart resilience, and bounded soak coverage.
@@ -95,10 +95,11 @@ main abstraction, not just a background job. It fits flows where:
 For the full runtime direction and comparison with adjacent projects, see the
 [Positioning guide](docs/positioning.md).
 
-If you are new to the project, start with the
-[Learning Path](docs/learning_path.md). It teaches the model in order: install,
-write one workflow, drain journal attempts, inspect the run, then add retries,
-manual gates, cron, and Bedrock-backed leases when those pieces are needed.
+If you are new to the project, start with
+[Getting Started](docs/getting_started.md). It teaches the model in order:
+install, write one workflow, drain journal attempts, inspect the run, then add
+retries, manual gates, cron, and Bedrock-backed leases when those pieces are
+needed.
 
 > [!WARNING]
 > Squid Mesh is still in early development. The runtime is suitable for evaluation, local development, and integration work, but it is not yet documented as production-ready.
