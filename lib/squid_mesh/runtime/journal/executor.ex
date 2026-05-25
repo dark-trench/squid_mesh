@@ -2054,7 +2054,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
         action,
         input,
         context,
-        [max_retries: 0, log_level: :none, telemetry: :silent]
+        [max_retries: 0, log_level: :emergency, telemetry: :silent]
       ])
 
     case result do
