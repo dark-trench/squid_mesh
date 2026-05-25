@@ -1,99 +1,128 @@
 # Observability
 
-Squid Mesh emits baseline telemetry and structured logs around run and step
-lifecycle events.
+Squid Mesh is observable through durable runtime state first. Host applications
+inspect the journal-backed read models, graph output, explanation diagnostics,
+and their own worker logs or metrics.
 
-## Telemetry Events
+Squid Mesh does not currently expose a public `:telemetry` event contract under
+the `[:squid_mesh, ...]` prefix. Treat telemetry event names and metric labels
+as host-app concerns until a dedicated runtime telemetry API exists.
 
-All events are emitted under the `[:squid_mesh, ...]` prefix.
+## Runtime State Surfaces
 
-Run lifecycle:
+Use these public APIs as the stable observability boundary:
 
-- `[:squid_mesh, :run, :created]`
-- `[:squid_mesh, :run, :replayed]`
-- `[:squid_mesh, :run, :dispatched]`
-- `[:squid_mesh, :run, :transition]`
+- `SquidMesh.list_runs/2` - redacted run index rows for dashboards and queue
+  views.
+- `SquidMesh.inspect_run/2` - one run's durable state, including attempts,
+  visible work, scheduled work, expired claims, manual state, context, and
+  anomalies.
+- `SquidMesh.inspect_run_graph/2` - graph-oriented node and edge state for UI
+  builders.
+- `SquidMesh.explain_run/2` - operator-facing reason, details, evidence, and
+  next actions.
 
-Step lifecycle:
+`list_runs/2` intentionally stays narrow. It exposes lookup and status fields
+without attempt inputs, outputs, errors, claim metadata, or idempotency keys.
+Use `inspect_run/2` only after selecting a specific run and applying the host
+app's authorization rules.
 
-- `[:squid_mesh, :step, :started]`
-- `[:squid_mesh, :step, :skipped]`
-- `[:squid_mesh, :step, :completed]`
-- `[:squid_mesh, :step, :failed]`
-- `[:squid_mesh, :step, :retry_scheduled]`
+## What To Measure
 
-## Common Metadata
+The read model gives host apps enough durable state to derive useful operational
+signals:
 
-Run events include:
+| Signal | Source | Why it matters |
+| --- | --- | --- |
+| Run counts by workflow, queue, and status | `list_runs/2` | Tracks volume, completion rate, and backlog shape. |
+| Visible attempt depth | `inspect_run/2.visible_attempts` | Shows work that workers can claim now. |
+| Scheduled attempt depth and next wakeup | `scheduled_attempts`, `next_visible_at` | Shows delayed retries, waits, and future-visible work. |
+| Claimed or expired attempts | `attempts`, `expired_claims` | Identifies workers that are busy, stalled, or recoverable. |
+| Pending dispatch/results | `pending_dispatches`, `pending_results` | Detects journal facts that need runtime reconciliation. |
+| Manual intervention count | `manual_state` and status `:paused` | Drives approval queues and operator SLAs. |
+| Terminal outcomes | `terminal?`, `terminal_status` | Tracks completed, failed, cancelled, and replayed work. |
+| Runtime anomalies | `anomalies` | Surfaces inconsistent or malformed durable facts. |
 
-- `run_id`
-- `workflow`
-- `trigger`
-- `status`
-- `current_step`
+For dashboards, start with `list_runs/2`, then inspect selected runs with
+history only when the caller needs detailed attempts or audit evidence.
 
-Run dispatch events also include:
+## Operator Explanations
 
-- `job_id`
-- `queue`
-- `schedule_in`
+`explain_run/2` is the highest-signal surface for support tooling. It condenses
+the inspection snapshot into:
 
-Run transition events also include:
+- `reason` - the runtime state category, such as `:attempt_visible`,
+  `:attempt_scheduled_for_later`, `:manual_intervention_required`,
+  `:expired_claim`, or `:terminal`.
+- `summary` and `details` - a short explanation plus structured state.
+- `next_actions` - safe host/operator actions, such as waiting for a worker,
+  resolving a manual step, recovering an expired claim, or inspecting a
+  terminal run.
+- `evidence` - thread revisions, attempt counts, planned/applied runnable keys,
+  manual state, next visibility time, and anomalies.
 
-- `from_status`
-- `to_status`
+Use this for incident pages, CLI output, and support views where raw journal
+facts would be too noisy.
 
-Step events include:
+## Graph Output
 
-- `run_id`
-- `workflow`
-- `trigger`
-- `status`
-- `current_step`
-- `step`
-- `attempt`
+`inspect_run_graph/2` presents the same durable state as workflow nodes and
+edges. It is useful when a host UI needs to show:
 
-Step failure events also include:
+- current nodes
+- completed, pending, retrying, failed, skipped, and paused nodes
+- selected transition edges
+- dependency edges and pending joins
+- manual-state detail when history is included
 
-- `error`
+For JSON or LiveView boundaries, call `SquidMesh.Runs.GraphInspection.to_map/1`
+after applying the host app's authorization and redaction policy. See
+[Graph inspection contract](graph_inspection.md) for the stable map shape.
 
-Step skip events also include:
+## Logs
 
-- `reason`
+Squid Mesh emits application logs only for explicit built-in `:log` workflow
+steps. It does not currently attach automatic logger metadata such as `run_id`,
+`workflow`, `step`, or `attempt` to every runtime log.
 
-## Measurements
+If a host app needs correlated logs, wrap worker execution and host boundaries
+with its own logger metadata:
 
-All events include `system_time`.
+```elixir
+Logger.metadata(queue: queue, worker: worker_id)
+SquidMesh.execute_next(queue: queue, owner_id: worker_id)
+```
 
-Additional measurements:
+For step-specific external calls, prefer logging at the host boundary or inside
+native `SquidMesh.Step` modules, and avoid logging secrets, claim tokens,
+payloads, or raw provider responses.
 
-- step completion and failure events include `duration`
-- retry scheduling events include `delay_ms`
+## Host Telemetry
 
-`duration` is emitted in native time units.
+Host applications can still emit their own telemetry around Squid Mesh calls:
 
-For ordinary step execution, duration is measured from `System.monotonic_time/0`
-within the executing worker. For paused-step completion or failure, the terminal
-event can happen later during unblock or cancellation, so duration is derived
-from the persisted attempt start timestamp instead.
+```elixir
+:telemetry.span(
+  [:my_app, :squid_mesh, :execute_next],
+  %{queue: queue, worker: worker_id},
+  fn ->
+    result = SquidMesh.execute_next(queue: queue, owner_id: worker_id)
+    {result, %{result: elem(result, 0)}}
+  end
+)
+```
 
-That means a paused manual step such as `:pause` or `approval_step/2` emits:
+Keep host telemetry labels low-cardinality. Good labels include queue, workflow,
+status, and result category. Avoid `run_id`, claim tokens, idempotency keys,
+raw errors, or user-provided payload fields as metric labels.
 
-- `step.started` when the pause step is first executed
-- `step.completed` later during `unblock_run/2`, `approve_run/3`, or `reject_run/3`, or `step.failed` if the paused run is cancelled
+## Related Reading
 
-The terminal event still refers to the original running attempt, but its
-duration spans the full paused interval rather than only the worker execution
-window.
-
-## Structured Logs
-
-Squid Mesh sets logger metadata for step execution so failure logs carry:
-
-- `run_id`
-- `workflow`
-- `step`
-- `attempt`
-
-This metadata is attached in the step execution path so host applications can
-route or format logs with run-oriented context without parsing message strings.
+- [Getting started](getting_started.md) shows the inspection and explanation
+  APIs in a small runnable workflow.
+- [Graph inspection contract](graph_inspection.md) documents the node and edge
+  payload for host UIs.
+- [Host app integration](host_app_integration.md) shows where host apps wrap
+  worker loops, inspection, and manual-control APIs.
+- [Operations](operations.md) covers production concerns such as retries,
+  waits, cancellation, and cron activation.
