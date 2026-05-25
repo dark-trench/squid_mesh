@@ -83,7 +83,7 @@ boundary options when a host needs a non-default journal setup.
 | Fan-out and fan-in contract | Supported, evolving | Runic-backed dependency ordering and join semantics are defined for the current static workflow graph; [#142](https://github.com/dark-trench/squid_mesh/issues/142) captured the closed design clarification. |
 | Runtime-authored workflow specs | Planned | Validated data-structure authoring for UI-authored or DB-authored workflows is tracked in [#254](https://github.com/dark-trench/squid_mesh/issues/254). |
 | Safe action registry | Planned | Runtime-resolved steps need an allowlisted registry before host apps can safely activate user-authored specs; tracked in [#255](https://github.com/dark-trench/squid_mesh/issues/255). |
-| UI graph serialization | Planned | Stable node, edge, status, and selection output for visual editors is tracked in [#256](https://github.com/dark-trench/squid_mesh/issues/256) and [#257](https://github.com/dark-trench/squid_mesh/issues/257). |
+| UI graph serialization | Supported, evolving | `SquidMesh.Runs.GraphInspection.to_map/1` exposes stable node, edge, status, output, and selected-edge data for dashboards and CLIs. Visual-editor spec round-trip support remains planned in [#257](https://github.com/dark-trench/squid_mesh/issues/257). |
 | Dynamic graph expansion | Planned | Runtime-safe dynamic subflows are deferred until after the core runtime and tracked in [#141](https://github.com/dark-trench/squid_mesh/issues/141). |
 | Oban-specific core | Out of scope | Host apps may choose Oban behind the delivery boundary, but Squid Mesh core is not Oban-centric. |
 | Exactly-once external side effects | Out of scope | Squid Mesh can provide durable workflow state and fencing semantics, but external systems still require idempotency. |
@@ -181,28 +181,36 @@ Choose another layer when:
 - a separate workflow service is a better operational boundary than embedding
   workflow state in the host application.
 
-## Reading The Roadmap
+## Reading the Roadmap
 
-The roadmap separates what users can rely on today from the foundations that
-are being prepared for the next runtime generation.
+Read the capability map as a contract boundary, not just a feature list.
+Supported rows are available in the journal-backed runtime and are the right
+surface for host applications to adopt today. Supported, evolving rows are
+usable now, but still gaining sharper documentation, examples, or API polish
+while the project remains in beta.
 
-Use the configured journal runtime when you need the supported workflow DSL,
-Jido-native persisted run and dispatch facts, journal dispatch claims, retries,
-approvals, pause/resume controls, and projection-backed inspection.
+For current application work, start with the configured journal runtime. It
+provides the workflow DSL, persisted run and dispatch facts, journal dispatch
+claims, retries, approvals, pause/resume controls, replay, cancellation,
+projection-backed inspection, and UI-friendly graph output.
 
-Treat the durable dispatch protocol as an architectural foundation. It defines
-the vocabulary for runnable intent, claim fencing, leases, heartbeats, retries,
-and terminal-run behavior. The workflow and dispatch agents can rebuild that
-state from durable journals. Runtime-safe dynamic graph expansion remains a
-future feature; it is useful after the Jido-native core is stable, but it is not
-required for the journal-backed runtime.
+Planned rows describe accepted direction, not runtime guarantees. The most
+important planned work is about making Squid Mesh easier to embed in
+UI-authored or DB-authored workflow systems: runtime-authored workflow specs
+([#254](https://github.com/dark-trench/squid_mesh/issues/254)), a safe action
+registry for runtime-resolved steps
+([#255](https://github.com/dark-trench/squid_mesh/issues/255)), and workflow
+spec round-trip contracts for visual editors
+([#257](https://github.com/dark-trench/squid_mesh/issues/257)).
 
-Track the linked issues for remaining feature work:
-
-- [#141](https://github.com/dark-trench/squid_mesh/issues/141) covers dynamic
-  workflow graph expansion after the static Jido-native core.
-- [#109](https://github.com/dark-trench/squid_mesh/issues/109) covers advanced
-  reference workflows.
+Treat the durable dispatch protocol as the architectural foundation under those
+features. It defines the vocabulary for runnable intent, claim fencing, leases,
+heartbeats, retries, and terminal-run behavior. The workflow and dispatch agents
+can rebuild that state from durable journals. Runtime-safe dynamic graph
+expansion remains future work tracked in
+[#141](https://github.com/dark-trench/squid_mesh/issues/141); it is useful after
+the static Jido-native core is stable, but it is not required for today's
+journal-backed runtime.
 
 Oban can still be a practical scheduler or job backend in a host application.
 It is an implementation detail, not the core Squid Mesh runtime model.
