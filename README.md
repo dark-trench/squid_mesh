@@ -43,6 +43,8 @@ Start with the manual and the example host apps:
 
 1. Read the [Squid Mesh Manual](docs/index.md) and
    [Getting Started](docs/getting_started.md).
+   You can also try the interactive notebook:
+   [![Run in Livebook](https://livebook.dev/badge/v1/pink.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fdark-trench%2Fsquid_mesh%2Fblob%2Fmain%2Fdocs%2Fgetting_started.livemd)
 2. Use the [Minimal Host App](examples/minimal_host_app/README.md) to see
    manual approval, dependency recovery, saga compensation, local repo
    transactions, cron delivery, restart resilience, and bounded soak coverage.

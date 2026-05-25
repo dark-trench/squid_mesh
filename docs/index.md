@@ -12,6 +12,7 @@ Start with the product shape and the three boundaries: workflow definition,
 journal runtime, and host execution.
 
 - [Getting started](getting_started.md)
+- [Getting started Livebook](getting_started.livemd)
 - [Positioning](positioning.md)
 
 ### 2. Install Squid Mesh In A Host App

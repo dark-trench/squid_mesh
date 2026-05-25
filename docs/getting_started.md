@@ -4,6 +4,12 @@ This is the first guide for workflow authors and host-app maintainers. It starts
 with the product model, then adds runtime, reliability, and operations concepts
 only when they become useful.
 
+> ### Learn with Livebook
+>
+> The getting-started Livebook walks through a small runnable workflow, from
+> step modules to run inspection and approval.
+> [![Run in Livebook](https://livebook.dev/badge/v1/pink.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fdark-trench%2Fsquid_mesh%2Fblob%2Fmain%2Fdocs%2Fgetting_started.livemd)
+
 ## Mental Model
 
 Squid Mesh has three boundaries:
