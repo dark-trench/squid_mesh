@@ -27,6 +27,56 @@ without attempt inputs, outputs, errors, claim metadata, or idempotency keys.
 Use `inspect_run/2` only after selecting a specific run and applying the host
 app's authorization rules.
 
+## Redaction And Field Selection
+
+Treat Squid Mesh observability data as three tiers:
+
+| Tier | Examples | Suggested use |
+| --- | --- | --- |
+| Index-safe | `run_id`, workflow, queue, status, terminal status, indexed time | Run lists, dashboards, queue counters. |
+| Operator detail | reason, visible/scheduled attempt counts, next visibility time, manual step, anomaly count | Support views and incident pages after authorization. |
+| Sensitive detail | run input, durable context, attempt input/output/error, idempotency keys, claim IDs, owner IDs, manual metadata | Privileged audit views only, with host redaction. |
+
+`inspect_run/2` and `inspect_run_graph/2` can expose host-domain data because
+step inputs, outputs, errors, manual metadata, and durable context come from the
+embedding application. Squid Mesh cannot know which fields are customer data,
+provider responses, tokens, or internal notes. Apply an allow-list at the HTTP,
+LiveView, CLI, or API boundary instead of serializing the full snapshot by
+default.
+
+For example, an operator summary can keep runtime state while dropping step
+payloads:
+
+```elixir
+def operator_summary(snapshot) do
+  manual_state = snapshot.manual_state || %{}
+
+  %{
+    run_id: snapshot.run_id,
+    workflow: snapshot.workflow,
+    queue: snapshot.queue,
+    status: snapshot.status,
+    reason: snapshot.reason,
+    visible_attempt_count: length(snapshot.visible_attempts),
+    scheduled_attempt_count: length(snapshot.scheduled_attempts),
+    next_visible_at: snapshot.next_visible_at,
+    manual_step: Map.get(manual_state, :step) || Map.get(manual_state, "step"),
+    anomaly_count: length(snapshot.anomalies)
+  }
+end
+```
+
+For graph views, prefer `inspect_run_graph/2` without `include_history: true`
+unless the viewer needs input, output, error, manual-state, or attempt detail.
+When history is enabled, redact each node's `input`, `output`, `error`,
+`manual_state`, and `attempts` fields before exposing the payload outside a
+trusted operator surface.
+
+Use the same rule for metrics and logs: record counts, statuses, queues,
+workflow names, and reason categories. Avoid user-provided payload fields,
+provider responses, idempotency keys, claim identifiers, and raw errors as
+labels or log fields.
+
 ## What To Measure
 
 The read model gives host apps enough durable state to derive useful operational

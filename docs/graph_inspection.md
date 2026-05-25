@@ -100,7 +100,8 @@ With history enabled, a node can include fields such as:
 ```
 
 Host apps should still authorize and redact this payload before exposing it
-outside trusted operator surfaces.
+outside trusted operator surfaces. For field-selection guidance, see
+[Observability: redaction and field selection](observability.md#redaction-and-field-selection).
 
 ## Edge Shape
 
