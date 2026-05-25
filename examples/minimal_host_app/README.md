@@ -4,10 +4,10 @@ Reference host-app harness for Squid Mesh.
 
 This example shows how an application can:
 
-- configure Squid Mesh with its own `Repo` and `Oban`
+- configure Squid Mesh with its own `Repo`
 - expose workflow operations through an application-facing module
 - pause and resume a human-in-the-loop workflow through that boundary
-- activate cron workflows through the host app's Oban plugins
+- activate cron workflows through a host-owned scheduler plugin
 - run repeatable smoke, resilience, and bounded soak paths during development
 
 ## Setup
@@ -28,16 +28,17 @@ This will:
 
 - create the example app database
 - install Squid Mesh migrations into the example app with `mix squid_mesh.install`
-- run the example app's `Oban` migration
+- run the example app's scheduler and delivery migration
 - run both the example app and Squid Mesh migrations through `mix ecto.migrate`
 
 This example is the standalone development harness. Unlike the embedded host-app
-install path, it owns its own `Oban` migration so the runtime can be exercised
-without depending on another application.
+install path, it owns its own scheduler and delivery wiring so the runtime can
+be exercised without depending on another application. The current harness uses
+Oban for cron delivery; workflow state still lives in the Squid Mesh journal.
 
 Run the verification tasks one at a time. They share the same test database,
-manual Oban instance, and local gateway stubs, so parallel runs can interfere
-with each other's polling windows.
+manual scheduler instance, and local gateway stubs, so parallel runs can
+interfere with each other's polling windows.
 
 ## Smoke Path
 
@@ -48,8 +49,8 @@ MIX_ENV=test mix example.smoke
 ```
 
 This command creates the test database if needed, runs migrations, starts the
-repo and Oban, starts a local HTTP gateway stub, then runs the example smoke
-path to completion.
+repo, starts the host-owned scheduler and delivery harness, starts a local HTTP
+gateway stub, then runs the example smoke path to completion.
 
 Run the development-like path after `mix setup`:
 
@@ -76,7 +77,7 @@ The smoke task:
 - waits for execution, inspects all completed manual workflows, and
   verifies the paused approval run's durable audit history, local transaction
   rollback, and saga rollback compensation history
-- activates the same digest workflow through the host app's Oban-backed cron plugin
+- activates the same digest workflow through the host app's cron plugin
 - verifies both digest triggers complete through the same workflow graph
 
 ## Restart Resilience
@@ -89,9 +90,9 @@ MIX_ENV=test mix example.resilience
 
 This path verifies:
 
-- queued work survives an Oban restart boundary
-- delayed work survives an Oban restart boundary
-- retrying work survives an Oban restart boundary
+- queued work survives a scheduler and delivery restart boundary
+- delayed work survives a scheduler and delivery restart boundary
+- retrying work survives a scheduler and delivery restart boundary
 - a paused manual-approval run survives restart and still approves through the host boundary with the same resume semantics
 
 ## Bounded Soak And Load
@@ -264,10 +265,10 @@ can start the manual entrypoint through `WorkflowRuns.start_manual_digest/1`,
 while the cron plugin starts the same workflow through `:daily_digest`.
 
 The cron trigger opts into scheduled-start idempotency. Because this example
-uses Oban's static `@reboot` cron args, the host plugin supplies one signal id
-per plugin boot; duplicate delivery of that same boot activation returns the
-first run instead of creating a second one. Normal recurring schedules should
-provide a per-window `signal_id` or `intended_window` from the host scheduler.
+uses a static `@reboot` cron entry, the host plugin supplies one signal id per
+plugin boot; duplicate delivery of that same boot activation returns the first
+run instead of creating a second one. Normal recurring schedules should provide
+a per-window `signal_id` or `intended_window` from the host scheduler.
 
 ## Dependency Workflow Example
 

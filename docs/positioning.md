@@ -67,7 +67,7 @@ boundary options when a host needs a non-default journal setup.
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| Spark-backed workflow DSL | Supported | Triggers, payload contracts, steps, transitions, retries, dependency edges, and formatter support. |
+| Workflow DSL and normalized spec | Supported, evolving | Workflow definitions cover triggers, payload contracts, steps, transitions, retries, dependency edges, and formatter support. Step entities are Spark-backed today; full DSL ownership by Spark is tracked in [#252](https://github.com/dark-trench/squid_mesh/issues/252). |
 | Native step contract | Supported | `SquidMesh.Step` is the preferred authoring path. Raw `Jido.Action` modules remain an explicit interop path. |
 | Durable run history | Supported | Run, dispatch, attempt, terminal, manual-control, replay, and catalog facts are persisted in the configured Jido journal storage. |
 | Cron payload boundary | Supported | Host schedulers may enqueue `SquidMesh.Executor.Payload.cron/3` maps and deliver them to `SquidMesh.Runtime.Runner.perform/2`; step execution is claimed through `SquidMesh.execute_next/1`. |
@@ -81,6 +81,9 @@ boundary options when a host needs a non-default journal setup.
 | Scheduled-start metadata | Supported, evolving | Intended schedule windows are stored in durable run context for journal cron starts and exposed to steps through `context.state.schedule`. |
 | Conditional and deferred continuation | Supported, evolving | Durable planner facts and deferred wakeups are tracked in [#140](https://github.com/dark-trench/squid_mesh/issues/140). |
 | Fan-out and fan-in contract | Supported, evolving | Runic-backed dependency ordering and join semantics are defined for the current static workflow graph; [#142](https://github.com/dark-trench/squid_mesh/issues/142) captured the closed design clarification. |
+| Runtime-authored workflow specs | Planned | Validated data-structure authoring for UI-authored or DB-authored workflows is tracked in [#254](https://github.com/dark-trench/squid_mesh/issues/254). |
+| Safe action registry | Planned | Runtime-resolved steps need an allowlisted registry before host apps can safely activate user-authored specs; tracked in [#255](https://github.com/dark-trench/squid_mesh/issues/255). |
+| UI graph serialization | Planned | Stable node, edge, status, and selection output for visual editors is tracked in [#256](https://github.com/dark-trench/squid_mesh/issues/256) and [#257](https://github.com/dark-trench/squid_mesh/issues/257). |
 | Dynamic graph expansion | Planned | Runtime-safe dynamic subflows are deferred until after the core runtime and tracked in [#141](https://github.com/dark-trench/squid_mesh/issues/141). |
 | Oban-specific core | Out of scope | Host apps may choose Oban behind the delivery boundary, but Squid Mesh core is not Oban-centric. |
 | Exactly-once external side effects | Out of scope | Squid Mesh can provide durable workflow state and fencing semantics, but external systems still require idempotency. |
