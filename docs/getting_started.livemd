@@ -11,7 +11,7 @@ integration guide.
 
 ```elixir
 Mix.install([
-  {:squid_mesh, github: "dark-trench/squid_mesh", branch: "main"}
+  {:squid_mesh, "~> 0.1.0-beta.3"}
 ])
 ```
 
@@ -494,9 +494,9 @@ and finishes the workflow.
 
 ## What To Read Next
 
-- [Getting Started](getting_started.md)
-- [Workflow Authoring](workflow_authoring.md)
-- [Reference Workflows](reference_workflows.md)
-- [Graph Inspection Contract](graph_inspection.md)
-- [Host App Integration](host_app_integration.md)
-- [Runtime Architecture](jido_runtime_architecture.md)
+- [Getting Started](https://github.com/dark-trench/squid_mesh/blob/main/docs/getting_started.md)
+- [Workflow Authoring](https://github.com/dark-trench/squid_mesh/blob/main/docs/workflow_authoring.md)
+- [Reference Workflows](https://github.com/dark-trench/squid_mesh/blob/main/docs/reference_workflows.md)
+- [Graph Inspection Contract](https://github.com/dark-trench/squid_mesh/blob/main/docs/graph_inspection.md)
+- [Host App Integration](https://github.com/dark-trench/squid_mesh/blob/main/docs/host_app_integration.md)
+- [Runtime Architecture](https://github.com/dark-trench/squid_mesh/blob/main/docs/jido_runtime_architecture.md)

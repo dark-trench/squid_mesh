@@ -29,7 +29,7 @@ defmodule MinimalHostApp.MixProject do
       {:ecto_sql, "~> 3.13"},
       {:oban, "~> 2.22"},
       {:postgrex, ">= 0.0.0"},
-      {:squid_mesh, path: "../.."}
+      {:squid_mesh, "~> 0.1.0-beta.3"}
     ]
   end
 

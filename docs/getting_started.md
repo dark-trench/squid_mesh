@@ -27,19 +27,6 @@ The workflow definition says what should happen. The journal says what did
 happen and what is ready next. Host workers provide capacity; they do not own
 workflow state.
 
-```mermaid
-flowchart TD
-    Install[Install and configure] --> Define[Define one workflow]
-    Define --> Start[Start a manual run]
-    Start --> Drain[Drain with execute_next/1]
-    Drain --> Inspect[Inspect and explain the run]
-    Inspect --> Reliability[Add retries, waits, and idempotency]
-    Reliability --> Manual[Add pause or approval gates]
-    Manual --> Cron[Add cron activation if needed]
-    Cron --> Bedrock[Use Bedrock for backend-owned leases]
-    Bedrock --> Operate[Operate with metrics, logs, and run history]
-```
-
 ## 1. Install The Runtime
 
 Start with the smallest embedded setup:
