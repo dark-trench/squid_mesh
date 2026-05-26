@@ -957,6 +957,8 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert journal_replay.status == :completed
     assert journal_replay.replayed_from_run_id
+    assert journal_replay.context.notification.channel == "email"
+    assert journal_replay.context.gateway_check.status == "retry_required"
 
     assert journal_cron_digest.status == :completed
     assert journal_cron_digest.trigger == "daily_digest"
