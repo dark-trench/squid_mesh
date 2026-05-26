@@ -34,6 +34,20 @@ Squid Mesh owns workflow progression, transition routing, retry semantics, pause
 
 Internally, the runtime builds on [Jido](https://github.com/agentjido/jido) for actions, execution, and journaling; [Runic](https://github.com/dark-trench/runic) for workflow planning; and [Spark](https://github.com/ash-project/spark) for the DSL authoring surface.
 
+## Jido Primitive Boundary
+
+Squid Mesh uses Jido as an internal runtime foundation while keeping the public workflow API focused on Squid Mesh concepts. Production runtime code uses five main Jido primitive families:
+
+| Jido primitive | Squid Mesh use |
+| --- | --- |
+| `Jido.Agent` | Rebuildable workflow and dispatch coordination state. |
+| `Jido.Action` | Step execution interop, including raw Jido action modules and the native `SquidMesh.Step` adapter. |
+| `Jido.Storage` | Journal and checkpoint persistence boundary. |
+| `Jido.Thread` / `Jido.Thread.Entry` | Durable journal facts for run, dispatch, index, and catalog threads. |
+| `Jido.Exec` | Action execution inside the journal executor. |
+
+Support code also touches lower-level details such as `Jido.Thread.EntryNormalizer` and validates built-in storage adapters like `Jido.Storage.File` and `Jido.Storage.Redis`. Workflow authors normally do not need to use those primitives directly.
+
 > **Warning**  
 > Squid Mesh is still in early development. The runtime is suitable for evaluation, local development, and integration work, but it is not yet documented as production-ready. See [Production Readiness](docs/production_readiness.md) for the current checklist and remaining items.
 
