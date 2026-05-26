@@ -379,7 +379,7 @@ defmodule Billing.Steps.StartReceiptDelivery do
         Billing.Workflows.SendReceipt,
         :send_receipt,
         %{invoice_id: invoice.id, customer_id: invoice.customer_id},
-        child_key: "receipt:#{invoice.id}",
+        child_key: "receipt_#{invoice.id}",
         metadata: %{invoice_id: invoice.id}
       )
 
@@ -398,7 +398,7 @@ trigger:
 
 ```elixir
 SquidMesh.start_child_run(context, Billing.Workflows.SendReceipt, %{invoice_id: invoice.id},
-  child_key: "receipt:#{invoice.id}"
+  child_key: "receipt_#{invoice.id}"
 )
 ```
 

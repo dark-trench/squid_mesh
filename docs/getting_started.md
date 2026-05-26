@@ -136,7 +136,7 @@ defmodule Hobbiton.Steps.SendPartyInvites do
             context,
             Hobbiton.Workflows.DeliverInvite,
             %{party_id: party_id, guest_id: guest.id},
-            child_key: "invite:#{guest.id}",
+            child_key: "invite_#{guest.id}",
             metadata: %{guest_id: guest.id}
           )
 
