@@ -112,6 +112,19 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
              step: "charge_card",
              attempt: 1
            }
+
+    assert {:ok, legacy_origin_entry} =
+             DispatchProtocol.new_entry(:child_run_started, %{
+               run_id: @run_id,
+               child_run_id: "child_run_legacy",
+               child_workflow: @workflow,
+               child_trigger: "manual",
+               child_key: "digest_subscription_legacy",
+               origin: "legacy-origin",
+               occurred_at: @started_at
+             })
+
+    assert legacy_origin_entry.data.origin == "legacy-origin"
   end
 
   test "normalizes manual step lifecycle entries on the run thread" do
@@ -201,6 +214,17 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
                child_run_id: "child_run_123",
                child_workflow: @workflow,
                child_trigger: "manual",
+               occurred_at: @started_at
+             })
+
+    assert {:error, {:missing_fields, [:origin]}} =
+             DispatchProtocol.new_entry(:child_run_started, %{
+               run_id: @run_id,
+               child_run_id: "child_run_123",
+               child_workflow: @workflow,
+               child_trigger: "manual",
+               child_key: "digest_subscription_1",
+               origin: nil,
                occurred_at: @started_at
              })
   end

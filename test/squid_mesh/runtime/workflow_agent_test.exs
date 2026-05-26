@@ -78,6 +78,7 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
                  attempt: 1
                },
                metadata: %{subscription_id: "sub_123"},
+               started_at: @completed_at,
                occurred_at: @visible_at
              })
 
@@ -96,7 +97,8 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
                  step: "charge_card",
                  attempt: 1
                },
-               metadata: %{subscription_id: "sub_123"}
+               metadata: %{subscription_id: "sub_123"},
+               started_at: @completed_at
              }
            ] = Projection.child_runs(agent.state.projection)
   end
