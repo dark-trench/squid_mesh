@@ -144,7 +144,9 @@ defmodule SquidMesh.Workflow do
   defp spec_uses_action_keys?(%Spec{} = spec), do: spec_uses_action_keys?(Map.from_struct(spec))
 
   defp spec_uses_action_keys?(spec) when is_map(spec) do
-    case Map.get(spec, :steps, []) do
+    steps = Map.get(spec, :steps) || Map.get(spec, "steps") || []
+
+    case steps do
       steps when is_list(steps) ->
         Enum.any?(steps, fn
           step when is_map(step) -> Map.has_key?(step, :action) or Map.has_key?(step, "action")

@@ -63,10 +63,10 @@ defmodule SquidMesh.Workflow.ActionRegistry do
   end
 
   defp resolve_spec_map(spec, registry) do
-    case Map.get(spec, :steps) do
-      steps when is_list(steps) ->
+    case spec_steps(spec) do
+      {steps_key, steps} when is_list(steps) ->
         case resolve_steps(steps, registry) do
-          {:ok, steps} -> {:ok, Map.put(spec, :steps, steps)}
+          {:ok, steps} -> {:ok, put_resolved_steps(spec, steps_key, steps)}
           {:error, _reason} = error -> error
         end
 
@@ -93,9 +93,9 @@ defmodule SquidMesh.Workflow.ActionRegistry do
   end
 
   defp resolve_step(step, index, registry) when is_map(step) do
-    case Map.get(step, :action) do
-      nil -> resolve_step_without_action(step, index)
-      action -> resolve_step_action(step, index, action, registry)
+    case step_action(step) do
+      :missing -> resolve_step_without_action(step, index)
+      {action_key, action} -> resolve_step_action(step, index, action_key, action, registry)
     end
   end
 
@@ -122,7 +122,7 @@ defmodule SquidMesh.Workflow.ActionRegistry do
     end
   end
 
-  defp resolve_step_action(step, index, action, registry) do
+  defp resolve_step_action(step, index, action_key, action, registry) do
     name = Map.get(step, :name)
 
     cond do
@@ -147,11 +147,11 @@ defmodule SquidMesh.Workflow.ActionRegistry do
       true ->
         registry
         |> fetch_registry_entry(action)
-        |> validate_registry_entry(step, index, action)
+        |> validate_registry_entry(step, index, action_key, action)
     end
   end
 
-  defp validate_registry_entry({:ok, entry}, step, index, action) do
+  defp validate_registry_entry({:ok, entry}, step, index, action_key, action) do
     name = Map.get(step, :name)
     {module, enabled?} = registry_entry_module(entry)
 
@@ -177,6 +177,7 @@ defmodule SquidMesh.Workflow.ActionRegistry do
       true ->
         {:ok,
          step
+         |> normalize_step_action(action_key, action)
          |> Map.put(:module, module)
          |> put_action_metadata(action)}
     end
@@ -237,6 +238,38 @@ defmodule SquidMesh.Workflow.ActionRegistry do
   end
 
   defp fetch_registry_entry(_registry, _action), do: :error
+
+  defp spec_steps(spec) do
+    cond do
+      Map.has_key?(spec, :steps) -> {:steps, Map.get(spec, :steps)}
+      Map.has_key?(spec, "steps") -> {"steps", Map.get(spec, "steps")}
+      true -> :missing
+    end
+  end
+
+  defp put_resolved_steps(spec, :steps, steps), do: Map.put(spec, :steps, steps)
+
+  defp put_resolved_steps(spec, "steps", steps) do
+    spec
+    |> Map.delete("steps")
+    |> Map.put(:steps, steps)
+  end
+
+  defp step_action(step) do
+    cond do
+      Map.has_key?(step, :action) -> {:action, Map.get(step, :action)}
+      Map.has_key?(step, "action") -> {"action", Map.get(step, "action")}
+      true -> :missing
+    end
+  end
+
+  defp normalize_step_action(step, :action, action), do: Map.put(step, :action, action)
+
+  defp normalize_step_action(step, "action", action) do
+    step
+    |> Map.delete("action")
+    |> Map.put(:action, action)
+  end
 
   defp valid_action_key?(action) when is_atom(action), do: true
   defp valid_action_key?(action) when is_binary(action), do: action != ""

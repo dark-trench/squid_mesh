@@ -122,6 +122,36 @@ defmodule SquidMesh.Workflow.ActionRegistryTest do
       assert {:ok, ^spec} = SquidMesh.Workflow.resolve_spec_actions(spec, action_registry: %{})
     end
 
+    test "routes string-key runtime step collections through the registry wrapper" do
+      step = Map.put(%{name: :load_invoice, opts: []}, "action", "billing.load_invoice")
+
+      spec =
+        spec_with_steps([
+          %{name: :load_invoice, action: "billing.load_invoice", opts: []}
+        ])
+        |> Map.from_struct()
+        |> Map.delete(:steps)
+        |> Map.put("steps", [step])
+
+      registry = %{"billing.load_invoice" => NativeLoadInvoice}
+
+      assert :ok = SquidMesh.Workflow.validate_spec(spec, action_registry: registry)
+
+      assert {:ok, resolved} =
+               SquidMesh.Workflow.resolve_spec_actions(spec, action_registry: registry)
+
+      assert [
+               %{
+                 name: :load_invoice,
+                 action: "billing.load_invoice",
+                 module: NativeLoadInvoice,
+                 metadata: %{action: "billing.load_invoice"}
+               }
+             ] = resolved.steps
+
+      refute Map.has_key?(resolved, "steps")
+    end
+
     test "rejects raw module atoms when the action registry boundary is called directly" do
       spec =
         spec_with_steps([
