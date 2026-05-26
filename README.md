@@ -1,6 +1,6 @@
 <div align="center">
 
-# SquidMesh—Durable workflows for Elixir apps
+# SquidMesh - Durable workflow runtime for Elixir
 
 <img width="350" alt="Squid Mesh logo" src="https://github.com/user-attachments/assets/37bdd955-aacf-448e-b050-4d3305020c32" />
 
@@ -26,7 +26,7 @@
 
 ---
 
-Squid Mesh is a durable workflow runtime embedded inside an Elixir application.
+Squid Mesh is an embedded durable workflow runtime for Elixir applications.
 
 Workflows are declared as Elixir modules through a DSL, persisted through
 Jido journals, and executed by host-owned workers calling
@@ -42,7 +42,7 @@ Squid Mesh does not run as a separate service, broker, or orchestration
 cluster. The host application keeps its existing supervision tree, deployment
 model, repository, schedulers, and queue backend.
 
-At runtime, Squid Mesh is responsible for:
+At runtime, Squid Mesh owns:
 
 - workflow progression
 - transition routing
@@ -52,8 +52,8 @@ At runtime, Squid Mesh is responsible for:
 - durable execution history
 - graph and runtime inspection
 
-Queue delivery and worker ownership remain backend-specific concerns handled by
-the host application or adapter layer.
+Queue delivery, worker supervision, and backend leasing remain host-owned
+concerns handled by the application or adapter layer.
 
 A typical setup looks like this:
 
@@ -71,16 +71,13 @@ Phoenix / OTP Application
 │   └── SquidMesh.execute_next/1
 │
 └── Optional Queue Backend
-    ├── Oban
     ├── Bedrock
-    ├── Postgres queues
-    └── custom delivery systems
+    ├── database-backed delivery
+    └── host-specific delivery systems
 ```
 
-Squid Mesh sits between two common approaches:
-
-- a plain job queue with minimal orchestration semantics
-- a standalone workflow platform requiring separate infrastructure
+This keeps workflow decisions in the library while deployment, queueing, and
+worker lifecycle policy stay inside the host application.
 
 Internally, the runtime builds on:
 
@@ -97,9 +94,9 @@ For architecture details and runtime boundaries, see:
 
 ## Table of Contents
 
-- [Features](#features)
+- [Runtime Capabilities](#runtime-capabilities)
 - [Getting Started](#getting-started)
-- [Companion Dashboard](#companion-dashboard)
+- [Optional Dashboard](#optional-dashboard)
 - [Example Applications](#example-applications)
 - [When to Use Squid Mesh](#when-to-use-squid-mesh)
 - [Runtime Shape](#runtime-shape)
@@ -112,7 +109,7 @@ For architecture details and runtime boundaries, see:
 
 ---
 
-## Features
+## Runtime Capabilities
 
 ### Workflow Authoring
 
@@ -147,7 +144,7 @@ For architecture details and runtime boundaries, see:
 - chronological step history and audit events
 - graph output for workflow visualization
 - structured diagnostics through `SquidMesh.explain_run/2`
-- clear visibility into waiting, retrying, paused, failed, cancelled, and
+- visibility into waiting, retrying, paused, failed, cancelled, and
   completed runs
 
 ### Built-in Step Support
@@ -168,14 +165,14 @@ Choose the path that matches how you want to learn or integrate Squid Mesh.
 | Interactive learning | [![Run in Livebook](https://livebook.dev/badge/v1/pink.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fdark-trench%2Fsquid_mesh%2Fblob%2Fmain%2Fdocs%2Fgetting_started.livemd) | You want to run a small workflow and inspect attempts, wakeups, graph output, and approval state. |
 | Workflow DSL | [Workflow Authoring](docs/workflow_authoring.md) and [Workflow Authoring Livebook](docs/workflow_authoring.livemd) | You want to understand triggers, payloads, steps, transitions, dependencies, input mapping, retries, and compensation. |
 | Host integration | [Host App Integration](docs/host_app_integration.md) | You are adding Squid Mesh to a Phoenix or OTP app. |
-| Executable examples | [Reference Workflows](docs/reference_workflows.md) and the [Minimal Host App](examples/minimal_host_app/README.md) | You want approval, recovery, dependency, saga, cron, restart, and soak examples that actually run. |
+| Executable examples | [Reference Workflows](docs/reference_workflows.md) and the [Minimal Host App](examples/minimal_host_app/README.md) | You want approval, recovery, dependency, saga, cron, restart, and soak examples with runnable coverage. |
 | Backend leases | [Bedrock Minimal Host App](examples/bedrock_minimal_host_app/README.md) | You want backend-owned delivery, leases, delayed visibility, retry requeue, dead-letter handling, and cron payload mapping. |
 
-The full documentation home is [docs/index.md](docs/index.md).
+The documentation index is [docs/index.md](docs/index.md).
 
 ---
 
-## Companion Dashboard
+## Optional Dashboard
 
 [SquidSonar](https://github.com/dark-trench/squid_sonar) is the optional
 read-only Phoenix LiveView dashboard for Squid Mesh.
@@ -269,6 +266,7 @@ Your host application keeps:
 - application boundaries
 - deployment model
 - queue and scheduler infrastructure
+- delivery leases and worker fencing when the chosen backend requires them
 
 The Jido-native runtime persists workflow and dispatch facts through
 `Jido.Storage`. The default Ecto adapter stores those journals in the host
@@ -301,22 +299,38 @@ The journal-backed runtime is Jido-native.
 Squid Mesh records workflow facts in Jido journals while host-owned workers
 provide process supervision and capacity by calling `SquidMesh.execute_next/1`.
 
-External schedulers may enqueue cron activation payloads, but step delivery runs
-through the journal-backed worker loop.
+External schedulers may enqueue cron activation payloads, but step execution is
+claimed through the journal-backed worker loop.
 
-For example, a Bedrock adapter could use Bedrock/FDB for:
+Host apps are responsible for leasing and worker fencing at any delivery
+backend they add around the journal worker loop. `SquidMesh.Executor.Leases` is
+the public adapter contract for backends that expose claim, heartbeat,
+completion, failure, retry, and dead-letter behavior.
+
+Bedrock is the recommended reference backend for that shape because its public
+Job Queue and Store APIs already expose leasing and delayed-delivery operations.
+The Bedrock minimal host app shows this through
+`BedrockMinimalHostApp.SquidMeshLeaseAdapter`.
+
+Other delivery systems can be used when the host app provides equivalent queue
+visibility, ownership, heartbeat, retry, and stale-worker recovery semantics.
+
+For example, a Bedrock-backed adapter uses Bedrock for:
 
 - job delivery
-- lease extension
+- lease ownership and extension
 - stale-worker recovery
 - delivery metadata
 
-A Postgres or Oban adapter could continue using relational storage for delivery.
+Another host-specific adapter can use its own storage and delivery mechanism if
+it also implements the lease and recovery behavior required by the deployment
+model.
 
 The key boundary is:
 
 - Squid Mesh owns workflow decisions and journaled facts.
-- Adapters own the concrete queue and lease mechanics required by their backend.
+- Host adapters own the concrete queue, lease, and worker-lifecycle mechanics
+  required by their backend.
 
 See [Architecture](docs/architecture.md#execution-flow) for the runtime flow
 diagram and component boundaries.
@@ -331,6 +345,7 @@ diagram and component boundaries.
 - an existing Ecto `Repo`
 - Postgres for persisted runtime state
 - a worker process that calls `SquidMesh.execute_next/1`
+- a lease or fencing strategy for distributed or backend-owned delivery
 
 ---
 
@@ -418,7 +433,7 @@ This allows workflow definitions to retain readable multi-line formatting for:
 - compensation policies
 - conditional routing
 
-# Example: The Ring Errand
+## Example: The Ring Errand
 
 Before the larger workflow example, here is the workflow API in smaller pieces.
 
@@ -891,12 +906,12 @@ from persisted runtime state.
 
 ---
 
-# Documentation
+## Documentation
 
 Use the documentation index for setup, workflow authoring, runtime operations,
 inspection, and architecture details.
 
-## Core Guides
+### Core Guides
 
 - [Docs Index](docs/index.md)
 - [Getting Started](docs/getting_started.md)
@@ -906,7 +921,7 @@ inspection, and architecture details.
 - [Positioning Guide](docs/positioning.md)
 - [Production Readiness](docs/production_readiness.md)
 
-## Runtime & Inspection
+### Runtime & Inspection
 
 - [Reference Workflows](docs/reference_workflows.md)
 - [Execution Flow](docs/architecture.md#execution-flow)
@@ -914,23 +929,23 @@ inspection, and architecture details.
 - [Recovery & Replay](docs/workflow_authoring.md#recovery-and-replay)
 - [Approval Flows](docs/workflow_authoring.md#approval-steps)
 
-## Example Applications
+### Example Applications
 
 - [Minimal Host App](examples/minimal_host_app/README.md)
 - [Bedrock Minimal Host App](examples/bedrock_minimal_host_app/README.md)
 
 ---
 
-# Community
+## Community
 
-## Discussion
+### Discussion
 
 Use the
 [Elixir Forum thread](https://elixirforum.com/t/squid-mesh-workflow-automation-runtime-for-elixir-applications/75162)
 for public discussion, architectural context, and workflow-runtime design
 conversations.
 
-## Issues & Feature Requests
+### Issues & Feature Requests
 
 Use
 [GitHub Issues](https://github.com/dark-trench/squid_mesh/issues)
@@ -942,27 +957,25 @@ for:
 - runtime regressions
 - documentation improvements
 
-## Discord
+### Discord
 
-For informal discussion around SquidMesh—Durable workflows for Elixir apps,
-Jido, runtime internals, and related orchestration tooling, use the
+For informal discussion around Squid Mesh, Jido, runtime internals, and related
+orchestration tooling, use the
 [Squid Mesh channel on the Jido Discord](https://discord.com/channels/1323353012235796550/1504122798027571331).
 
 ---
 
-# Contributing
-
-Contributions are welcome.
+## Contributing
 
 Please review the existing runtime model and workflow semantics before proposing
 substantial changes.
 
-## Start Here
+### Start Here
 
 - [Contributing Guide](CONTRIBUTING.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 
-## Areas Where Contributions Help Most
+### Areas Where Contributions Help Most
 
 - runtime reliability
 - workflow ergonomics
@@ -972,7 +985,7 @@ substantial changes.
 - backend integrations
 - executable examples and soak coverage
 
-## Development Principles
+### Development Principles
 
 When contributing, please aim to:
 
@@ -981,6 +994,3 @@ When contributing, please aim to:
 - maintain operational clarity
 - avoid hidden orchestration behavior
 - support embedded host-application deployment models
-
-Thank you to everyone contributing feedback, testing, documentation, examples,
-and runtime improvements.
