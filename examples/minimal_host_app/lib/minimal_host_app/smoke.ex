@@ -64,6 +64,8 @@ defmodule MinimalHostApp.Smoke do
           local_ledger_checkout: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           local_ledger_rollback: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           saga_checkout: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          nested_invite_delivery: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          nested_invite_child: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_run: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_recovery: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_cancellation: SquidMesh.ReadModel.Inspection.Snapshot.t(),
@@ -78,6 +80,7 @@ defmodule MinimalHostApp.Smoke do
     manual_digest = run_manual_digest!()
     {local_ledger_checkout, local_ledger_rollback} = run_local_ledger_checkout!()
     saga_checkout = run_saga_checkout!()
+    {nested_invite_delivery, nested_invite_child} = run_nested_invite_delivery!()
     journal_run = run_journal_run!()
     journal_recovery = run_journal_recovery!()
     journal_cancellation = run_journal_cancellation!()
@@ -100,6 +103,8 @@ defmodule MinimalHostApp.Smoke do
         local_ledger_checkout: local_ledger_checkout,
         local_ledger_rollback: local_ledger_rollback,
         saga_checkout: saga_checkout,
+        nested_invite_delivery: nested_invite_delivery,
+        nested_invite_child: nested_invite_child,
         journal_run: journal_run,
         journal_recovery: journal_recovery,
         journal_cancellation: journal_cancellation,
@@ -514,6 +519,66 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
+  @doc """
+  Runs a nested workflow where parent and child both retry once.
+  """
+  @spec run_nested_invite_delivery!() ::
+          {SquidMesh.ReadModel.Inspection.Snapshot.t(),
+           SquidMesh.ReadModel.Inspection.Snapshot.t()}
+  def run_nested_invite_delivery! do
+    child_queue = "minimal-host-app-nested-child-smoke"
+
+    attrs = %{
+      party_id: "party_smoke",
+      guest_id: "guest_smoke",
+      child_queue: child_queue,
+      fail_after_child_start: true,
+      fail_child_once: true
+    }
+
+    with {:ok, run} <- WorkflowRuns.start_nested_invite_delivery(attrs),
+         {:ok, retried_parent} <-
+           SquidMesh.execute_next(owner_id: "minimal-host-app-nested-smoke-parent"),
+         {:ok, child_run_id} <-
+           ensure_nested_child_link(retried_parent, "invite_guest_smoke", child_queue),
+         :ok <- delete_available_journal_checkpoints(retried_parent.run_id, "default"),
+         :ok <- delete_available_journal_checkpoints(child_run_id, child_queue),
+         :ok <-
+           ensure_reconstructed_nested_runs(
+             retried_parent.run_id,
+             child_run_id,
+             retried_parent.child_runs,
+             child_queue
+           ),
+         {:ok, completed_parent} <-
+           SquidMesh.execute_next(owner_id: "minimal-host-app-nested-smoke-parent"),
+         {:ok, child_retrying} <-
+           SquidMesh.execute_next(
+             owner_id: "minimal-host-app-nested-smoke-child",
+             queue: child_queue
+           ),
+         :ok <- delete_available_journal_checkpoints(child_retrying.run_id, child_queue),
+         :ok <- ensure_reconstructed_nested_child_retry(child_retrying.run_id, child_queue),
+         {:ok, completed_child} <-
+           SquidMesh.execute_next(
+             owner_id: "minimal-host-app-nested-smoke-child",
+             queue: child_queue
+           ),
+         {:ok, parent_history} <- WorkflowRuns.inspect_run(run.run_id, include_history: true),
+         {:ok, child_history} <-
+           WorkflowRuns.inspect_run(completed_child.run_id,
+             queue: child_queue,
+             include_history: true
+           ),
+         :ok <- ensure_nested_parent_result(completed_parent, parent_history, child_queue),
+         :ok <- ensure_nested_child_result(child_retrying, child_history) do
+      {parent_history, child_history}
+    else
+      {:error, reason} ->
+        raise "nested invite delivery smoke test failed: #{inspect(reason)}"
+    end
+  end
+
   @spec wait_for_execution() :: :ok
   defp wait_for_execution do
     RuntimeHarness.wait_for_execution()
@@ -721,6 +786,19 @@ defmodule MinimalHostApp.Smoke do
     :ok
   end
 
+  defp delete_available_journal_checkpoints(run_id, queue)
+       when is_binary(run_id) and is_binary(queue) do
+    [
+      Journal.thread_id({:run, run_id}),
+      Journal.thread_id({:dispatch, queue})
+    ]
+    |> Enum.each(fn thread_id ->
+      :ok = JournalStorage.delete_checkpoint({"squid_mesh", :checkpoint, thread_id}, repo: Repo)
+    end)
+
+    :ok
+  end
+
   defp with_journal_runtime_config(queue, fun) when is_binary(queue) and is_function(fun, 0) do
     original_config = Application.get_all_env(:squid_mesh)
 
@@ -775,6 +853,99 @@ defmodule MinimalHostApp.Smoke do
 
   defp ensure_saga_failure_history(%SquidMesh.ReadModel.Inspection.Snapshot{}),
     do: {:error, :unexpected_saga_compensation}
+
+  defp ensure_nested_child_link(
+         %SquidMesh.ReadModel.Inspection.Snapshot{child_runs: child_runs},
+         child_key,
+         child_queue
+       ) do
+    case child_runs do
+      [%{child_key: ^child_key, child_run_id: child_run_id}] ->
+        with {:ok, child_run} <- WorkflowRuns.inspect_run(child_run_id, queue: child_queue) do
+          if child_run.status == :running do
+            {:ok, child_run_id}
+          else
+            {:error, :unexpected_nested_child_status}
+          end
+        end
+
+      _other ->
+        {:error, :unexpected_nested_child_runs}
+    end
+  end
+
+  defp ensure_reconstructed_nested_runs(parent_run_id, child_run_id, child_runs, child_queue) do
+    with {:ok, parent_run} <- WorkflowRuns.inspect_run(parent_run_id),
+         {:ok, child_run} <- WorkflowRuns.inspect_run(child_run_id, queue: child_queue) do
+      cond do
+        parent_run.child_runs != child_runs ->
+          {:error, :unexpected_reconstructed_nested_child_runs}
+
+        child_run.status != :running ->
+          {:error, :unexpected_reconstructed_nested_child_status}
+
+        child_run.parent_run.run_id != parent_run_id ->
+          {:error, :unexpected_reconstructed_nested_parent_link}
+
+        true ->
+          :ok
+      end
+    end
+  end
+
+  defp ensure_reconstructed_nested_child_retry(child_run_id, child_queue) do
+    with {:ok, child_run} <- WorkflowRuns.inspect_run(child_run_id, queue: child_queue) do
+      case child_run.visible_attempts do
+        [%{step: "deliver_invite", status: :retry_scheduled, attempt_number: 2}] ->
+          :ok
+
+        _other ->
+          {:error, :unexpected_reconstructed_nested_child_retry}
+      end
+    end
+  end
+
+  defp ensure_nested_parent_result(completed_parent, parent_history, child_queue) do
+    cond do
+      completed_parent.status != :completed ->
+        {:error, :unexpected_nested_parent_status}
+
+      completed_parent.context.invite_child.queue != child_queue ->
+        {:error, :unexpected_nested_child_queue}
+
+      completed_parent.context.invite_child.reused_after_retry? != true ->
+        {:error, :unexpected_nested_retry_idempotency}
+
+      Enum.map(parent_history.attempts, &{&1.step, &1.status, &1.applied?, &1.attempt_number}) !=
+          [
+            {"start_nested_invite", :failed, false, 1},
+            {"start_nested_invite", :completed, true, 2}
+          ] ->
+        {:error, :unexpected_nested_parent_retry_history}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp ensure_nested_child_result(child_retrying, child_history) do
+    cond do
+      child_retrying.status != :running ->
+        {:error, :unexpected_nested_child_retry_status}
+
+      child_history.status != :completed ->
+        {:error, :unexpected_nested_child_status}
+
+      Enum.map(child_history.attempts, &{&1.step, &1.status, &1.applied?, &1.attempt_number}) != [
+        {"deliver_invite", :failed, false, 1},
+        {"deliver_invite", :completed, true, 2}
+      ] ->
+        {:error, :unexpected_nested_child_retry_history}
+
+      true ->
+        :ok
+    end
+  end
 
   @spec ensure_local_ledger_entries(SquidMesh.ReadModel.Inspection.Snapshot.t(), [String.t()]) ::
           :ok | {:error, :unexpected_local_ledger_entries}
