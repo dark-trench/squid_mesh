@@ -79,6 +79,18 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert Enum.any?(payment_recovery_entities, fn
              %SquidMesh.Workflow.TransitionSpec{
                from: :check_gateway_status,
+               on: :ok,
+               to: :issue_gateway_credit
+             } ->
+               true
+
+             _other ->
+               false
+           end)
+
+    assert Enum.any?(payment_recovery_entities, fn
+             %SquidMesh.Workflow.TransitionSpec{
+               from: :check_gateway_status,
                on: :error,
                to: :issue_gateway_credit,
                recovery: :compensation
@@ -167,6 +179,13 @@ defmodule MinimalHostApp.WorkflowRunsTest do
                  "path" => ["gateway_check", "status_code"],
                  "greater_than" => 199
                }
+           end)
+
+    assert Enum.any?(graph["edges"], fn edge ->
+             edge["from"] == "check_gateway_status" and
+               edge["to"] == "issue_gateway_credit" and
+               edge["outcome"] == "ok" and
+               edge["condition"] == nil
            end)
   end
 

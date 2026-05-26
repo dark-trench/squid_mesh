@@ -39,26 +39,29 @@ defmodule MinimalHostApp.Smoke do
       gateway_url: RuntimeHarness.endpoint_url(port, "/gateway")
     }
 
-    with {:ok, run} <- WorkflowRuns.start_payment_recovery(attrs),
-         :ok <- RuntimeHarness.wait_for_execution(),
-         {:ok, inspected_run} <-
-           RuntimeHarness.await_terminal_run(run.run_id, attempts: @poll_attempts),
-         {:ok, graph} <- SquidMesh.inspect_run_graph(run.run_id) do
-      IO.puts("started run #{run.run_id} for #{inspect(run.workflow)}")
+    try do
+      with {:ok, run} <- WorkflowRuns.start_payment_recovery(attrs),
+           :ok <- RuntimeHarness.wait_for_execution(),
+           {:ok, inspected_run} <-
+             RuntimeHarness.await_terminal_run(run.run_id, attempts: @poll_attempts),
+           {:ok, graph} <- SquidMesh.inspect_run_graph(run.run_id) do
+        IO.puts("started run #{run.run_id} for #{inspect(run.workflow)}")
+
+        unless inspected_run.run_id == run.run_id and inspected_run.status == :completed do
+          raise "unexpected smoke result"
+        end
+
+        unless selected_gateway_success_route?(graph) do
+          raise "unexpected payment recovery conditional route"
+        end
+
+        inspected_run
+      else
+        {:error, reason} ->
+          raise "smoke test failed: #{inspect(reason)}"
+      end
+    after
       RuntimeHarness.stop_gateway_server(server_pid)
-
-      unless inspected_run.run_id == run.run_id and inspected_run.status == :completed do
-        raise "unexpected smoke result"
-      end
-
-      unless selected_gateway_success_route?(graph) do
-        raise "unexpected payment recovery conditional route"
-      end
-
-      inspected_run
-    else
-      {:error, reason} ->
-        raise "smoke test failed: #{inspect(reason)}"
     end
   end
 
