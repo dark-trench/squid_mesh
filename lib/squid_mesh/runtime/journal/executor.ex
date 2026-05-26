@@ -1845,8 +1845,8 @@ defmodule SquidMesh.Runtime.Journal.Executor do
         Enum.find_value(entries, fn
           %{type: :run_started, data: data} ->
             %{
-              definition_version: Map.get(data, :definition_version),
-              definition_fingerprint: Map.get(data, :definition_fingerprint)
+              definition_version: definition_metadata_value(data, :definition_version),
+              definition_fingerprint: definition_metadata_value(data, :definition_fingerprint)
             }
 
           _entry ->
@@ -1855,6 +1855,10 @@ defmodule SquidMesh.Runtime.Journal.Executor do
 
       {:ok, metadata || %{definition_version: nil, definition_fingerprint: nil}}
     end
+  end
+
+  defp definition_metadata_value(data, key) when is_map(data) and is_atom(key) do
+    Map.get(data, key) || Map.get(data, Atom.to_string(key))
   end
 
   defp step_context(workflow_agent, %ActionAttempt{} = attempt, workflow, step_name) do

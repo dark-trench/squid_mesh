@@ -211,8 +211,11 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
       |> Map.put(:input, Map.get(data, :input))
       |> Map.put(:context, Map.get(data, :context, %{}))
       |> Map.put(:replayed_from_run_id, Map.get(data, :replayed_from_run_id))
-      |> Map.put(:definition_version, Map.get(data, :definition_version))
-      |> Map.put(:definition_fingerprint, Map.get(data, :definition_fingerprint))
+      |> Map.put(:definition_version, definition_metadata_value(data, :definition_version))
+      |> Map.put(
+        :definition_fingerprint,
+        definition_metadata_value(data, :definition_fingerprint)
+      )
       |> refresh_status()
     else
       add_anomaly(projection, entry, :malformed_entry)
@@ -295,6 +298,10 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   end
 
   defp apply_entry(%Entry{}, %__MODULE__{} = projection), do: projection
+
+  defp definition_metadata_value(data, key) when is_map(data) and is_atom(key) do
+    Map.get(data, key) || Map.get(data, Atom.to_string(key))
+  end
 
   defp add_planned_runnables(planned_runnables, data) do
     data

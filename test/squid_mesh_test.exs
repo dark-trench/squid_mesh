@@ -155,7 +155,7 @@ defmodule SquidMeshTest do
     use SquidMesh.Workflow
 
     workflow do
-      version("2026-05-26.payment-recovery-v2")
+      version "2026-05-26.payment-recovery-v2"
 
       trigger :gateway_recovery do
         manual()
@@ -2020,6 +2020,27 @@ defmodule SquidMeshTest do
                )
 
       assert summary.definition_version == nil
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
+               SquidMesh.inspect_run_graph(snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert graph.definition_version == nil
+
+      assert {:ok, %Diagnostic{} = diagnostic} =
+               SquidMesh.explain_run(snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert diagnostic.definition_version == nil
+      assert diagnostic.evidence.definition_version == nil
     end
 
     test "start_child_run/4 starts a deterministic child and links it to the parent" do
@@ -5362,6 +5383,86 @@ defmodule SquidMeshTest do
              } = Enum.at(run_entries, 4)
     end
 
+    test "journal runtime approves runs with string-keyed persisted definition metadata" do
+      run_id = Ecto.UUID.generate()
+      runnable_key = "#{run_id}:wait_for_review:1"
+      approved_at = DateTime.add(@read_model_visible_at, 1, :second)
+      approved_at_iso = DateTime.to_iso8601(approved_at)
+
+      assert {:ok, definition} = Definition.load(ApprovalWorkflow)
+
+      append_read_model_run_entries([
+        string_keyed_definition_metadata(
+          read_model_entry!(:run_started, %{
+            run_id: run_id,
+            workflow: Atom.to_string(ApprovalWorkflow),
+            definition_fingerprint: Definition.fingerprint(definition),
+            occurred_at: @read_model_started_at
+          })
+        ),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [
+            %{
+              run_id: run_id,
+              runnable_key: runnable_key,
+              idempotency_key: runnable_key,
+              attempt_number: 1,
+              queue: @read_model_queue,
+              step: "wait_for_review",
+              input: %{account_id: "acct_123"},
+              visible_at: @read_model_started_at
+            }
+          ],
+          occurred_at: @read_model_started_at
+        }),
+        read_model_entry!(:runnable_applied, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          result: %{},
+          occurred_at: @read_model_visible_at
+        }),
+        read_model_entry!(:manual_step_paused, %{
+          run_id: run_id,
+          step: "wait_for_review",
+          kind: "approval",
+          metadata: %{
+            ok_target: "record_approval",
+            error_target: "record_rejection",
+            output_key: "approval"
+          },
+          occurred_at: @read_model_visible_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = approved_snapshot} =
+               SquidMesh.approve_run(
+                 run_id,
+                 %{actor: "ops_123", comment: "approved"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: approved_at
+               )
+
+      assert approved_snapshot.status == :running
+
+      assert [
+               %{
+                 step: "record_approval",
+                 status: :available,
+                 input: %{
+                   approval: %{
+                     decision: "approved",
+                     actor: "ops_123",
+                     comment: "approved",
+                     decided_at: ^approved_at_iso
+                   }
+                 }
+               }
+             ] = approved_snapshot.visible_attempts
+    end
+
     test "journal runtime rejects built-in approval steps through durable manual resolution" do
       run_id = Ecto.UUID.generate()
       rejected_at = DateTime.add(@read_model_visible_at, 1, :second)
@@ -8270,6 +8371,57 @@ defmodule SquidMeshTest do
                snapshot.attempts
     end
 
+    test "execute_next/1 accepts string-keyed persisted definition metadata" do
+      run_id = Ecto.UUID.generate()
+      runnable_key = "#{run_id}:check_gateway:1"
+      {:ok, definition} = Definition.load(VersionedPaymentRecoveryWorkflow)
+
+      append_read_model_run_entries([
+        string_keyed_definition_metadata(
+          read_model_entry!(:run_started, %{
+            run_id: run_id,
+            workflow: Atom.to_string(VersionedPaymentRecoveryWorkflow),
+            definition_version: "2026-05-26.payment-recovery-v2",
+            definition_fingerprint: Definition.fingerprint(definition),
+            occurred_at: @read_model_started_at
+          })
+        ),
+        read_model_entry!(:runnables_planned, %{
+          run_id: run_id,
+          runnables: [journal_start_runnable(run_id)],
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      append_read_model_dispatch_entries([
+        read_model_entry!(:attempt_scheduled, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          idempotency_key: runnable_key,
+          attempt_number: 1,
+          queue: @read_model_queue,
+          step: "check_gateway",
+          input: %{account_id: "acct_123"},
+          visible_at: @read_model_started_at,
+          occurred_at: @read_model_started_at
+        })
+      ])
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "worker_1",
+                 claim_id: "claim_1",
+                 claim_token: "token_1",
+                 now: @read_model_visible_at
+               )
+
+      assert snapshot.status == :completed
+      assert snapshot.context.gateway_check == %{account_id: "acct_123", status: "healthy"}
+    end
+
     test "execute_next/1 terminally fails stale completed attempts during recovery" do
       run_id = Ecto.UUID.generate()
       runnable_key = "#{run_id}:check_gateway:1"
@@ -9325,6 +9477,17 @@ defmodule SquidMeshTest do
   defp read_model_entry!(type, attrs) do
     assert {:ok, entry} = DispatchProtocol.new_entry(type, attrs)
     entry
+  end
+
+  defp string_keyed_definition_metadata(%{data: data} = entry) do
+    data =
+      data
+      |> Map.put("definition_version", Map.get(data, :definition_version))
+      |> Map.put("definition_fingerprint", Map.fetch!(data, :definition_fingerprint))
+      |> Map.delete(:definition_version)
+      |> Map.delete(:definition_fingerprint)
+
+    %{entry | data: data}
   end
 
   defp claim_token_hash(token) do

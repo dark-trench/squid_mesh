@@ -26,7 +26,7 @@ defmodule SquidMesh.WorkflowTest do
     use SquidMesh.Workflow
 
     workflow do
-      version("2026-05-26.native-step-contract")
+      version "2026-05-26.native-step-contract"
 
       trigger :manual do
         manual()
