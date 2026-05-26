@@ -10,6 +10,7 @@ defmodule SquidMesh.Workflow.Info do
   alias Spark.Dsl.Extension
   alias SquidMesh.Workflow.Definition
   alias SquidMesh.Workflow.Spec
+  alias SquidMesh.Workflow.StepSpec
 
   @doc """
   Returns the normalized, serializable workflow spec.
@@ -71,10 +72,11 @@ defmodule SquidMesh.Workflow.Info do
   def steps(workflow) when is_atom(workflow) do
     workflow
     |> Extension.get_entities([:workflow])
+    |> Enum.filter(&match?(%StepSpec{}, &1))
     |> Enum.map(&resolve_step_metadata/1)
   end
 
-  defp resolve_step_metadata(%SquidMesh.Workflow.StepSpec{module: module} = step) do
+  defp resolve_step_metadata(%StepSpec{module: module} = step) do
     case SquidMesh.Step.metadata(module) do
       %{} = metadata -> %{step | metadata: metadata}
       nil -> step

@@ -6,6 +6,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
   alias MinimalHostApp.Workers.SquidMeshWorker
   alias MinimalHostApp.WorkflowRuns
   alias MinimalHostApp.Workflows.DailyDigest
+  alias MinimalHostApp.Workflows.PaymentRecovery
   alias Oban.Job
   alias SquidMesh.ReadModel.Inspection.Snapshot
   alias SquidMesh.ReadModel.Listing.Summary
@@ -29,6 +30,50 @@ defmodule MinimalHostApp.WorkflowRunsTest do
       transition :announce_digest, on: :ok, to: :record_digest_delivery
       transition :record_digest_delivery, on: :ok, to: :complete
     end
+  end
+
+  test "host app workflow examples expose Spark-backed workflow DSL metadata" do
+    daily_digest_entities = Spark.Dsl.Extension.get_entities(DailyDigest, [:workflow])
+
+    assert [
+             %SquidMesh.Workflow.TriggerSpec{
+               name: :manual_digest,
+               definitions: [%SquidMesh.Workflow.TriggerDefinitionSpec{type: :manual}],
+               payload: [%SquidMesh.Workflow.PayloadSpec{fields: manual_fields}]
+             },
+             %SquidMesh.Workflow.TriggerSpec{
+               name: :daily_digest,
+               definitions: [
+                 %SquidMesh.Workflow.TriggerDefinitionSpec{
+                   type: :cron,
+                   config: %{
+                     expression: "@reboot",
+                     timezone: "Etc/UTC",
+                     idempotency: :return_existing_run
+                   }
+                 }
+               ],
+               payload: [%SquidMesh.Workflow.PayloadSpec{fields: cron_fields}]
+             }
+           ] = Enum.filter(daily_digest_entities, &match?(%SquidMesh.Workflow.TriggerSpec{}, &1))
+
+    assert Enum.map(manual_fields, & &1.name) == [:channel, :digest_date]
+    assert Enum.map(cron_fields, & &1.name) == [:channel, :digest_date]
+
+    payment_recovery_entities = Spark.Dsl.Extension.get_entities(PaymentRecovery, [:workflow])
+
+    assert Enum.any?(payment_recovery_entities, fn
+             %SquidMesh.Workflow.TransitionSpec{
+               from: :check_gateway_status,
+               on: :error,
+               to: :issue_gateway_credit,
+               recovery: :compensation
+             } ->
+               true
+
+             _other ->
+               false
+           end)
   end
 
   test "starts the example payment recovery workflow through the host boundary" do

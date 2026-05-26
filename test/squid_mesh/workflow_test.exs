@@ -130,6 +130,54 @@ defmodule SquidMesh.WorkflowTest do
     assert spec.retries == [%{step: :send_email, opts: [max_attempts: 3]}]
   end
 
+  test "stores trigger and transition declarations as Spark entities" do
+    entities = Spark.Dsl.Extension.get_entities(InvoiceReminder, [:workflow])
+
+    assert [
+             %SquidMesh.Workflow.TriggerSpec{
+               definitions: [%SquidMesh.Workflow.TriggerDefinitionSpec{}],
+               payload: [
+                 %SquidMesh.Workflow.PayloadSpec{
+                   fields: [
+                     %SquidMesh.Workflow.PayloadFieldSpec{},
+                     %SquidMesh.Workflow.PayloadFieldSpec{}
+                   ]
+                 }
+               ]
+             }
+           ] = Enum.filter(entities, &match?(%SquidMesh.Workflow.TriggerSpec{}, &1))
+
+    assert [
+             %SquidMesh.Workflow.StepSpec{},
+             %SquidMesh.Workflow.StepSpec{},
+             %SquidMesh.Workflow.StepSpec{}
+           ] = Enum.filter(entities, &match?(%SquidMesh.Workflow.StepSpec{}, &1))
+
+    assert [
+             %SquidMesh.Workflow.TransitionSpec{},
+             %SquidMesh.Workflow.TransitionSpec{},
+             %SquidMesh.Workflow.TransitionSpec{}
+           ] = Enum.filter(entities, &match?(%SquidMesh.Workflow.TransitionSpec{}, &1))
+
+    assert SquidMesh.Workflow.Info.triggers(InvoiceReminder) == [
+             %{
+               name: :manual,
+               type: :manual,
+               config: %{},
+               payload: [
+                 %{name: :account_id, type: :string, opts: []},
+                 %{name: :invoice_id, type: :string, opts: []}
+               ]
+             }
+           ]
+
+    assert SquidMesh.Workflow.Info.transitions(InvoiceReminder) == [
+             %{from: :load_invoice, on: :ok, to: :send_email},
+             %{from: :send_email, on: :ok, to: :record_delivery},
+             %{from: :record_delivery, on: :ok, to: :complete}
+           ]
+  end
+
   test "converts a workflow version into the normalized workflow spec" do
     assert {:ok, %SquidMesh.Workflow.Spec{} = spec} =
              SquidMesh.Workflow.to_spec(NativeStepContractWorkflow)
@@ -1965,6 +2013,26 @@ defmodule SquidMesh.WorkflowTest do
     )
   end
 
+  test "fails clearly when a payload field is declared outside a payload block" do
+    assert_dsl_error(
+      """
+      defmodule WorkflowWithTriggerFieldOutsidePayload do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+            field :account_id, :string
+          end
+
+          step :load_invoice, WorkflowWithTriggerFieldOutsidePayload.LoadInvoice
+        end
+      end
+      """,
+      "field/3 must be declared inside a trigger payload block"
+    )
+  end
+
   test "supports multiple triggers with independent payload contracts" do
     module =
       compile_module("""
@@ -2685,6 +2753,15 @@ defmodule SquidMesh.WorkflowTest do
   defp assert_compile_error(source, message) do
     error =
       assert_raise CompileError, fn ->
+        Code.compile_string(source, "test/support/invalid_workflow.exs")
+      end
+
+    assert String.contains?(Exception.message(error), message)
+  end
+
+  defp assert_dsl_error(source, message) do
+    error =
+      assert_raise Spark.Error.DslError, fn ->
         Code.compile_string(source, "test/support/invalid_workflow.exs")
       end
 
