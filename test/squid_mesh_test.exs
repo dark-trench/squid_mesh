@@ -2410,6 +2410,69 @@ defmodule SquidMeshTest do
       assert 1 == Enum.count(parent_entries, &(&1.type == :child_run_started))
     end
 
+    test "start_child_run/4 allows the same child key from different parent steps" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 JournalDependencyWorkflow,
+                 %{account_id: "acct_child_key_steps", invoice_id: "inv_child_key_steps"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [
+               %{runnable_key: load_account_key, step: "load_account"},
+               %{runnable_key: load_invoice_key, step: "load_invoice"}
+             ] = Enum.sort_by(parent.visible_attempts, & &1.step)
+
+      child_opts = [
+        child_key: "sync",
+        runtime: :journal,
+        journal_storage: @read_model_storage,
+        queue: @read_model_queue,
+        now: @read_model_visible_at
+      ]
+
+      assert {:ok, %Snapshot{} = account_child} =
+               SquidMesh.start_child_run(
+                 %SquidMesh.Step.Context{
+                   run_id: parent.run_id,
+                   workflow: JournalDependencyWorkflow,
+                   step: :load_account,
+                   attempt: 1,
+                   runnable_key: load_account_key,
+                   state: %{}
+                 },
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_account"},
+                 child_opts
+               )
+
+      assert {:ok, %Snapshot{} = invoice_child} =
+               SquidMesh.start_child_run(
+                 %SquidMesh.Step.Context{
+                   run_id: parent.run_id,
+                   workflow: JournalDependencyWorkflow,
+                   step: :load_invoice,
+                   attempt: 1,
+                   runnable_key: load_invoice_key,
+                   state: %{}
+                 },
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_invoice"},
+                 Keyword.put(child_opts, :now, DateTime.add(@read_model_visible_at, 1, :second))
+               )
+
+      assert account_child.run_id != invoice_child.run_id
+      assert account_child.parent_run.child_key == "sync"
+      assert account_child.parent_run.step == "load_account"
+      assert invoice_child.parent_run.child_key == "sync"
+      assert invoice_child.parent_run.step == "load_invoice"
+    end
+
     test "start_child_run/4 reuses string-keyed persisted parent links" do
       assert {:ok, %Snapshot{} = parent} =
                SquidMesh.start_run(

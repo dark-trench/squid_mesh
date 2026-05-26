@@ -433,12 +433,16 @@ defmodule SquidMesh.Runtime.Journal.ChildStarter do
   end
 
   defp same_child_key?(entry, child) do
-    entry_value(entry, :child_key) == child.child_key
+    entry_value(entry, :child_key) == child.child_key and
+      origin_step(entry_value(entry, :origin)) == child.origin.step
   end
 
   defp entry_value(entry, key) do
     Map.get(entry.data, key) || Map.get(entry.data, Atom.to_string(key))
   end
+
+  defp origin_step(origin) when is_map(origin), do: origin_value(origin, :step)
+  defp origin_step(_origin), do: nil
 
   defp parent_from_child_link(entry) do
     with run_id when is_binary(run_id) <- entry_value(entry, :run_id),
