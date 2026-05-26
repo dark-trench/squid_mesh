@@ -86,6 +86,7 @@ The spec is an Elixir data representation with atom keys and module atoms:
 ```elixir
 %SquidMesh.Workflow.Spec{
   workflow: Billing.Workflows.PaymentRecovery,
+  definition_version: "2026-05-26.payment-recovery",
   triggers: [
     %{
       name: :payment_recovery,
@@ -119,6 +120,12 @@ The spec is an Elixir data representation with atom keys and module atoms:
   entry_step: :load_invoice
 }
 ```
+
+Add `version "2026-05-26.payment-recovery"` inside the `workflow do` block when
+operators need a human-readable definition label. Squid Mesh persists the label
+beside the precise definition fingerprint at run start. The version is exposed
+through `list_runs/2`, `inspect_run/2`, `inspect_run_graph/2`, and
+`explain_run/2`, but it does not relax fingerprint compatibility checks.
 
 Conditional transitions use the same spec shape. A workflow editor can render
 the branch as edge metadata without inspecting step modules:
@@ -526,7 +533,9 @@ without scanning adapter-specific storage internals. Add a `workflow:` filter
 when a caller only needs one workflow. Listing returns redacted summaries; call
 `inspect_run/2` or `inspect_run_graph/2` with the selected summary's `run_id`
 and `queue` when the caller needs full inputs, outputs, attempts, history, or
-claim metadata.
+claim metadata. When the workflow declares a version, listing and inspection
+surfaces include `definition_version` so dashboards can group long-lived runs by
+the definition label that started them.
 
 Journal cancellation appends a terminal run fact, clears any manual pause state
 from the rebuilt projection, and fences stale dispatch claims before they can

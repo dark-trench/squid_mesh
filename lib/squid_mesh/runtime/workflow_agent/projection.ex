@@ -34,6 +34,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
           input: map() | nil,
           context: map(),
           replayed_from_run_id: String.t() | nil,
+          definition_version: String.t() | nil,
           definition_fingerprint: String.t() | nil,
           status: atom(),
           planned_runnables: %{optional(String.t()) => map()},
@@ -53,6 +54,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
             input: nil,
             context: %{},
             replayed_from_run_id: nil,
+            definition_version: nil,
             definition_fingerprint: nil,
             status: :new,
             planned_runnables: %{},
@@ -209,6 +211,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
       |> Map.put(:input, Map.get(data, :input))
       |> Map.put(:context, Map.get(data, :context, %{}))
       |> Map.put(:replayed_from_run_id, Map.get(data, :replayed_from_run_id))
+      |> Map.put(:definition_version, Map.get(data, :definition_version))
       |> Map.put(:definition_fingerprint, Map.get(data, :definition_fingerprint))
       |> refresh_status()
     else

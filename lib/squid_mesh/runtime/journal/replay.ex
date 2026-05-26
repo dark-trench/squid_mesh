@@ -21,7 +21,7 @@ defmodule SquidMesh.Runtime.Journal.Replay do
           :not_found
           | :invalid_run_id
           | {:invalid_option, term()}
-          | {:incompatible_workflow_definition, :replay}
+          | {:incompatible_workflow_definition, :replay, map()}
           | {:invalid_replay_source,
              :workflow | :trigger | :missing_input | {:missing_recovery, term()}}
           | {:unsafe_replay, map()}
@@ -110,13 +110,20 @@ defmodule SquidMesh.Runtime.Journal.Replay do
   end
 
   defp validate_definition_fingerprint(
-         %Agent{state: %{projection: %Projection{definition_fingerprint: fingerprint}}},
+         %Agent{state: %{projection: %Projection{} = projection}},
          definition
        ) do
-    if fingerprint == Definition.fingerprint(definition) do
+    persisted = %{
+      definition_version: projection.definition_version,
+      definition_fingerprint: projection.definition_fingerprint
+    }
+
+    if projection.definition_fingerprint == Definition.fingerprint(definition) do
       :ok
     else
-      {:error, {:incompatible_workflow_definition, :replay}}
+      {:error,
+       {:incompatible_workflow_definition, :replay,
+        Definition.compatibility_metadata(definition, persisted)}}
     end
   end
 

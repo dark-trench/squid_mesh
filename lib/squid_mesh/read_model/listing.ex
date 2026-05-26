@@ -192,6 +192,7 @@ defmodule SquidMesh.ReadModel.Listing do
        %Summary{
          run_id: run_id,
          workflow: workflow,
+         definition_version: projection.definition_version,
          queue: queue,
          status: Projection.status(projection),
          terminal?: Projection.terminal?(projection),

@@ -108,6 +108,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
              input: input,
              context: initial_context(opts),
              replayed_from_run_id: replayed_from_run_id(opts),
+             definition_version: definition.definition_version,
              definition_fingerprint: expected_fingerprint,
              occurred_at: now
            }),

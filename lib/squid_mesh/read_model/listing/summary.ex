@@ -10,6 +10,7 @@ defmodule SquidMesh.ReadModel.Listing.Summary do
   @type t :: %__MODULE__{
           run_id: String.t(),
           workflow: String.t(),
+          definition_version: String.t() | nil,
           queue: String.t(),
           status: atom(),
           terminal?: boolean(),
@@ -22,6 +23,7 @@ defmodule SquidMesh.ReadModel.Listing.Summary do
   @enforce_keys [
     :run_id,
     :workflow,
+    :definition_version,
     :queue,
     :status,
     :terminal?,
@@ -33,6 +35,7 @@ defmodule SquidMesh.ReadModel.Listing.Summary do
   defstruct [
     :run_id,
     :workflow,
+    :definition_version,
     :queue,
     :status,
     :terminal?,

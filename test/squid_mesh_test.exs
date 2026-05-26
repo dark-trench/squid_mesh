@@ -151,6 +151,25 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule VersionedPaymentRecoveryWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      version("2026-05-26.payment-recovery-v2")
+
+      trigger :gateway_recovery do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :check_gateway, PaymentRecoveryWorkflow.CheckGateway, retry: [max_attempts: 2]
+      transition :check_gateway, on: :ok, to: :complete
+    end
+  end
+
   defmodule ChildDigestWorkflow do
     use SquidMesh.Workflow
 
@@ -1920,6 +1939,87 @@ defmodule SquidMeshTest do
       assert SquidMesh.Runtime.RunIndexProjection.run_ids(run_index_projection) == [
                snapshot.run_id
              ]
+    end
+
+    test "start_run/3 exposes workflow definition version metadata in read models" do
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 VersionedPaymentRecoveryWorkflow,
+                 %{account_id: "acct_versioned"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert snapshot.definition_version == "2026-05-26.payment-recovery-v2"
+
+      assert {:ok, [%Summary{} = summary]} =
+               SquidMesh.list_runs([],
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert summary.run_id == snapshot.run_id
+      assert summary.definition_version == "2026-05-26.payment-recovery-v2"
+
+      assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
+               SquidMesh.inspect_run_graph(snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert graph.definition_version == "2026-05-26.payment-recovery-v2"
+
+      assert %{definition_version: "2026-05-26.payment-recovery-v2"} =
+               SquidMesh.Runs.GraphInspection.to_map(graph)
+
+      assert {:ok, %Diagnostic{} = diagnostic} =
+               SquidMesh.explain_run(snapshot.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert diagnostic.definition_version == "2026-05-26.payment-recovery-v2"
+      assert diagnostic.evidence.definition_version == "2026-05-26.payment-recovery-v2"
+
+      assert {:ok, run_entries} =
+               Journal.load_entries(@read_model_storage, {:run, snapshot.run_id})
+
+      assert %{definition_version: "2026-05-26.payment-recovery-v2"} =
+               run_entries
+               |> List.first()
+               |> Map.fetch!(:data)
+    end
+
+    test "start_run/3 leaves workflow definition version nil when undeclared" do
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_unversioned"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert snapshot.definition_version == nil
+
+      assert {:ok, [%Summary{} = summary]} =
+               SquidMesh.list_runs([],
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert summary.definition_version == nil
     end
 
     test "start_child_run/4 starts a deterministic child and links it to the parent" do
@@ -4449,13 +4549,16 @@ defmodule SquidMeshTest do
 
     test "replay_run/2 rejects journal runs with stale workflow definitions" do
       run_id = Ecto.UUID.generate()
+      {:ok, current_definition} = Definition.load(VersionedPaymentRecoveryWorkflow)
+      current_fingerprint = Definition.fingerprint(current_definition)
 
       assert {:ok, run_started} =
                DispatchProtocol.new_entry(:run_started, %{
                  run_id: run_id,
-                 workflow: Atom.to_string(PaymentRecoveryWorkflow),
+                 workflow: Atom.to_string(VersionedPaymentRecoveryWorkflow),
                  trigger: "gateway_recovery",
                  input: %{account_id: "acct_stale_definition"},
+                 definition_version: "2026-05-25.payment-recovery-v1",
                  definition_fingerprint: "stale-definition",
                  occurred_at: @read_model_started_at
                })
@@ -4470,7 +4573,14 @@ defmodule SquidMeshTest do
       assert {:ok, _thread} =
                Journal.append_entries(@read_model_storage, [run_started, runnables_planned])
 
-      assert {:error, {:incompatible_workflow_definition, :replay}} =
+      assert {:error,
+              {:incompatible_workflow_definition, :replay,
+               %{
+                 persisted_definition_version: "2026-05-25.payment-recovery-v1",
+                 persisted_definition_fingerprint: "stale-definition",
+                 current_definition_version: "2026-05-26.payment-recovery-v2",
+                 current_definition_fingerprint: ^current_fingerprint
+               }}} =
                SquidMesh.replay_run(run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
@@ -8100,11 +8210,14 @@ defmodule SquidMeshTest do
     test "execute_next/1 rejects stale workflow definition fingerprints before executing" do
       run_id = Ecto.UUID.generate()
       runnable_key = "#{run_id}:check_gateway:1"
+      {:ok, current_definition} = Definition.load(VersionedPaymentRecoveryWorkflow)
+      current_fingerprint = Definition.fingerprint(current_definition)
 
       append_read_model_run_entries([
         read_model_entry!(:run_started, %{
           run_id: run_id,
-          workflow: Atom.to_string(PaymentRecoveryWorkflow),
+          workflow: Atom.to_string(VersionedPaymentRecoveryWorkflow),
+          definition_version: "2026-05-25.payment-recovery-v1",
           definition_fingerprint: "stale-definition",
           occurred_at: @read_model_started_at
         }),
@@ -8142,7 +8255,18 @@ defmodule SquidMeshTest do
 
       assert snapshot.status == :failed
 
-      assert [%{status: :failed, error: %{code: "incompatible_workflow_definition"}}] =
+      assert [
+               %{
+                 status: :failed,
+                 error: %{
+                   code: "incompatible_workflow_definition",
+                   persisted_definition_version: "2026-05-25.payment-recovery-v1",
+                   persisted_definition_fingerprint: "stale-definition",
+                   current_definition_version: "2026-05-26.payment-recovery-v2",
+                   current_definition_fingerprint: ^current_fingerprint
+                 }
+               }
+             ] =
                snapshot.attempts
     end
 

@@ -54,6 +54,7 @@ defmodule SquidMesh.ReadModel.Explanation do
     %Diagnostic{
       run_id: snapshot.run_id,
       workflow: snapshot.workflow,
+      definition_version: snapshot.definition_version,
       queue: snapshot.queue,
       status: snapshot.status,
       reason: snapshot.reason,
@@ -205,6 +206,7 @@ defmodule SquidMesh.ReadModel.Explanation do
   defp evidence(%Snapshot{} = snapshot) do
     %{
       snapshot_reason: snapshot.reason,
+      definition_version: snapshot.definition_version,
       thread_revisions: snapshot.thread_revisions,
       terminal_status: snapshot.terminal_status,
       manual_state: snapshot.manual_state,
