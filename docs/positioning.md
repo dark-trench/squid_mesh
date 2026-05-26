@@ -83,7 +83,7 @@ boundary options when a host needs a non-default journal setup.
 | Fan-out and fan-in contract | Supported, evolving | Runic-backed dependency ordering and join semantics are defined for the current static workflow graph; [#142](https://github.com/dark-trench/squid_mesh/issues/142) captured the closed design clarification. |
 | Runtime-authored workflow specs | Planned | Validated data-structure authoring for UI-authored or DB-authored workflows is tracked in [#254](https://github.com/dark-trench/squid_mesh/issues/254). |
 | Safe action registry | Supported, evolving | `validate_spec/2` and `resolve_spec_actions/2` let host apps allowlist runtime-authored action keys before activation; runtime-authored execution remains tracked in [#254](https://github.com/dark-trench/squid_mesh/issues/254). |
-| UI graph serialization | Supported, evolving | `SquidMesh.Runs.GraphInspection.to_map/1` exposes stable node, edge, status, output, and selected-edge data for dashboards and CLIs. Visual-editor spec round-trip support remains planned in [#257](https://github.com/dark-trench/squid_mesh/issues/257). |
+| UI graph serialization | Supported, evolving | `SquidMesh.Runs.GraphInspection.to_map/1` exposes stable node, edge, status, output, and selected-edge data for dashboards and CLIs. `SquidMesh.Workflow.EditorSpec` supports JSON-safe spec round trips and draft graph previews for visual editors. |
 | Dynamic child runs | Supported, evolving | Native steps can start idempotent child workflow runs with durable parent lineage through `SquidMesh.start_child_run/4` and `SquidMesh.start_child_run/5`; richer visual-editor expansion remains future work. |
 | Oban-specific core | Out of scope | Host apps may choose Oban behind the delivery boundary, but Squid Mesh core is not Oban-centric. |
 | Exactly-once external side effects | Out of scope | Squid Mesh can provide durable workflow state and fencing semantics, but external systems still require idempotency. |
@@ -195,12 +195,13 @@ claims, retries, approvals, pause/resume controls, replay, cancellation,
 projection-backed inspection, and UI-friendly graph output.
 
 Planned rows describe accepted direction, not runtime guarantees. The most
-important planned work is about making Squid Mesh easier to embed in
-UI-authored or DB-authored workflow systems: runtime-authored workflow
-activation ([#254](https://github.com/dark-trench/squid_mesh/issues/254)) and
-workflow spec round-trip contracts for visual editors
-([#257](https://github.com/dark-trench/squid_mesh/issues/257)). The safe action
-registry is available as the allowlist boundary those features build on.
+important planned work is runtime-authored workflow activation
+([#254](https://github.com/dark-trench/squid_mesh/issues/254)) for
+UI-authored or DB-authored workflow systems. The safe action registry is
+available as the allowlist boundary that activation work builds on. Visual
+editor spec round trips are available today through
+`SquidMesh.Workflow.EditorSpec`, and inspected run graph serialization is
+available through `SquidMesh.Runs.GraphInspection.to_map/1`.
 
 Treat the durable dispatch protocol as the architectural foundation under those
 features. It defines the vocabulary for runnable intent, claim fencing, leases,

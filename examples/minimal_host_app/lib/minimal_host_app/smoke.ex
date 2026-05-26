@@ -73,10 +73,12 @@ defmodule MinimalHostApp.Smoke do
           journal_replay: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_cron_digest: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           action_registry: SquidMesh.Workflow.Spec.t(),
+          editor_spec_graph: map(),
           daily_digest: SquidMesh.ReadModel.Inspection.Snapshot.t()
         }
   def run_all! do
     action_registry = run_action_registry_validation!()
+    editor_spec_graph = run_editor_spec_round_trip!()
     payment_recovery = run!()
     dependency_recovery = run_dependency_recovery!()
     manual_approval = run_manual_approval!()
@@ -114,11 +116,39 @@ defmodule MinimalHostApp.Smoke do
         journal_replay: journal_replay,
         journal_cron_digest: journal_cron_digest,
         action_registry: action_registry,
+        editor_spec_graph: editor_spec_graph,
         daily_digest: cron_run
       }
     else
       {:error, reason} ->
         raise "cron smoke test failed: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Round-trips a compiled workflow spec through the visual-editor JSON contract.
+  """
+  @spec run_editor_spec_round_trip!() :: map()
+  def run_editor_spec_round_trip! do
+    with {:ok, spec} <- SquidMesh.Workflow.to_spec(MinimalHostApp.Workflows.PaymentRecovery),
+         editor_map <- SquidMesh.Workflow.EditorSpec.to_map(spec),
+         {:ok, json} <- Jason.encode(editor_map),
+         {:ok, round_tripped} <- Jason.decode(json),
+         :ok <- SquidMesh.Workflow.EditorSpec.validate_map(round_tripped),
+         {:ok, graph} <- SquidMesh.Workflow.EditorSpec.preview_graph(round_tripped) do
+      unless Enum.map(graph["nodes"], & &1["id"]) == [
+               "load_invoice",
+               "check_gateway_status",
+               "issue_gateway_credit",
+               "notify_customer"
+             ] do
+        raise "unexpected editor spec graph nodes"
+      end
+
+      graph
+    else
+      {:error, reason} ->
+        raise "editor spec round-trip smoke test failed: #{inspect(reason)}"
     end
   end
 
