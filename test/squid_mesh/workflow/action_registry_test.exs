@@ -112,14 +112,24 @@ defmodule SquidMesh.Workflow.ActionRegistryTest do
       assert :ok = SquidMesh.Workflow.validate_spec(spec)
     end
 
-    test "rejects raw module atoms when the registry trust boundary is used" do
+    test "keeps module-authored workflow specs working when shared registry opts are present" do
+      spec =
+        spec_with_steps([
+          %{name: :load_invoice, module: NativeLoadInvoice, opts: []}
+        ])
+
+      assert :ok = SquidMesh.Workflow.validate_spec(spec, action_registry: %{})
+      assert {:ok, ^spec} = SquidMesh.Workflow.resolve_spec_actions(spec, action_registry: %{})
+    end
+
+    test "rejects raw module atoms when the action registry boundary is called directly" do
       spec =
         spec_with_steps([
           %{name: :load_invoice, module: NativeLoadInvoice, opts: []}
         ])
 
       assert {:error, {:invalid_workflow_spec, errors}} =
-               SquidMesh.Workflow.validate_spec(spec, action_registry: %{})
+               SquidMesh.Workflow.ActionRegistry.validate_spec(spec, %{})
 
       assert %{
                path: [:steps, 0, :action],

@@ -110,8 +110,15 @@ defmodule SquidMesh.Workflow do
           :ok | {:error, {:invalid_workflow_spec, [map()]}}
   def validate_spec(spec, opts) when is_list(opts) do
     case Keyword.fetch(opts, :action_registry) do
-      {:ok, registry} -> ActionRegistry.validate_spec(spec, registry)
-      :error -> validate_spec(spec)
+      {:ok, registry} ->
+        if spec_uses_action_keys?(spec) do
+          ActionRegistry.validate_spec(spec, registry)
+        else
+          validate_spec(spec)
+        end
+
+      :error ->
+        validate_spec(spec)
     end
   end
 
@@ -122,10 +129,34 @@ defmodule SquidMesh.Workflow do
           {:ok, Spec.t() | map()} | {:error, {:invalid_workflow_spec, [map()]}}
   def resolve_spec_actions(spec, opts) when is_list(opts) do
     case Keyword.fetch(opts, :action_registry) do
-      {:ok, registry} -> ActionRegistry.resolve_spec(spec, registry)
-      :error -> {:ok, spec}
+      {:ok, registry} ->
+        if spec_uses_action_keys?(spec) do
+          ActionRegistry.resolve_spec(spec, registry)
+        else
+          {:ok, spec}
+        end
+
+      :error ->
+        {:ok, spec}
     end
   end
+
+  defp spec_uses_action_keys?(%Spec{} = spec), do: spec_uses_action_keys?(Map.from_struct(spec))
+
+  defp spec_uses_action_keys?(spec) when is_map(spec) do
+    case Map.get(spec, :steps, []) do
+      steps when is_list(steps) ->
+        Enum.any?(steps, fn
+          step when is_map(step) -> Map.has_key?(step, :action) or Map.has_key?(step, "action")
+          _other -> false
+        end)
+
+      _missing_or_invalid ->
+        false
+    end
+  end
+
+  defp spec_uses_action_keys?(_spec), do: false
 
   defp quoted_definition(definition) do
     quote do
