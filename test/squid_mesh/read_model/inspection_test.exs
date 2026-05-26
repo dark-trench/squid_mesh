@@ -167,6 +167,55 @@ defmodule SquidMesh.ReadModel.InspectionTest do
              snapshot.attempts
   end
 
+  test "exposes child runs reconstructed from the parent run thread" do
+    append_run_entries([run_started(), child_run_started()])
+
+    assert {:ok, %Snapshot{} = snapshot} =
+             Inspection.snapshot(@storage, @run_id, queue: @queue, now: @visible_at)
+
+    assert [
+             %{
+               child_run_id: "child_run_123",
+               child_workflow: @workflow,
+               child_trigger: "manual",
+               child_key: "digest_subscription_1",
+               origin: %{
+                 runnable_key: @runnable_key,
+                 step: "charge_card",
+                 attempt: 1
+               },
+               metadata: %{subscription_id: "sub_123"}
+             }
+           ] = snapshot.child_runs
+  end
+
+  test "exposes parent run context on child snapshots" do
+    append_run_entries([
+      run_started(%{
+        parent: %{
+          run_id: "parent_run_123",
+          runnable_key: "parent_run_123:fanout:1",
+          step: "fanout",
+          attempt: 1,
+          child_key: "digest_subscription_1",
+          metadata: %{subscription_id: "sub_123"}
+        }
+      })
+    ])
+
+    assert {:ok, %Snapshot{} = snapshot} =
+             Inspection.snapshot(@storage, @run_id, queue: @queue, now: @visible_at)
+
+    assert snapshot.parent_run == %{
+             run_id: "parent_run_123",
+             runnable_key: "parent_run_123:fanout:1",
+             step: "fanout",
+             attempt: 1,
+             child_key: "digest_subscription_1",
+             metadata: %{subscription_id: "sub_123"}
+           }
+  end
+
   test "merges applied result context in durable application order" do
     approval_gate_key = "#{@run_id}:wait_for_approval:1"
     record_approval_key = "#{@run_id}:record_approval:1"
@@ -348,11 +397,29 @@ defmodule SquidMesh.ReadModel.InspectionTest do
     assert {:ok, _thread} = Journal.append_entries(@storage, entries)
   end
 
-  defp run_started do
+  defp run_started(context \\ %{}) do
     entry!(:run_started, %{
       run_id: @run_id,
       workflow: @workflow,
+      context: context,
       occurred_at: @started_at
+    })
+  end
+
+  defp child_run_started do
+    entry!(:child_run_started, %{
+      run_id: @run_id,
+      child_run_id: "child_run_123",
+      child_workflow: @workflow,
+      child_trigger: "manual",
+      child_key: "digest_subscription_1",
+      origin: %{
+        runnable_key: @runnable_key,
+        step: "charge_card",
+        attempt: 1
+      },
+      metadata: %{subscription_id: "sub_123"},
+      occurred_at: @visible_at
     })
   end
 

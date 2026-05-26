@@ -21,6 +21,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
           :run_started
           | :runnables_planned
           | :runnable_applied
+          | :child_run_started
           | :manual_step_paused
           | :manual_step_resolved
           | :run_terminal
@@ -40,6 +41,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
     :run_started,
     :runnables_planned,
     :runnable_applied,
+    :child_run_started,
     :manual_step_paused,
     :manual_step_resolved,
     :run_terminal
@@ -62,6 +64,15 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
     run_started: [:run_id, :workflow, :occurred_at],
     runnables_planned: [:run_id, :runnables, :occurred_at],
     runnable_applied: [:run_id, :runnable_key, :occurred_at],
+    child_run_started: [
+      :run_id,
+      :child_run_id,
+      :child_workflow,
+      :child_trigger,
+      :child_key,
+      :origin,
+      :occurred_at
+    ],
     manual_step_paused: [:run_id, :step, :kind, :occurred_at],
     manual_step_resolved: [:run_id, :step, :action, :occurred_at],
     run_terminal: [:run_id, :status, :occurred_at],
@@ -159,6 +170,15 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
     |> Map.put_new(:result, %{})
   end
 
+  defp normalize_attrs(attrs, :child_run_started) do
+    attrs
+    |> Map.update(:child_workflow, nil, &normalize_workflow/1)
+    |> Map.update(:child_trigger, nil, &normalize_thread_id/1)
+    |> Map.update(:child_key, nil, &normalize_thread_id/1)
+    |> Map.update(:origin, nil, &normalize_origin/1)
+    |> Map.put_new(:metadata, %{})
+  end
+
   defp normalize_attrs(attrs, type) when type in @run_index_entry_types do
     attrs
     |> Map.update(:workflow, nil, &normalize_workflow/1)
@@ -209,6 +229,16 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
 
   defp normalize_manual_value(nil), do: nil
   defp normalize_manual_value(value), do: normalize_thread_id(value)
+
+  defp normalize_origin(nil), do: nil
+
+  defp normalize_origin(origin) when is_map(origin) do
+    origin
+    |> Map.new()
+    |> Map.update(:step, nil, &normalize_manual_value/1)
+  end
+
+  defp normalize_origin(origin), do: origin
 
   defp normalize_thread_id(id) when is_binary(id), do: id
   defp normalize_thread_id(id), do: to_string(id)

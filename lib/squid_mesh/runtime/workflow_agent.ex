@@ -349,7 +349,10 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
     case Journal.fetch_checkpoint(storage, thread) do
       {:ok, %Checkpoint{thread_rev: checkpoint_rev, projection: %Projection{} = projection}}
       when is_integer(checkpoint_rev) and checkpoint_rev >= 0 and checkpoint_rev <= rev ->
-        {:ok, Projection.replay(projection, Enum.drop(entries, checkpoint_rev))}
+        {:ok,
+         projection
+         |> Projection.upgrade()
+         |> Projection.replay(Enum.drop(entries, checkpoint_rev))}
 
       {:error, :not_found} ->
         {:ok, Projection.rebuild(entries)}

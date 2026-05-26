@@ -12,6 +12,7 @@ defmodule SquidMesh do
   alias SquidMesh.ReadModel.Listing
   alias SquidMesh.Runs.GraphInspection
   alias SquidMesh.Runtime.Journal.Cancellation
+  alias SquidMesh.Runtime.Journal.ChildStarter
   alias SquidMesh.Runtime.Journal.Executor
   alias SquidMesh.Runtime.Journal.ManualControl
   alias SquidMesh.Runtime.Journal.Options
@@ -24,6 +25,14 @@ defmodule SquidMesh do
   @projection_snapshot_options [:queue, :now]
   @projection_list_options [:queue, :now]
   @journal_start_options [:runtime, :journal_storage, :queue, :now, :run_id]
+  @journal_child_start_options [
+    :runtime,
+    :journal_storage,
+    :queue,
+    :now,
+    :child_key,
+    :metadata
+  ]
   @journal_control_options [:runtime, :journal_storage, :queue, :now]
   @journal_execute_options [:runtime, :journal_storage, :queue, :owner_id, :lease_for, :now]
 
@@ -168,6 +177,74 @@ defmodule SquidMesh do
   end
 
   @doc """
+  Starts a child workflow run from a native step context.
+
+  Child starts are deterministic for the parent run, parent step, child
+  workflow, child trigger, and required `:child_key`. Duplicate calls with the
+  same key return the existing child run and do not duplicate parent lineage.
+  """
+  @spec start_child_run(SquidMesh.Step.Context.t(), module(), map(), keyword()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error, Config.config_error()}
+          | {:error, {:invalid_option, atom() | term()}}
+          | {:error, ChildStarter.start_error()}
+  def start_child_run(parent_context, child_workflow, payload, overrides \\ [])
+
+  def start_child_run(parent_context, child_workflow, payload, overrides)
+      when is_map(payload) and is_list(overrides) do
+    with :ok <- public_child_start_options(overrides),
+         {:ok, :journal} <- runtime(overrides),
+         {:ok, definition} <- SquidMesh.Workflow.Definition.load(child_workflow) do
+      child_trigger = SquidMesh.Workflow.Definition.default_trigger(definition)
+
+      ChildStarter.start_child_run(
+        parent_context,
+        child_workflow,
+        child_trigger,
+        payload,
+        journal_child_start_options(overrides)
+      )
+    end
+  end
+
+  def start_child_run(_parent_context, _child_workflow, _payload, overrides)
+      when is_list(overrides) do
+    {:error, {:invalid_payload, :expected_map}}
+  end
+
+  def start_child_run(_parent_context, _child_workflow, _payload, _overrides) do
+    {:error, {:invalid_option, {:opts, :invalid}}}
+  end
+
+  @spec start_child_run(SquidMesh.Step.Context.t(), module(), atom(), map(), keyword()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error, Config.config_error()}
+          | {:error, {:invalid_option, atom() | term()}}
+          | {:error, ChildStarter.start_error()}
+  def start_child_run(parent_context, child_workflow, child_trigger, payload, overrides)
+      when is_atom(child_trigger) and is_map(payload) and is_list(overrides) do
+    with :ok <- public_child_start_options(overrides),
+         {:ok, :journal} <- runtime(overrides) do
+      ChildStarter.start_child_run(
+        parent_context,
+        child_workflow,
+        child_trigger,
+        payload,
+        journal_child_start_options(overrides)
+      )
+    end
+  end
+
+  def start_child_run(_parent_context, _child_workflow, _child_trigger, _payload, overrides)
+      when is_list(overrides) do
+    {:error, {:invalid_payload, :expected_map}}
+  end
+
+  def start_child_run(_parent_context, _child_workflow, _child_trigger, _payload, _overrides) do
+    {:error, {:invalid_option, {:opts, :invalid}}}
+  end
+
+  @doc """
   Fetches one workflow run by id.
 
   The selected read model comes from host configuration unless overridden. The
@@ -269,6 +346,19 @@ defmodule SquidMesh do
 
   defp public_execute_option_keys do
     [:runtime, :journal_storage, :queue, :owner_id, :lease_for, :now]
+  end
+
+  defp public_child_start_options(opts) do
+    cond do
+      not Keyword.keyword?(opts) ->
+        {:error, {:invalid_option, {:opts, :invalid}}}
+
+      unsupported = Enum.find(Keyword.keys(opts), &(&1 not in @journal_child_start_options)) ->
+        {:error, {:invalid_option, {:option, unsupported}}}
+
+      true ->
+        :ok
+    end
   end
 
   @doc """
@@ -486,6 +576,10 @@ defmodule SquidMesh do
            ) do
       Starter.start_run(workflow, trigger_name, payload, opts)
     end
+  end
+
+  defp journal_child_start_options(overrides) do
+    configured_journal_options(overrides, @journal_child_start_options)
   end
 
   defp list_runs_with_runtime(:journal, filters, overrides) do

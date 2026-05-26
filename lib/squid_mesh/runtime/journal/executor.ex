@@ -1856,6 +1856,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
       workflow: workflow,
       step: step_name,
       attempt: attempt.attempt_number,
+      runnable_key: attempt.runnable_key,
       state:
         workflow_agent
         |> applied_result_context()

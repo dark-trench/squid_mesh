@@ -24,6 +24,7 @@ defmodule SquidMesh.Runs.GraphInspection do
           terminal?: boolean(),
           nodes: [Node.t()],
           edges: [Edge.t()],
+          child_runs: [map()],
           anomalies: [map()]
         }
 
@@ -36,6 +37,7 @@ defmodule SquidMesh.Runs.GraphInspection do
     :status,
     :current_node_id,
     :terminal?,
+    child_runs: [],
     current_node_ids: [],
     nodes: [],
     edges: [],
@@ -63,6 +65,7 @@ defmodule SquidMesh.Runs.GraphInspection do
       terminal?: snapshot.terminal?,
       nodes: nodes,
       edges: graph_edges(definition, nodes),
+      child_runs: snapshot.child_runs,
       anomalies: sanitize_anomalies(snapshot.anomalies)
     }
   end
@@ -87,6 +90,7 @@ defmodule SquidMesh.Runs.GraphInspection do
       terminal?: graph.terminal?,
       nodes: Enum.map(graph.nodes, &Node.to_map/1),
       edges: Enum.map(graph.edges, &Edge.to_map/1),
+      child_runs: graph.child_runs,
       anomalies: graph.anomalies
     }
   end

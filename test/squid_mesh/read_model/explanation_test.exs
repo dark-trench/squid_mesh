@@ -185,6 +185,15 @@ defmodule SquidMesh.ReadModel.ExplanationTest do
   end
 
   test "derives an explanation from an existing snapshot without rereading storage" do
+    child_run = %{
+      child_run_id: "child_run_123",
+      child_workflow: "ChildWorkflow",
+      child_trigger: "manual",
+      child_key: "digest_subscription_1",
+      origin: %{runnable_key: @runnable_key, step: "charge_card", attempt: 1},
+      metadata: %{subscription_id: "sub_123"}
+    }
+
     snapshot = %Snapshot{
       run_id: @run_id,
       workflow: @workflow,
@@ -194,6 +203,15 @@ defmodule SquidMesh.ReadModel.ExplanationTest do
       terminal?: false,
       terminal_status: nil,
       thread_revisions: %{run: 2, dispatch: 1},
+      parent_run: %{
+        run_id: "parent_run_123",
+        runnable_key: "parent_run_123:fanout:1",
+        step: "fanout",
+        attempt: 1,
+        child_key: "digest_subscription_1",
+        metadata: %{}
+      },
+      child_runs: [child_run],
       planned_runnable_keys: [@runnable_key],
       visible_attempts: [
         %{
@@ -220,6 +238,8 @@ defmodule SquidMesh.ReadModel.ExplanationTest do
     assert explanation.next_actions == [:wait_for_worker_claim]
     assert explanation.details.runnable_keys == [@runnable_key]
     assert explanation.evidence.attempt_counts.available == 1
+    assert explanation.evidence.child_runs == [child_run]
+    assert explanation.evidence.parent_run.run_id == "parent_run_123"
   end
 
   test "returns projected inspection errors unchanged" do
