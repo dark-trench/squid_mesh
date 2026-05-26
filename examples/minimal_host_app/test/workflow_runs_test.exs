@@ -125,6 +125,29 @@ defmodule MinimalHostApp.WorkflowRunsTest do
            ]
   end
 
+  test "host app examples round-trip workflow specs through the editor JSON contract" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(PaymentRecovery)
+
+    round_tripped =
+      spec
+      |> SquidMesh.Workflow.EditorSpec.to_map()
+      |> Jason.encode!()
+      |> Jason.decode!()
+
+    assert :ok = SquidMesh.Workflow.EditorSpec.validate_map(round_tripped)
+
+    assert {:ok, graph} = SquidMesh.Workflow.EditorSpec.preview_graph(round_tripped)
+
+    assert Enum.map(graph["nodes"], & &1["id"]) == [
+             "load_invoice",
+             "check_gateway_status",
+             "issue_gateway_credit",
+             "notify_customer"
+           ]
+
+    assert Enum.any?(graph["edges"], &(&1["recovery"] == "compensation"))
+  end
+
   test "starts the example payment recovery workflow through the host boundary" do
     bypass = Bypass.open()
 

@@ -123,6 +123,85 @@ modules return structured `{:invalid_workflow_spec, errors}` before activation.
 Resolved specs keep the stable action key on each step and in step metadata so
 inspection and graph tooling can show the approved action identity.
 
+## Visual Editor Round Trips
+
+Visual editors should round-trip workflow specs through
+`SquidMesh.Workflow.EditorSpec` when they need JSON-safe data. This boundary is
+for loading, validation, preview, editing, and saving. It does not start a run,
+load workflow modules from user input, create atoms from strings, or resolve
+action keys into executable modules.
+
+```elixir
+{:ok, spec} = SquidMesh.Workflow.to_spec(Billing.Workflows.PaymentRecovery)
+
+editor_map =
+  spec
+  |> SquidMesh.Workflow.EditorSpec.to_map()
+  |> Jason.encode!()
+  |> Jason.decode!()
+
+:ok = SquidMesh.Workflow.EditorSpec.validate_map(editor_map)
+{:ok, graph} = SquidMesh.Workflow.EditorSpec.preview_graph(editor_map)
+```
+
+The editor map uses string keys and JSON-safe values. Editors own declarative
+workflow fields: `workflow`, `definition_version`, `triggers`, `payload`,
+`steps`, `transitions`, `retries`, `entry_steps`, `initial_step`, and
+`entry_step`. Runtime-owned fields such as `run_id`, `status`,
+`definition_fingerprint`, `spec_fingerprint`, `journal`, `attempts`,
+`dispatches`, and `audit_history` are rejected by `validate_map/1` if a client
+tries to submit them.
+
+Preview graphs use the same step and edge ids a dashboard needs, but every node
+is still draft data:
+
+```elixir
+%{
+  "source" => "workflow_spec",
+  "status" => "draft",
+  "nodes" => [
+    %{"id" => "load_invoice", "status" => "draft"},
+    %{"id" => "send_reminder", "status" => "draft"}
+  ],
+  "edges" => [
+    %{
+      "id" => "load_invoice:ok:send_reminder",
+      "from" => "load_invoice",
+      "to" => "send_reminder",
+      "type" => "transition",
+      "status" => "pending",
+      "outcome" => "ok"
+    }
+  ]
+}
+```
+
+Validation errors keep stable paths for field highlighting:
+
+```elixir
+{:error, {:invalid_workflow_editor_spec, errors}} =
+  SquidMesh.Workflow.EditorSpec.validate_map(%{
+    "workflow" => "Billing.Workflows.PaymentRecovery",
+    "triggers" => [],
+    "payload" => [],
+    "steps" => [%{"name" => "load_invoice", "action" => "billing.load_invoice"}],
+    "transitions" => [
+      %{"from" => "load_invoice", "on" => "ok", "to" => "missing_step"}
+    ],
+    "retries" => [],
+    "entry_steps" => ["load_invoice"],
+    "initial_step" => "load_invoice",
+    "entry_step" => "load_invoice"
+  })
+
+[%{path: [:transitions, 0, :to], code: :unknown_transition_target}] = errors
+```
+
+For runtime-authored workflow activation, keep using `validate_spec/2` and
+`resolve_spec_actions/2` with a host-owned action registry. The editor preview
+contract is intentionally read-only and does not replace the future
+runtime-authored execution boundary tracked separately.
+
 The spec is an Elixir data representation with atom keys and module atoms:
 
 ```elixir
