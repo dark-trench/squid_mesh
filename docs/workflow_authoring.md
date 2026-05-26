@@ -337,6 +337,7 @@ end
 - `run_id`
 - `workflow`
 - `step`
+- `runnable_key`
 - `attempt`
 - `state`, which includes the original payload merged with accumulated run context
 
@@ -354,6 +355,67 @@ mapping is applied.
 Raw `Jido.Action` modules remain supported for advanced interop. They execute
 through the same journal-backed runtime, but applications should prefer `use
 SquidMesh.Step` for the common authoring path.
+
+## Child Workflow Runs
+
+Native Squid Mesh steps can start another workflow as a durable child run when a
+step discovers work that is not known at workflow definition time. Use this for
+runtime fan-out where each child needs its own run history, retries,
+inspection, cancellation, and replay boundary.
+
+```elixir
+defmodule Billing.Steps.StartReceiptDelivery do
+  use SquidMesh.Step,
+    name: :start_receipt_delivery,
+    input_schema: [
+      invoice: [type: :map, required: true]
+    ]
+
+  @impl true
+  def run(%{invoice: invoice}, %SquidMesh.Step.Context{} = context) do
+    {:ok, child} =
+      SquidMesh.start_child_run(
+        context,
+        Billing.Workflows.SendReceipt,
+        :send_receipt,
+        %{invoice_id: invoice.id, customer_id: invoice.customer_id},
+        child_key: "receipt:#{invoice.id}",
+        metadata: %{invoice_id: invoice.id}
+      )
+
+    {:ok, %{receipt_run_id: child.run_id}}
+  end
+end
+```
+
+`child_key` is required. Squid Mesh uses the parent run id, parent step,
+child workflow, child trigger, and `child_key` to derive the child identity.
+Calling `start_child_run/5` again with the same logical parent and key returns
+the existing child instead of creating a duplicate.
+
+If the child workflow has one trigger, `start_child_run/4` can use that default
+trigger:
+
+```elixir
+SquidMesh.start_child_run(context, Billing.Workflows.SendReceipt, %{invoice_id: invoice.id},
+  child_key: "receipt:#{invoice.id}"
+)
+```
+
+Child runs are normal journal runs with extra lineage:
+
+- the parent run records a `child_run_started` fact for inspection and graph
+  tooling
+- the child snapshot includes `parent_run` metadata with the parent run id,
+  parent step, runnable key, attempt, child key, and caller metadata
+- cancellation waits until linked children have actually started, so a parent
+  cannot be cancelled halfway through durable child-start repair
+- terminal parents reject new child starts, and stale parent step contexts are
+  rejected before new lineage is appended
+
+Keep child workflows backend-neutral. Starting children is a workflow runtime
+operation; delivery backends such as Bedrock or Oban should remain behind host
+adapter boundaries.
 
 Built-in steps:
 

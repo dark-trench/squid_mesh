@@ -9,8 +9,8 @@ thread journals and checkpoints.
 ## Threads
 
 - Run thread: workflow lifecycle facts such as run start, planned runnables,
-  applied runnable results, manual pause/resolution boundaries, and terminal
-  status.
+  applied runnable results, child-run lineage, manual pause/resolution
+  boundaries, and terminal status.
 - Dispatch thread: runnable intent, claim, heartbeat, completion, failure, retry
   visibility, and live wakeup facts.
 - Run index thread: rebuildable lookup entries for finding runs by workflow or
@@ -51,7 +51,8 @@ and optional checkpoints:
 - `SquidMesh.Runtime.Journal.Storage` is the Squid Mesh-owned boundary that
   validates storage config before delegating to a `Jido.Storage` adapter.
 - Run threads record workflow lifecycle facts, planned runnables, applied
-  runnables, manual pauses or resolutions, and terminal state.
+  runnables, child-run lineage, manual pauses or resolutions, and terminal
+  state.
 - Dispatch threads record queue-visible facts, including scheduled attempts,
   claims, heartbeats, completions, failures, and wakeup emissions.
 - Run-index threads keep workflow-scoped lookup projections rebuildable without
@@ -84,6 +85,9 @@ Important edge cases are intentionally handled in the runtime protocol:
   appends
 - corrupted persisted entry payloads are surfaced as invalid journal entries
   instead of being replayed silently
+- child starts append parent lineage and create the child run through repairable
+  journal operations, so retries reuse the same child identity instead of
+  duplicating dynamic work
 - terminal state is derived from the run thread, while dispatch projection state
   remains explainable from the queue thread
 
@@ -219,6 +223,32 @@ recovery boundary for lost live wakeups: rebuilt workflow and dispatch agents
 derive completed-but-unapplied attempts from their durable projections and append
 the missing run-thread applications in order, using the latest run-thread fence
 after each append.
+
+## Child Run Lineage
+
+Dynamic child workflow starts are run-thread facts. A native step calls
+`SquidMesh.start_child_run/4` or `SquidMesh.start_child_run/5` with its
+`SquidMesh.Step.Context` and a required `child_key`. The runtime derives child
+identity from the parent run id, parent step, child workflow, child trigger, and
+child key.
+
+The parent run records `child_run_started` with:
+
+- parent `run_id`
+- child run id
+- child workflow and trigger
+- child key
+- origin metadata with the parent `runnable_key`, step, and attempt
+- optional caller metadata
+
+The child run stores the corresponding parent context in its `run_started`
+fact. Inspection exposes that context as `snapshot.parent_run`; graph and
+explanation projections can read the parent lineage from the parent run thread.
+
+Repeated child starts with the same logical parent and key are idempotent.
+Conflicting child ids, mismatched parent links, malformed child lineage, stale
+parent step contexts, and terminal parent runs are rejected or surfaced as
+projection anomalies instead of silently changing prior run history.
 
 ## Manual Boundaries
 

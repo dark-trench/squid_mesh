@@ -84,7 +84,7 @@ boundary options when a host needs a non-default journal setup.
 | Runtime-authored workflow specs | Planned | Validated data-structure authoring for UI-authored or DB-authored workflows is tracked in [#254](https://github.com/dark-trench/squid_mesh/issues/254). |
 | Safe action registry | Planned | Runtime-resolved steps need an allowlisted registry before host apps can safely activate user-authored specs; tracked in [#255](https://github.com/dark-trench/squid_mesh/issues/255). |
 | UI graph serialization | Supported, evolving | `SquidMesh.Runs.GraphInspection.to_map/1` exposes stable node, edge, status, output, and selected-edge data for dashboards and CLIs. Visual-editor spec round-trip support remains planned in [#257](https://github.com/dark-trench/squid_mesh/issues/257). |
-| Dynamic graph expansion | Planned | Runtime-safe dynamic subflows are deferred until after the core runtime and tracked in [#141](https://github.com/dark-trench/squid_mesh/issues/141). |
+| Dynamic child runs | Supported, evolving | Native steps can start idempotent child workflow runs with durable parent lineage through `SquidMesh.start_child_run/4` and `SquidMesh.start_child_run/5`; richer visual-editor expansion remains future work. |
 | Oban-specific core | Out of scope | Host apps may choose Oban behind the delivery boundary, but Squid Mesh core is not Oban-centric. |
 | Exactly-once external side effects | Out of scope | Squid Mesh can provide durable workflow state and fencing semantics, but external systems still require idempotency. |
 | Bundled workflow dashboard | Out of scope | Squid Mesh exposes inspection data; host apps own their operator UI. |
@@ -205,12 +205,11 @@ spec round-trip contracts for visual editors
 
 Treat the durable dispatch protocol as the architectural foundation under those
 features. It defines the vocabulary for runnable intent, claim fencing, leases,
-heartbeats, retries, and terminal-run behavior. The workflow and dispatch agents
-can rebuild that state from durable journals. Runtime-safe dynamic graph
-expansion remains future work tracked in
-[#141](https://github.com/dark-trench/squid_mesh/issues/141); it is useful after
-the static Jido-native core is stable, but it is not required for today's
-journal-backed runtime.
+heartbeats, retries, terminal-run behavior, and parent-child lineage. The
+workflow and dispatch agents can rebuild that state from durable journals.
+Runtime-safe child workflow starts are exposed through `start_child_run/4` and
+`start_child_run/5`; richer visual-editor expansion remains separate future
+work.
 
 Oban can still be a practical scheduler or job backend in a host application.
 It is an implementation detail, not the core Squid Mesh runtime model.

@@ -118,7 +118,43 @@ opts into fencing and recovery.
 
 Read next: [Host app integration](host_app_integration.md#journal-worker-contract).
 
-## 4. Inspect What Happened
+## 4. Start Child Runs When Work Expands
+
+When a native step discovers runtime work that should have its own durable
+history, start a child workflow from that step's `SquidMesh.Step.Context`:
+
+```elixir
+defmodule Hobbiton.Steps.SendPartyInvites do
+  use SquidMesh.Step, name: :send_party_invites
+
+  @impl true
+  def run(%{party_id: party_id, guests: guests}, %SquidMesh.Step.Context{} = context) do
+    children =
+      for guest <- guests do
+        {:ok, child} =
+          SquidMesh.start_child_run(
+            context,
+            Hobbiton.Workflows.DeliverInvite,
+            %{party_id: party_id, guest_id: guest.id},
+            child_key: "invite:#{guest.id}",
+            metadata: %{guest_id: guest.id}
+          )
+
+        child.run_id
+      end
+
+    {:ok, %{invite_run_ids: children}}
+  end
+end
+```
+
+Each child is a normal journal run with its own inspection, retry, replay, and
+cancellation boundary. The `child_key` makes the start idempotent for the
+parent run and parent step, so step retries do not create duplicate children.
+
+Read next: [Workflow authoring](workflow_authoring.md#child-workflow-runs).
+
+## 5. Inspect What Happened
 
 Every run should be explainable from durable facts:
 
@@ -141,7 +177,7 @@ id.
 Read next: [Architecture](architecture.md) and
 [Jido runtime architecture](jido_runtime_architecture.md).
 
-## 5. Add Reliability Deliberately
+## 6. Add Reliability Deliberately
 
 Retries, waits, and recovery routes are workflow semantics, not job-backend
 accidents.
@@ -174,7 +210,7 @@ once.
 
 Read next: [Operations](operations.md).
 
-## 6. Add Human Boundaries
+## 7. Add Human Boundaries
 
 Manual steps are durable workflow state:
 
@@ -195,7 +231,7 @@ SquidMesh.reject_run(run_id, %{actor: "ops_123", comment: "fraud risk"})
 Inspection history keeps pause, approval, rejection, and resume facts visible
 with the rest of the run history.
 
-## 7. Add Cron Only When Needed
+## 8. Add Cron Only When Needed
 
 Cron triggers declare schedule intent in the workflow, but the host app owns
 the recurring scheduler:
@@ -214,7 +250,7 @@ For idempotent cron starts, pass a stable `signal_id` or a complete
 `intended_window` so duplicate scheduler delivery returns or skips the existing
 run instead of starting a second one.
 
-## 8. Use Bedrock For Backend-Owned Leases
+## 9. Use Bedrock For Backend-Owned Leases
 
 The core runtime stays backend-neutral. A basic host can run a worker loop that
 calls `execute_next/1`; a larger host can use a durable backend for delivery
