@@ -80,9 +80,10 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              %SquidMesh.Workflow.TransitionSpec{
                from: :check_gateway_status,
                on: :ok,
-               to: :issue_gateway_credit
+               to: :issue_gateway_credit,
+               condition: condition
              } ->
-               true
+               is_nil(condition)
 
              _other ->
                false

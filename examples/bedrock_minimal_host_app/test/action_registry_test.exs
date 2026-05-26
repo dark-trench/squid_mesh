@@ -68,16 +68,11 @@ defmodule BedrockMinimalHostApp.ActionRegistryTest do
                false
            end)
 
-    assert Enum.any?(spec.transitions, fn
-             %{
-               from: :check_gateway_status,
-               on: :ok,
-               to: :issue_gateway_credit
-             } ->
-               true
-
-             _transition ->
-               false
+    assert Enum.any?(spec.transitions, fn transition ->
+             match?(
+               %{from: :check_gateway_status, on: :ok, to: :issue_gateway_credit},
+               transition
+             ) and is_nil(Map.get(transition, :condition))
            end)
   end
 end
