@@ -56,6 +56,7 @@ Nodes represent workflow steps:
 ```elixir
 %{
   id: "draft_reply",
+  action: nil,
   status: :running,
   current?: true,
   input: nil,
@@ -67,6 +68,10 @@ Nodes represent workflow steps:
   attempts: []
 }
 ```
+
+`action` is the stable host-owned action key when the node came from a spec
+resolved through `SquidMesh.Workflow.resolve_spec_actions/2`. Compiled
+module-authored workflows usually leave it nil.
 
 Node status values are:
 

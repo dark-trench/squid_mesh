@@ -8,6 +8,7 @@ defmodule MinimalHostApp.Smoke do
   alias MinimalHostApp.Cron
   alias MinimalHostApp.Repo
   alias MinimalHostApp.RuntimeHarness
+  alias MinimalHostApp.Steps
   alias MinimalHostApp.WorkflowRuns
   alias MinimalHostApp.Workers.SquidMeshWorker
   alias SquidMesh.Executor.Payload
@@ -71,9 +72,11 @@ defmodule MinimalHostApp.Smoke do
           journal_cancellation: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_replay: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_cron_digest: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          action_registry: SquidMesh.Workflow.Spec.t(),
           daily_digest: SquidMesh.ReadModel.Inspection.Snapshot.t()
         }
   def run_all! do
+    action_registry = run_action_registry_validation!()
     payment_recovery = run!()
     dependency_recovery = run_dependency_recovery!()
     manual_approval = run_manual_approval!()
@@ -110,12 +113,76 @@ defmodule MinimalHostApp.Smoke do
         journal_cancellation: journal_cancellation,
         journal_replay: journal_replay,
         journal_cron_digest: journal_cron_digest,
+        action_registry: action_registry,
         daily_digest: cron_run
       }
     else
       {:error, reason} ->
         raise "cron smoke test failed: #{inspect(reason)}"
     end
+  end
+
+  @doc """
+  Validates a runtime-authored spec through host-owned action keys.
+  """
+  @spec run_action_registry_validation!() :: SquidMesh.Workflow.Spec.t()
+  def run_action_registry_validation! do
+    registry = %{
+      "payment.load_invoice" => Steps.LoadInvoice,
+      "payment.notify_customer" => Steps.NotifyCustomer
+    }
+
+    with :ok <-
+           SquidMesh.Workflow.validate_spec(action_registry_spec(), action_registry: registry),
+         {:ok, resolved_spec} <-
+           SquidMesh.Workflow.resolve_spec_actions(action_registry_spec(),
+             action_registry: registry
+           ) do
+      unless Enum.map(resolved_spec.steps, &{&1.name, &1.module, &1.metadata.action}) == [
+               {:load_invoice, Steps.LoadInvoice, "payment.load_invoice"},
+               {:notify_customer, Steps.NotifyCustomer, "payment.notify_customer"}
+             ] do
+        raise "unexpected action registry smoke result"
+      end
+
+      resolved_spec
+    else
+      {:error, reason} ->
+        raise "action registry smoke test failed: #{inspect(reason)}"
+    end
+  end
+
+  defp action_registry_spec do
+    %SquidMesh.Workflow.Spec{
+      workflow: MinimalHostApp.RuntimeAuthoredPaymentRecovery,
+      triggers: [
+        %{
+          name: :manual,
+          type: :manual,
+          config: %{},
+          payload: [
+            %{name: :account_id, type: :string, opts: []},
+            %{name: :invoice_id, type: :string, opts: []}
+          ]
+        }
+      ],
+      payload: [
+        %{name: :account_id, type: :string, opts: []},
+        %{name: :invoice_id, type: :string, opts: []}
+      ],
+      steps: [
+        %{name: :load_invoice, action: "payment.load_invoice", opts: []},
+        %{name: :notify_customer, action: "payment.notify_customer", opts: []}
+      ],
+      transitions: [
+        %{from: :load_invoice, on: :ok, to: :notify_customer},
+        %{from: :notify_customer, on: :ok, to: :complete}
+      ],
+      retries: [],
+      entry_steps: [:load_invoice],
+      initial_step: :load_invoice,
+      entry_step: :load_invoice
+    }
   end
 
   @spec run_dependency_recovery!() :: SquidMesh.ReadModel.Inspection.Snapshot.t()

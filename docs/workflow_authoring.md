@@ -81,6 +81,48 @@ fields, step modules, step options, transitions, dependency graphs, retry
 policies, and entry metadata without starting a run and without coupling the
 workflow to a specific delivery backend.
 
+Runtime-authored specs can avoid raw module atoms by referencing host-owned
+action keys and validating through an action registry:
+
+```elixir
+registry = %{
+  "billing.load_invoice" => Billing.Steps.LoadInvoice,
+  "billing.send_reminder" => [module: Billing.Steps.SendReminderEmail]
+}
+
+spec = %{
+  workflow: Billing.Workflows.RuntimeInvoiceReminder,
+  triggers: [
+    %{
+      name: :manual,
+      type: :manual,
+      config: %{},
+      payload: [%{name: :invoice_id, type: :string, opts: []}]
+    }
+  ],
+  payload: [%{name: :invoice_id, type: :string, opts: []}],
+  steps: [
+    %{name: :load_invoice, action: "billing.load_invoice", opts: []},
+    %{name: :send_reminder, action: "billing.send_reminder", opts: []}
+  ],
+  transitions: [%{from: :load_invoice, on: :ok, to: :send_reminder}],
+  retries: [],
+  entry_steps: [:load_invoice],
+  initial_step: :load_invoice,
+  entry_step: :load_invoice
+}
+
+:ok = SquidMesh.Workflow.validate_spec(spec, action_registry: registry)
+{:ok, resolved_spec} = SquidMesh.Workflow.resolve_spec_actions(spec, action_registry: registry)
+```
+
+The registry is an allowlist. Entries must resolve to loaded `SquidMesh.Step`
+modules or explicit `Jido.Action` modules. Unknown keys, disabled entries such
+as `[module: Billing.Steps.LoadInvoice, enabled?: false]`, and incompatible
+modules return structured `{:invalid_workflow_spec, errors}` before activation.
+Resolved specs keep the stable action key on each step and in step metadata so
+inspection and graph tooling can show the approved action identity.
+
 The spec is an Elixir data representation with atom keys and module atoms:
 
 ```elixir
@@ -178,11 +220,11 @@ Invalid specs return structured errors:
 ```
 
 Serialized module names and string-keyed runtime records are intentionally
-rejected. Runtime-authored workflows are still out of scope; host applications
-should define workflows as compiled Elixir modules and use `to_spec/1` when
-they need a stable data representation for backend-neutral tooling or
-distributed workflow planning. `validate_spec/1` checks shape and invariants; it
-does not act as a module ownership allowlist.
+rejected. Runtime-authored activation remains out of scope until the runtime
+spec execution boundary lands; host applications should continue to define
+normal workflows as compiled Elixir modules. When a host accepts spec-shaped
+data from tooling, `validate_spec/2` with an `:action_registry` is the module
+ownership allowlist.
 
 ## Triggers
 

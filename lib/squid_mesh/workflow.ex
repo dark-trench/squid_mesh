@@ -33,6 +33,7 @@ defmodule SquidMesh.Workflow do
     optional: [:transition]
   }
 
+  alias SquidMesh.Workflow.ActionRegistry
   alias SquidMesh.Workflow.Info
   alias SquidMesh.Workflow.PayloadFieldSpec
   alias SquidMesh.Workflow.PayloadSpec
@@ -97,6 +98,67 @@ defmodule SquidMesh.Workflow do
   @spec validate_spec(Spec.t() | map() | term()) ::
           :ok | {:error, {:invalid_workflow_spec, [map()]}}
   def validate_spec(spec), do: Spec.validate(spec)
+
+  @doc """
+  Validates a normalized workflow spec after resolving host-approved action keys.
+
+  Runtime-authored specs can use stable `:action` keys instead of raw module
+  atoms when the host provides an `:action_registry`. Module-authored workflow
+  specs without action keys keep using the normal validation path.
+  """
+  @spec validate_spec(Spec.t() | map() | term(), keyword()) ::
+          :ok | {:error, {:invalid_workflow_spec, [map()]}}
+  def validate_spec(spec, opts) when is_list(opts) do
+    case Keyword.fetch(opts, :action_registry) do
+      {:ok, registry} ->
+        if spec_uses_action_keys?(spec) do
+          ActionRegistry.validate_spec(spec, registry)
+        else
+          validate_spec(spec)
+        end
+
+      :error ->
+        validate_spec(spec)
+    end
+  end
+
+  @doc """
+  Resolves runtime-authored `:action` step keys to host-approved modules.
+  """
+  @spec resolve_spec_actions(Spec.t() | map() | term(), keyword()) ::
+          {:ok, Spec.t() | map()} | {:error, {:invalid_workflow_spec, [map()]}}
+  def resolve_spec_actions(spec, opts) when is_list(opts) do
+    case Keyword.fetch(opts, :action_registry) do
+      {:ok, registry} ->
+        if spec_uses_action_keys?(spec) do
+          ActionRegistry.resolve_spec(spec, registry)
+        else
+          {:ok, spec}
+        end
+
+      :error ->
+        {:ok, spec}
+    end
+  end
+
+  defp spec_uses_action_keys?(%Spec{} = spec), do: spec_uses_action_keys?(Map.from_struct(spec))
+
+  defp spec_uses_action_keys?(spec) when is_map(spec) do
+    steps = Map.get(spec, :steps) || Map.get(spec, "steps") || []
+
+    case steps do
+      steps when is_list(steps) ->
+        Enum.any?(steps, fn
+          step when is_map(step) -> Map.has_key?(step, :action) or Map.has_key?(step, "action")
+          _other -> false
+        end)
+
+      _missing_or_invalid ->
+        false
+    end
+  end
+
+  defp spec_uses_action_keys?(_spec), do: false
 
   defp quoted_definition(definition) do
     quote do

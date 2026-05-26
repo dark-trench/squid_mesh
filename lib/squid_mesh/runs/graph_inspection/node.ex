@@ -9,6 +9,7 @@ defmodule SquidMesh.Runs.GraphInspection.Node do
 
   @type t :: %__MODULE__{
           id: String.t(),
+          action: atom() | String.t() | nil,
           status: atom(),
           current?: boolean(),
           input: map() | nil,
@@ -24,6 +25,7 @@ defmodule SquidMesh.Runs.GraphInspection.Node do
 
   defstruct [
     :id,
+    :action,
     :status,
     :current?,
     :input,
@@ -42,6 +44,7 @@ defmodule SquidMesh.Runs.GraphInspection.Node do
   def to_map(%__MODULE__{} = node) do
     %{
       id: node.id,
+      action: node.action,
       status: node.status,
       current?: node.current?,
       input: node.input,
