@@ -177,7 +177,10 @@ defmodule MinimalHostApp.Smoke do
              ),
            {:ok, inspected_run} <-
              drain_journal_run(started_run.run_id, @journal_run_attempts),
-           {:ok, explanation} <- SquidMesh.explain_run(started_run.run_id) do
+           {:ok, explanation} <- SquidMesh.explain_run(started_run.run_id),
+           {:ok, graph} <- SquidMesh.inspect_run_graph(started_run.run_id),
+           {:ok, listed_runs} <-
+             SquidMesh.list_runs(workflow: MinimalHostApp.Workflows.DependencyRecovery) do
         unless started_run.queue == queue and
                  inspected_run.queue == queue and
                  explanation.queue == queue do
@@ -186,6 +189,17 @@ defmodule MinimalHostApp.Smoke do
 
         unless inspected_run.status == :completed do
           raise "unexpected journal run smoke result"
+        end
+
+        unless started_run.definition_version == "2026-05-26.dependency-recovery" and
+                 inspected_run.definition_version == "2026-05-26.dependency-recovery" and
+                 explanation.definition_version == "2026-05-26.dependency-recovery" and
+                 graph.definition_version == "2026-05-26.dependency-recovery" and
+                 Enum.any?(listed_runs, fn listed ->
+                   listed.run_id == started_run.run_id and
+                     listed.definition_version == "2026-05-26.dependency-recovery"
+                 end) do
+          raise "unexpected journal workflow definition version metadata"
         end
 
         inspected_run

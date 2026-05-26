@@ -17,6 +17,7 @@ defmodule SquidMesh.Runs.GraphInspection do
   @type t :: %__MODULE__{
           run_id: String.t(),
           workflow: module() | String.t() | nil,
+          definition_version: String.t() | nil,
           source: source(),
           status: atom(),
           current_node_id: String.t() | nil,
@@ -33,6 +34,7 @@ defmodule SquidMesh.Runs.GraphInspection do
   defstruct [
     :run_id,
     :workflow,
+    :definition_version,
     :source,
     :status,
     :current_node_id,
@@ -58,6 +60,7 @@ defmodule SquidMesh.Runs.GraphInspection do
     %__MODULE__{
       run_id: snapshot.run_id,
       workflow: snapshot.workflow,
+      definition_version: snapshot.definition_version,
       source: source,
       status: snapshot.status,
       current_node_id: current_node_id,
@@ -83,6 +86,7 @@ defmodule SquidMesh.Runs.GraphInspection do
     %{
       run_id: graph.run_id,
       workflow: workflow_name(graph.workflow),
+      definition_version: graph.definition_version,
       source: graph.source,
       status: graph.status,
       current_node_id: graph.current_node_id,

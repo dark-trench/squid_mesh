@@ -15,6 +15,7 @@ defmodule SquidMesh.Workflow.Spec do
   @collection_fields [:triggers, :payload, :steps, :transitions, :retries, :entry_steps]
   @recognized_top_level_fields [
     :workflow,
+    :definition_version,
     :triggers,
     :payload,
     :steps,
@@ -41,6 +42,7 @@ defmodule SquidMesh.Workflow.Spec do
 
   @type t :: %__MODULE__{
           workflow: module(),
+          definition_version: String.t() | nil,
           triggers: [Definition.trigger()],
           payload: [Definition.payload_field()],
           steps: [Definition.step()],
@@ -53,6 +55,7 @@ defmodule SquidMesh.Workflow.Spec do
 
   defstruct [
     :workflow,
+    :definition_version,
     triggers: [],
     payload: [],
     steps: [],
@@ -75,6 +78,7 @@ defmodule SquidMesh.Workflow.Spec do
   def from_definition(workflow, definition) when is_atom(workflow) and is_map(definition) do
     %__MODULE__{
       workflow: workflow,
+      definition_version: definition.definition_version,
       triggers: definition.triggers,
       payload: definition.payload,
       steps: definition.steps,
@@ -120,6 +124,7 @@ defmodule SquidMesh.Workflow.Spec do
     |> validate_nested_ambiguous_keys(spec)
     |> validate_collections(spec)
     |> validate_required_declarations(spec)
+    |> validate_definition_version(spec)
     |> validate_workflow(spec)
     |> validate_triggers(list_field(spec, :triggers))
     |> validate_unique_trigger_names(list_field(spec, :triggers))
@@ -143,6 +148,27 @@ defmodule SquidMesh.Workflow.Spec do
     |> validate_step_reference(spec, :initial_step, step_names)
     |> validate_step_reference(spec, :entry_step, step_names)
     |> Enum.reverse()
+  end
+
+  defp validate_definition_version(errors, spec) do
+    case field(spec, :definition_version) do
+      nil ->
+        errors
+
+      version when is_binary(version) ->
+        errors
+
+      version ->
+        [
+          error(
+            [:definition_version],
+            :invalid_definition_version,
+            "definition_version must be a string",
+            %{definition_version: version}
+          )
+          | errors
+        ]
+    end
   end
 
   defp validate_workflow(errors, spec) do

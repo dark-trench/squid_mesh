@@ -26,6 +26,8 @@ defmodule SquidMesh.WorkflowTest do
     use SquidMesh.Workflow
 
     workflow do
+      version "2026-05-26.native-step-contract"
+
       trigger :manual do
         manual()
       end
@@ -91,7 +93,17 @@ defmodule SquidMesh.WorkflowTest do
              %{step: :send_email, opts: [max_attempts: 3]}
            ]
 
+    assert definition.definition_version == nil
     assert definition.entry_step == :load_invoice
+  end
+
+  test "exposes a declarative workflow definition version" do
+    definition = NativeStepContractWorkflow.workflow_definition()
+
+    assert definition.definition_version == "2026-05-26.native-step-contract"
+
+    assert NativeStepContractWorkflow.__workflow__(:definition_version) ==
+             "2026-05-26.native-step-contract"
   end
 
   test "exposes the workflow contract shape" do
@@ -105,6 +117,7 @@ defmodule SquidMesh.WorkflowTest do
     assert {:ok, %SquidMesh.Workflow.Spec{} = spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
 
     assert spec.workflow == InvoiceReminder
+    assert spec.definition_version == nil
     assert Enum.map(spec.triggers, & &1.name) == [:manual]
     assert Enum.map(spec.steps, & &1.name) == [:load_invoice, :send_email, :record_delivery]
 
@@ -115,6 +128,14 @@ defmodule SquidMesh.WorkflowTest do
            ]
 
     assert spec.retries == [%{step: :send_email, opts: [max_attempts: 3]}]
+  end
+
+  test "converts a workflow version into the normalized workflow spec" do
+    assert {:ok, %SquidMesh.Workflow.Spec{} = spec} =
+             SquidMesh.Workflow.to_spec(NativeStepContractWorkflow)
+
+    assert spec.definition_version == "2026-05-26.native-step-contract"
+    assert :ok = SquidMesh.Workflow.validate_spec(spec)
   end
 
   test "validates normalized workflow specs without starting a run" do

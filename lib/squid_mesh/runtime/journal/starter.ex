@@ -108,6 +108,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
              input: input,
              context: initial_context(opts),
              replayed_from_run_id: replayed_from_run_id(opts),
+             definition_version: definition.definition_version,
              definition_fingerprint: expected_fingerprint,
              occurred_at: now
            }),
@@ -595,12 +596,19 @@ defmodule SquidMesh.Runtime.Journal.Starter do
     with {:ok, %{entries: entries}} <- Journal.load_thread(storage, {:run, run_id}) do
       fingerprint =
         Enum.find_value(entries, fn
-          %{type: :run_started, data: data} -> Map.get(data, :definition_fingerprint)
-          _entry -> nil
+          %{type: :run_started, data: data} ->
+            definition_metadata_value(data, :definition_fingerprint)
+
+          _entry ->
+            nil
         end)
 
       {:ok, fingerprint}
     end
+  end
+
+  defp definition_metadata_value(data, key) when is_map(data) and is_atom(key) do
+    Map.get(data, key) || Map.get(data, Atom.to_string(key))
   end
 
   defp equivalent_definition_fingerprint?(existing_fingerprint, expected_fingerprint),

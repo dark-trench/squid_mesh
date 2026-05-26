@@ -56,8 +56,16 @@ defmodule SquidMesh.Workflow.SparkExtension do
     transform: {__MODULE__, :put_step_metadata, []}
   }
 
+  @workflow_schema [
+    version: [
+      type: :string,
+      doc: "Human-readable workflow definition version for operator diagnostics."
+    ]
+  ]
+
   @workflow %Spark.Dsl.Section{
     name: :workflow,
+    schema: @workflow_schema,
     entities: [@step, @approval_step, @manual_review_step],
     describe: "Declares Squid Mesh workflow steps."
   }

@@ -378,12 +378,13 @@ defmodule SquidMesh.Runtime.Journal.Executor do
          reason
        ) do
     error =
-      normalize_error(%{
+      %{
         code: incompatible_error_code(reason),
         message: "journal attempt is incompatible with the current workflow definition",
-        reason: reason,
         retryable?: false
-      })
+      }
+      |> Map.merge(incompatible_error_metadata(reason))
+      |> normalize_error()
 
     with {:ok, _failed} <-
            fail_current_claim(
@@ -1822,15 +1823,15 @@ defmodule SquidMesh.Runtime.Journal.Executor do
   end
 
   defp validate_definition_fingerprint(storage, run_id, definition) do
-    case persisted_definition_fingerprint(storage, run_id) do
-      {:ok, nil} ->
-        {:error, %{code: "incompatible_workflow_definition", retryable?: false}}
+    case persisted_definition_metadata(storage, run_id) do
+      {:ok, %{definition_fingerprint: nil} = persisted} ->
+        {:error, Definition.incompatible_definition_error(definition, persisted)}
 
-      {:ok, fingerprint} ->
+      {:ok, %{definition_fingerprint: fingerprint} = persisted} ->
         if fingerprint == Definition.fingerprint(definition) do
           :ok
         else
-          {:error, %{code: "incompatible_workflow_definition", retryable?: false}}
+          {:error, Definition.incompatible_definition_error(definition, persisted)}
         end
 
       {:error, _reason} = error ->
@@ -1838,16 +1839,26 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     end
   end
 
-  defp persisted_definition_fingerprint(storage, run_id) do
+  defp persisted_definition_metadata(storage, run_id) do
     with {:ok, %{entries: entries}} <- Journal.load_thread(storage, {:run, run_id}) do
-      fingerprint =
+      metadata =
         Enum.find_value(entries, fn
-          %{type: :run_started, data: data} -> Map.get(data, :definition_fingerprint)
-          _entry -> nil
+          %{type: :run_started, data: data} ->
+            %{
+              definition_version: definition_metadata_value(data, :definition_version),
+              definition_fingerprint: definition_metadata_value(data, :definition_fingerprint)
+            }
+
+          _entry ->
+            nil
         end)
 
-      {:ok, fingerprint}
+      {:ok, metadata || %{definition_version: nil, definition_fingerprint: nil}}
     end
+  end
+
+  defp definition_metadata_value(data, key) when is_map(data) and is_atom(key) do
+    Map.get(data, key) || Map.get(data, Atom.to_string(key))
   end
 
   defp step_context(workflow_agent, %ActionAttempt{} = attempt, workflow, step_name) do
@@ -2112,6 +2123,19 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     |> maybe_put_safe(:code, safe_error_code(Map.get(error, :code)))
     |> maybe_put_safe(:retryable?, Map.get(error, :retryable?))
     |> maybe_put_safe(:retry_after, Map.get(error, :retry_after))
+    |> maybe_put_safe(
+      :persisted_definition_version,
+      Map.get(error, :persisted_definition_version)
+    )
+    |> maybe_put_safe(
+      :persisted_definition_fingerprint,
+      Map.get(error, :persisted_definition_fingerprint)
+    )
+    |> maybe_put_safe(:current_definition_version, Map.get(error, :current_definition_version))
+    |> maybe_put_safe(
+      :current_definition_fingerprint,
+      Map.get(error, :current_definition_fingerprint)
+    )
     |> Map.put(:message, safe_error_message(Map.get(error, :message)))
   end
 
@@ -2127,6 +2151,17 @@ defmodule SquidMesh.Runtime.Journal.Executor do
 
   defp incompatible_error_code(%{code: code}) when is_binary(code), do: code
   defp incompatible_error_code(_reason), do: "incompatible_journal_attempt"
+
+  defp incompatible_error_metadata(reason) when is_map(reason) do
+    Map.take(reason, [
+      :persisted_definition_version,
+      :persisted_definition_fingerprint,
+      :current_definition_version,
+      :current_definition_fingerprint
+    ])
+  end
+
+  defp incompatible_error_metadata(_reason), do: %{}
 
   defp safe_error_code(code) when is_binary(code) do
     if Regex.match?(~r/^[a-z][a-z0-9_]{0,63}$/, code) do

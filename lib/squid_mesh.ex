@@ -542,6 +542,9 @@ defmodule SquidMesh do
       {:error, {:incompatible_workflow_definition, _operation} = reason} ->
         {:error, reason}
 
+      {:error, {:incompatible_workflow_definition, _operation, _metadata} = reason} ->
+        {:error, reason}
+
       {:error, {:invalid_replay_source, _details} = reason} ->
         {:error, reason}
 

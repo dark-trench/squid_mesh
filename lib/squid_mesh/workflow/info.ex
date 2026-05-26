@@ -33,6 +33,14 @@ defmodule SquidMesh.Workflow.Info do
   end
 
   @doc """
+  Returns the optional workflow definition version.
+  """
+  @spec definition_version(module()) :: String.t() | nil
+  def definition_version(workflow) when is_atom(workflow) do
+    Extension.get_opt(workflow, [:workflow], :version)
+  end
+
+  @doc """
   Returns normalized workflow triggers.
   """
   @spec triggers(module()) :: [Definition.trigger()]

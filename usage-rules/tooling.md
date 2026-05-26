@@ -9,6 +9,9 @@
 - Use `SquidMesh.explain_run/2` for operator-facing diagnosis and next actions.
 - Keep list responses redacted by default; fetch detailed history only when the
   caller asks for it.
+- Use `definition_version` from list, inspection, graph, and explanation
+  surfaces as an operator label only; the definition fingerprint remains the
+  compatibility guard.
 
 ## Workflow Specs
 

@@ -60,6 +60,7 @@ defmodule SquidMesh.Workflow.Definition do
         }
 
   @type t :: %{
+          definition_version: String.t() | nil,
           triggers: [trigger()],
           payload: [payload_field()],
           steps: [step()],
@@ -630,6 +631,31 @@ defmodule SquidMesh.Workflow.Definition do
   end
 
   @doc """
+  Builds structured metadata for persisted/current workflow definition drift.
+  """
+  @spec compatibility_metadata(t(), map()) :: map()
+  def compatibility_metadata(definition, persisted)
+      when is_map(definition) and is_map(persisted) do
+    %{
+      persisted_definition_version: metadata_value(persisted, :definition_version),
+      persisted_definition_fingerprint: metadata_value(persisted, :definition_fingerprint),
+      current_definition_version: Map.get(definition, :definition_version),
+      current_definition_fingerprint: fingerprint(definition)
+    }
+  end
+
+  @doc """
+  Builds the structured non-retryable runtime error for definition drift.
+  """
+  @spec incompatible_definition_error(t(), map()) :: map()
+  def incompatible_definition_error(definition, persisted)
+      when is_map(definition) and is_map(persisted) do
+    definition
+    |> compatibility_metadata(persisted)
+    |> Map.merge(%{code: "incompatible_workflow_definition", retryable?: false})
+  end
+
+  @doc """
   Serializes a trigger identifier for persistence.
   """
   @spec serialize_trigger(atom() | String.t() | nil) :: String.t() | nil
@@ -714,6 +740,10 @@ defmodule SquidMesh.Workflow.Definition do
   defp deserialize_transition_outcome("ok"), do: :ok
   defp deserialize_transition_outcome("error"), do: :error
   defp deserialize_transition_outcome(outcome), do: outcome
+
+  defp metadata_value(metadata, key) when is_map(metadata) and is_atom(key) do
+    Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
+  end
 
   defp deserialize_transition_target(_definition, target)
        when target in [:complete, "__complete__", "complete"],

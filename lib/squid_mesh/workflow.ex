@@ -318,6 +318,7 @@ defmodule SquidMesh.Workflow do
           when key in [
                  :entry_step,
                  :entry_steps,
+                 :definition_version,
                  :initial_step,
                  :payload,
                  :retries,
@@ -333,6 +334,7 @@ defmodule SquidMesh.Workflow do
     steps = spark_steps(env.module)
 
     definition = %{
+      definition_version: Info.definition_version(env.module),
       triggers: module_attribute(env.module, :squid_mesh_triggers),
       steps: steps,
       transitions: module_attribute(env.module, :squid_mesh_transitions),

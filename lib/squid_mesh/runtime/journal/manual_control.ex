@@ -657,15 +657,15 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp validate_definition_fingerprint(storage, run_id, definition) do
-    case persisted_definition_fingerprint(storage, run_id) do
-      {:ok, nil} ->
-        {:error, %{code: "incompatible_workflow_definition", retryable?: false}}
+    case persisted_definition_metadata(storage, run_id) do
+      {:ok, %{definition_fingerprint: nil} = persisted} ->
+        {:error, Definition.incompatible_definition_error(definition, persisted)}
 
-      {:ok, fingerprint} ->
+      {:ok, %{definition_fingerprint: fingerprint} = persisted} ->
         if fingerprint == Definition.fingerprint(definition) do
           :ok
         else
-          {:error, %{code: "incompatible_workflow_definition", retryable?: false}}
+          {:error, Definition.incompatible_definition_error(definition, persisted)}
         end
 
       {:error, _reason} = error ->
@@ -673,16 +673,26 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
     end
   end
 
-  defp persisted_definition_fingerprint(storage, run_id) do
+  defp persisted_definition_metadata(storage, run_id) do
     with {:ok, %{entries: entries}} <- Journal.load_thread(storage, {:run, run_id}) do
-      fingerprint =
+      metadata =
         Enum.find_value(entries, fn
-          %{type: :run_started, data: data} -> Map.get(data, :definition_fingerprint)
-          _entry -> nil
+          %{type: :run_started, data: data} ->
+            %{
+              definition_version: definition_metadata_value(data, :definition_version),
+              definition_fingerprint: definition_metadata_value(data, :definition_fingerprint)
+            }
+
+          _entry ->
+            nil
         end)
 
-      {:ok, fingerprint}
+      {:ok, metadata || %{definition_version: nil, definition_fingerprint: nil}}
     end
+  end
+
+  defp definition_metadata_value(data, key) when is_map(data) and is_atom(key) do
+    Map.get(data, key) || Map.get(data, Atom.to_string(key))
   end
 
   defp applied_result_context(%Agent{

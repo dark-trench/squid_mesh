@@ -114,6 +114,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     }
 
     assert {:ok, run} = WorkflowRuns.start_dependency_recovery(attrs)
+    assert run.definition_version == "2026-05-26.dependency-recovery"
     assert Enum.map(run.visible_attempts, & &1.step) == ["load_account", "load_invoice"]
 
     assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
@@ -121,6 +122,8 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert {:ok, history_run} = WorkflowRuns.inspect_run(run.run_id, include_history: true)
 
     assert completed_run.status == :completed
+    assert completed_run.definition_version == "2026-05-26.dependency-recovery"
+    assert history_run.definition_version == "2026-05-26.dependency-recovery"
     assert completed_run.context.account == %{id: "acct_123", tier: "standard"}
 
     assert completed_run.context.invoice == %{

@@ -13,6 +13,7 @@ locals_without_parens = [
   step: 3,
   transition: 2,
   trigger: 2,
+  version: 1,
   workflow: 1
 ]
 

@@ -4,6 +4,8 @@
 
 - Define workflows as compiled Elixir modules with `use SquidMesh.Workflow`.
 - Use business names for triggers, steps, and transitions.
+- Declare `version "..."` inside `workflow do` when operators need a stable
+  human-readable definition label across deploys.
 - Keep workflow branches, retries, waits, recovery routes, and manual gates in
   the workflow definition when operators need to understand them.
 - Use `SquidMesh.Workflow.to_spec/1` and `SquidMesh.Workflow.validate_spec/1` when tooling needs a

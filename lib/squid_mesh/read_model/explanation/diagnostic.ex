@@ -24,6 +24,7 @@ defmodule SquidMesh.ReadModel.Explanation.Diagnostic do
   @type t :: %__MODULE__{
           run_id: String.t(),
           workflow: String.t() | nil,
+          definition_version: String.t() | nil,
           queue: String.t(),
           status: atom(),
           reason: Snapshot.reason(),
@@ -37,6 +38,7 @@ defmodule SquidMesh.ReadModel.Explanation.Diagnostic do
   @enforce_keys [
     :run_id,
     :workflow,
+    :definition_version,
     :queue,
     :status,
     :reason,
@@ -50,6 +52,7 @@ defmodule SquidMesh.ReadModel.Explanation.Diagnostic do
   defstruct [
     :run_id,
     :workflow,
+    :definition_version,
     :queue,
     :status,
     :reason,

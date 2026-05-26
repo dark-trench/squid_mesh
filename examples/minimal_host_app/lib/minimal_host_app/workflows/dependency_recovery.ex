@@ -6,6 +6,8 @@ defmodule MinimalHostApp.Workflows.DependencyRecovery do
   use SquidMesh.Workflow
 
   workflow do
+    version "2026-05-26.dependency-recovery"
+
     trigger :dependency_recovery do
       manual()
 
