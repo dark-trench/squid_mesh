@@ -33,6 +33,21 @@ Internally, Squid Mesh builds on Jido for the action/runtime foundation, Runic
 for workflow planning, and Spark for the DSL authoring surface. For comparison
 with adjacent orchestration tools, see the [Positioning guide](docs/positioning.md).
 
+## Features
+
+- workflow DSL with manual and cron triggers
+- Postgres-backed Jido journal history for runs, steps, attempts, and manual
+  decisions
+- pulled execution through `SquidMesh.execute_next/1`, with optional cron
+  payload delivery through host schedulers
+- retries, waits, failure routes, dependency joins, and HITL approval gates
+- explicit step input selection and output mapping
+- same-process host repo transactions for small local step groups
+- runtime inspection through declared step state, audit events, graph output,
+  and `SquidMesh.explain_run/2`
+- native `SquidMesh.Step` modules, built-in steps like `:log`, `:wait`,
+  `:pause`, and `:approval`, plus raw `Jido.Action` interop
+
 ## Getting Started
 
 Choose the path that matches how you want to learn:
@@ -47,21 +62,6 @@ Choose the path that matches how you want to learn:
 | Backend leases | [Bedrock Minimal Host App](examples/bedrock_minimal_host_app/README.md) | You want backend-owned delivery, leases, delayed visibility, retry requeue, dead-letter handling, and cron payload mapping. |
 
 The full documentation home is [docs/index.md](docs/index.md).
-
-## What It Does
-
-- workflow DSL with manual and cron triggers
-- Postgres-backed Jido journal history for runs, steps, attempts, and manual
-  decisions
-- pulled execution through `SquidMesh.execute_next/1`, with optional cron
-  payload delivery through host schedulers
-- retries, waits, failure routes, dependency joins, and HITL approval gates
-- explicit step input selection and output mapping
-- same-process host repo transactions for small local step groups
-- runtime inspection through declared step state, audit events, graph output,
-  and `SquidMesh.explain_run/2`
-- native `SquidMesh.Step` modules, built-in steps like `:log`, `:wait`,
-  `:pause`, and `:approval`, plus raw `Jido.Action` interop
 
 ## Companion Dashboard
 
