@@ -2033,6 +2033,26 @@ defmodule SquidMesh.WorkflowTest do
     )
   end
 
+  test "fails clearly when a transition omits a required option" do
+    assert_dsl_error(
+      """
+      defmodule WorkflowWithMissingTransitionTarget do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step :load_invoice, WorkflowWithMissingTransitionTarget.LoadInvoice
+          transition :load_invoice, on: :ok
+        end
+      end
+      """,
+      "transition must specify :to option"
+    )
+  end
+
   test "supports multiple triggers with independent payload contracts" do
     module =
       compile_module("""

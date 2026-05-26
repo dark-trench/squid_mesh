@@ -228,18 +228,17 @@ defmodule SquidMesh.Workflow.SparkExtension do
 
   @doc false
   @spec put_transition_options(SquidMesh.Workflow.TransitionSpec.t()) ::
-          {:ok, SquidMesh.Workflow.TransitionSpec.t()}
+          {:ok, SquidMesh.Workflow.TransitionSpec.t()} | {:error, String.t()}
   def put_transition_options(%SquidMesh.Workflow.TransitionSpec{} = transition) do
-    transition =
-      %{
-        transition
-        | on: Keyword.fetch!(transition.opts, :on),
-          to: Keyword.fetch!(transition.opts, :to)
-      }
-      |> maybe_put_transition_recovery()
-      |> maybe_put_transition_condition()
+    with {:ok, on} <- fetch_transition_option(transition.opts, :on),
+         {:ok, to} <- fetch_transition_option(transition.opts, :to) do
+      transition =
+        %{transition | on: on, to: to}
+        |> maybe_put_transition_recovery()
+        |> maybe_put_transition_condition()
 
-    {:ok, transition}
+      {:ok, transition}
+    end
   end
 
   defp interop_metadata(module) when module in [:wait, :log, :pause, :approval] do
@@ -248,6 +247,13 @@ defmodule SquidMesh.Workflow.SparkExtension do
 
   defp interop_metadata(module) when is_atom(module) do
     %{contract: :jido_action, module: module}
+  end
+
+  defp fetch_transition_option(opts, option) do
+    case Keyword.fetch(opts, option) do
+      {:ok, value} -> {:ok, value}
+      :error -> {:error, "transition must specify #{inspect(option)} option"}
+    end
   end
 
   defp maybe_put_transition_recovery(%SquidMesh.Workflow.TransitionSpec{opts: opts} = transition) do
