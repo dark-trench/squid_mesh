@@ -16,9 +16,12 @@
 ## Workflow Specs
 
 - Use `SquidMesh.Workflow.to_spec/1` for normalized workflow definitions.
-- Use `SquidMesh.Workflow.validate_spec/1` before trusting a spec in tooling.
-- Treat specs as data for editors, diagrams, and validation; do not use them as
-  a module ownership allowlist.
+- Use `SquidMesh.Workflow.validate_spec/1` before trusting compiled workflow
+  specs in tooling.
+- Use `SquidMesh.Workflow.validate_spec/2` with `:action_registry` before
+  trusting runtime-authored specs that reference executable actions.
+- Treat unresolved specs as data for editors, diagrams, and validation; only
+  the host-owned action registry is the module ownership allowlist.
 - Preserve stable ids for workflow, trigger, step, transition, and condition
   data so visual editors can round-trip safely.
 

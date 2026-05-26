@@ -8,9 +8,13 @@
   human-readable definition label across deploys.
 - Keep workflow branches, retries, waits, recovery routes, and manual gates in
   the workflow definition when operators need to understand them.
-- Use `SquidMesh.Workflow.to_spec/1` and `SquidMesh.Workflow.validate_spec/1` when tooling needs a
-  normalized data representation.
-- Do not build runtime-authored workflows from request input.
+- Use `SquidMesh.Workflow.to_spec/1` and `SquidMesh.Workflow.validate_spec/1`
+  when tooling needs a normalized data representation.
+- Use `SquidMesh.Workflow.validate_spec/2` with `:action_registry` before
+  trusting runtime-authored spec data that references executable actions.
+- Do not activate runtime-authored workflows from request input until the host
+  has resolved action keys through a host-owned registry and the runtime
+  execution boundary supports that spec shape.
 
 ## Steps
 

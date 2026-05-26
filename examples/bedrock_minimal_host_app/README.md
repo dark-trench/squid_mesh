@@ -43,6 +43,8 @@ MIX_ENV=test mix test test/bedrock_job_queue_stress_test.exs test/bedrock_minima
 
 The stress test covers:
 
+- safe action registry validation against the Bedrock example app's host-owned
+  step modules
 - topic routing and tenant queue isolation
 - priority ordering
 - delayed job visibility

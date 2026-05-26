@@ -28,7 +28,7 @@ defmodule SquidMesh.Workflow.Spec do
   @recognized_nested_fields %{
     triggers: [:name, :type, :config, :payload],
     payload: [:name, :type, :opts],
-    steps: [:name, :module, :opts, :metadata],
+    steps: [:name, :action, :module, :opts, :metadata],
     transitions: [:from, :on, :to, :condition, :recovery],
     retries: [:step, :opts]
   }

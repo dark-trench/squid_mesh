@@ -3,6 +3,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
   alias MinimalHostApp.CronPlugin
   alias MinimalHostApp.Smoke
+  alias MinimalHostApp.Steps
   alias MinimalHostApp.Workers.SquidMeshWorker
   alias MinimalHostApp.WorkflowRuns
   alias MinimalHostApp.Workflows.DailyDigest
@@ -74,6 +75,54 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              _other ->
                false
            end)
+  end
+
+  test "host app examples validate runtime-authored specs through a safe action registry" do
+    spec = %SquidMesh.Workflow.Spec{
+      workflow: MinimalHostApp.RuntimeAuthoredPaymentRecovery,
+      triggers: [
+        %{
+          name: :manual,
+          type: :manual,
+          config: %{},
+          payload: [
+            %{name: :account_id, type: :string, opts: []},
+            %{name: :invoice_id, type: :string, opts: []}
+          ]
+        }
+      ],
+      payload: [
+        %{name: :account_id, type: :string, opts: []},
+        %{name: :invoice_id, type: :string, opts: []}
+      ],
+      steps: [
+        %{name: :load_invoice, action: "payment.load_invoice", opts: []},
+        %{name: :notify_customer, action: "payment.notify_customer", opts: []}
+      ],
+      transitions: [
+        %{from: :load_invoice, on: :ok, to: :notify_customer},
+        %{from: :notify_customer, on: :ok, to: :complete}
+      ],
+      retries: [],
+      entry_steps: [:load_invoice],
+      initial_step: :load_invoice,
+      entry_step: :load_invoice
+    }
+
+    registry = %{
+      "payment.load_invoice" => Steps.LoadInvoice,
+      "payment.notify_customer" => Steps.NotifyCustomer
+    }
+
+    assert :ok = SquidMesh.Workflow.validate_spec(spec, action_registry: registry)
+
+    assert {:ok, resolved} =
+             SquidMesh.Workflow.resolve_spec_actions(spec, action_registry: registry)
+
+    assert Enum.map(resolved.steps, &{&1.name, &1.module, &1.metadata.action}) == [
+             {:load_invoice, Steps.LoadInvoice, "payment.load_invoice"},
+             {:notify_customer, Steps.NotifyCustomer, "payment.notify_customer"}
+           ]
   end
 
   test "starts the example payment recovery workflow through the host boundary" do
@@ -800,6 +849,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              journal_cancellation: journal_cancellation,
              journal_replay: journal_replay,
              journal_cron_digest: journal_cron_digest,
+             action_registry: action_registry,
              daily_digest: daily_digest
            } =
              Smoke.run_all!()
@@ -846,6 +896,11 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert journal_cron_digest.status == :completed
     assert journal_cron_digest.trigger == "daily_digest"
     assert journal_cron_digest.context.schedule.signal_id
+
+    assert Enum.map(action_registry.steps, &{&1.name, &1.metadata.action}) == [
+             {:load_invoice, "payment.load_invoice"},
+             {:notify_customer, "payment.notify_customer"}
+           ]
 
     assert daily_digest.status == :completed
     assert daily_digest.trigger == "daily_digest"

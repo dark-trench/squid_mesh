@@ -105,6 +105,7 @@ defmodule SquidMesh.Runs.GraphInspection do
     step_sources =
       snapshot.attempts ++ snapshot.planned_runnables ++ snapshot.pending_dispatches
 
+    step_sources_by_id = Enum.group_by(step_sources, &snapshot_step_id/1)
     node_ids = ordered_node_ids(definition, step_sources, &snapshot_step_id/1)
 
     Enum.map(node_ids, fn node_id ->
@@ -112,6 +113,7 @@ defmodule SquidMesh.Runs.GraphInspection do
 
       %Node{
         id: node_id,
+        action: snapshot_node_action(Map.get(step_sources_by_id, node_id, [])),
         status: snapshot_node_status(snapshot, node_id, attempts),
         current?: false,
         input: detail(include_details?, latest_attempt_value(attempts, :input)),
@@ -159,6 +161,26 @@ defmodule SquidMesh.Runs.GraphInspection do
       status: Map.fetch!(attempt, :status),
       error: Map.get(attempt, :error)
     })
+  end
+
+  defp snapshot_node_action(step_sources) do
+    Enum.find_value(step_sources, fn
+      %{action: action} when is_atom(action) or is_binary(action) ->
+        action
+
+      %{metadata: metadata} when is_map(metadata) ->
+        metadata_action(metadata)
+
+      _source ->
+        nil
+    end)
+  end
+
+  defp metadata_action(metadata) do
+    case Map.get(metadata, :action) || Map.get(metadata, "action") do
+      action when is_atom(action) or is_binary(action) -> action
+      _other -> nil
+    end
   end
 
   defp latest_attempt_value(attempts, key) do
