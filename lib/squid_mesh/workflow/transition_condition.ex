@@ -135,10 +135,37 @@ defmodule SquidMesh.Workflow.TransitionCondition do
   defp condition_map(%{} = condition), do: {:ok, condition}
 
   defp condition_map(condition) when is_list(condition) do
-    {:ok, Map.new(condition)}
+    if condition_list_keys_unique?(condition) do
+      {:ok, Map.new(condition)}
+    else
+      {:error, :invalid_condition}
+    end
   rescue
     ArgumentError -> {:error, :invalid_condition}
   end
+
+  defp condition_list_keys_unique?(condition) do
+    case Enum.reduce_while(condition, MapSet.new(), &track_condition_key/2) do
+      %MapSet{} -> true
+      _invalid -> false
+    end
+  end
+
+  defp track_condition_key({key, _value}, seen) do
+    case canonical_condition_key(key) do
+      nil ->
+        {:cont, seen}
+
+      canonical_key ->
+        if MapSet.member?(seen, canonical_key) do
+          {:halt, :duplicate}
+        else
+          {:cont, MapSet.put(seen, canonical_key)}
+        end
+    end
+  end
+
+  defp track_condition_key(_entry, _seen), do: {:halt, :invalid}
 
   defp condition_path(condition), do: Map.get(condition, :path) || Map.get(condition, "path")
 
@@ -157,6 +184,14 @@ defmodule SquidMesh.Workflow.TransitionCondition do
   defp condition_key?("greater_than"), do: true
   defp condition_key?("less_than"), do: true
   defp condition_key?(_key), do: false
+
+  defp canonical_condition_key(:path), do: :path
+  defp canonical_condition_key("path"), do: :path
+  defp canonical_condition_key(operator) when operator in @operators, do: operator
+  defp canonical_condition_key("equals"), do: :equals
+  defp canonical_condition_key("greater_than"), do: :greater_than
+  defp canonical_condition_key("less_than"), do: :less_than
+  defp canonical_condition_key(_key), do: nil
 
   defp fetch_condition_operator(condition) do
     case condition_operators(condition) do

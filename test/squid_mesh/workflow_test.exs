@@ -2720,6 +2720,30 @@ defmodule SquidMesh.WorkflowTest do
     end
   end
 
+  test "rejects duplicate conditional operators in DSL keyword lists" do
+    assert_raise ArgumentError, "invalid transition condition", fn ->
+      compile_module("""
+      defmodule WorkflowWithDuplicateConditionalOperators do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step :score_invoice, WorkflowWithDuplicateConditionalOperators.ScoreInvoice
+          step :escalate_review, WorkflowWithDuplicateConditionalOperators.EscalateReview
+
+          transition :score_invoice,
+            on: :ok,
+            to: :escalate_review,
+            condition: [path: [:risk, :score], greater_than: 70, greater_than: 90]
+        end
+      end
+      """)
+    end
+  end
+
   test "returns structured errors for malformed list conditions in workflow specs" do
     assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
 
@@ -2731,6 +2755,41 @@ defmodule SquidMesh.WorkflowTest do
             on: :ok,
             to: :send_email,
             condition: ["path"]
+          },
+          %{from: :send_email, on: :ok, to: :record_delivery},
+          %{from: :record_delivery, on: :ok, to: :complete}
+        ]
+    }
+
+    assert {:error, {:invalid_workflow_spec, errors}} = SquidMesh.Workflow.validate_spec(spec)
+
+    assert Enum.any?(errors, fn error ->
+             match?(
+               %{
+                 path: [:transitions, 0, :condition],
+                 code: :invalid_transition_condition,
+                 message: "transition from :load_invoice defines an invalid condition"
+               },
+               error
+             )
+           end)
+  end
+
+  test "returns structured errors for duplicate condition keys in workflow specs" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    spec = %{
+      spec
+      | transitions: [
+          %{
+            from: :load_invoice,
+            on: :ok,
+            to: :send_email,
+            condition: [
+              {:path, ["load_invoice"]},
+              {"path", ["send_email"]},
+              {:equals, "daily"}
+            ]
           },
           %{from: :send_email, on: :ok, to: :record_delivery},
           %{from: :record_delivery, on: :ok, to: :complete}
