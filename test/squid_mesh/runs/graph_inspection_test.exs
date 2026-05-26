@@ -21,6 +21,11 @@ defmodule SquidMesh.Runs.GraphInspectionTest do
         to: :escalate_review,
         condition: [path: [:risk, :score], greater_than: 70]
 
+      transition :score_invoice,
+        on: :ok,
+        to: :auto_approve,
+        condition: [path: [:risk, :score], less_than: 30]
+
       transition :score_invoice, on: :ok, to: :auto_approve
       transition :escalate_review, on: :ok, to: :complete
       transition :auto_approve, on: :ok, to: :complete
@@ -131,6 +136,12 @@ defmodule SquidMesh.Runs.GraphInspectionTest do
                condition: %{path: [:risk, :score], greater_than: 70},
                status: :selected,
                selected?: true
+             },
+             %{
+               id: "score_invoice:ok:auto_approve:condition:1",
+               condition: %{path: [:risk, :score], less_than: 30},
+               status: :skipped,
+               skipped?: true
              },
              %{
                id: "score_invoice:ok:auto_approve",

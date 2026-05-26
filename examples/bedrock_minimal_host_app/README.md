@@ -57,7 +57,9 @@ The stress test covers:
 The Bedrock host app keeps the same payment recovery workflow shape as the
 minimal host app. Its successful gateway route uses the persisted numeric
 condition syntax, so Bedrock-backed runs expose the same graph metadata as the
-plain host-app smoke path:
+plain host-app smoke path. Numeric threshold routing supports both
+`greater_than` and `less_than` conditions; this host app exercises
+`greater_than` through the real gateway response:
 
 ```elixir
 transition :check_gateway_status,

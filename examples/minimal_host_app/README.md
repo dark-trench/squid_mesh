@@ -144,7 +144,9 @@ reversible.
 
 It also uses a numeric conditional transition to route successful gateway
 responses through the customer notification path, with a fallback credit path
-for non-matching success payloads:
+for non-matching success payloads. Numeric threshold routing supports both
+`greater_than` and `less_than` conditions; this host app exercises
+`greater_than` through the real gateway response:
 
 ```elixir
 transition :check_gateway_status,

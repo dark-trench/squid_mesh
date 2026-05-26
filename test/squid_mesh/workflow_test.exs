@@ -2530,6 +2530,64 @@ defmodule SquidMesh.WorkflowTest do
     end
   end
 
+  test "supports less-than conditional transitions with an unconditional fallback" do
+    module =
+      compile_module("""
+      defmodule WorkflowWithLessThanConditionalTransitions do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step :score_invoice, WorkflowWithLessThanConditionalTransitions.ScoreInvoice
+          step :manual_review, WorkflowWithLessThanConditionalTransitions.ManualReview
+          step :auto_approve, WorkflowWithLessThanConditionalTransitions.AutoApprove
+
+          transition :score_invoice,
+            on: :ok,
+            to: :auto_approve,
+            condition: [path: [:risk, :score], less_than: 30]
+
+          transition :score_invoice, on: :ok, to: :manual_review
+          transition :auto_approve, on: :ok, to: :complete
+          transition :manual_review, on: :ok, to: :complete
+        end
+      end
+      """)
+
+    assert module.workflow_definition().transitions == [
+             %{
+               from: :score_invoice,
+               on: :ok,
+               to: :auto_approve,
+               condition: %{path: [:risk, :score], less_than: 30}
+             },
+             %{from: :score_invoice, on: :ok, to: :manual_review},
+             %{from: :auto_approve, on: :ok, to: :complete},
+             %{from: :manual_review, on: :ok, to: :complete}
+           ]
+
+    assert {:ok, %{to: :auto_approve}} =
+             SquidMesh.Workflow.Definition.transition(
+               module.workflow_definition(),
+               :score_invoice,
+               :ok,
+               %{risk: %{score: 29}}
+             )
+
+    for context <- [%{risk: %{score: 30}}, %{risk: %{score: "low"}}, %{risk: %{}}] do
+      assert {:ok, %{to: :manual_review}} =
+               SquidMesh.Workflow.Definition.transition(
+                 module.workflow_definition(),
+                 :score_invoice,
+                 :ok,
+                 context
+               )
+    end
+  end
+
   test "accepts JSON round-tripped condition paths in workflow specs" do
     assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
 
@@ -2561,6 +2619,26 @@ defmodule SquidMesh.WorkflowTest do
             on: :ok,
             to: :send_email,
             condition: %{"path" => ["load_invoice"], "greater_than" => 10}
+          },
+          %{from: :send_email, on: :ok, to: :record_delivery},
+          %{from: :record_delivery, on: :ok, to: :complete}
+        ]
+    }
+
+    assert :ok = SquidMesh.Workflow.validate_spec(spec)
+  end
+
+  test "accepts JSON round-tripped less-than conditions in workflow specs" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
+
+    spec = %{
+      spec
+      | transitions: [
+          %{
+            from: :load_invoice,
+            on: :ok,
+            to: :send_email,
+            condition: %{"path" => ["load_invoice"], "less_than" => 10}
           },
           %{from: :send_email, on: :ok, to: :record_delivery},
           %{from: :record_delivery, on: :ok, to: :complete}
@@ -2618,6 +2696,30 @@ defmodule SquidMesh.WorkflowTest do
     end
   end
 
+  test "rejects less-than conditions with non-numeric values" do
+    assert_raise ArgumentError, "invalid transition condition", fn ->
+      compile_module("""
+      defmodule WorkflowWithNonNumericLessThanConditionalValue do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step :score_invoice, WorkflowWithNonNumericLessThanConditionalValue.ScoreInvoice
+          step :auto_approve, WorkflowWithNonNumericLessThanConditionalValue.AutoApprove
+
+          transition :score_invoice,
+            on: :ok,
+            to: :auto_approve,
+            condition: [path: [:risk, :score], less_than: "30"]
+        end
+      end
+      """)
+    end
+  end
+
   test "returns structured errors for malformed list conditions in workflow specs" do
     assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
 
@@ -2659,7 +2761,7 @@ defmodule SquidMesh.WorkflowTest do
             from: :load_invoice,
             on: :ok,
             to: :send_email,
-            condition: %{"path" => ["load_invoice"], "equals" => "daily", "greater_than" => 10}
+            condition: %{"path" => ["load_invoice"], "greater_than" => 10, "less_than" => 20}
           },
           %{from: :send_email, on: :ok, to: :record_delivery},
           %{from: :record_delivery, on: :ok, to: :complete}

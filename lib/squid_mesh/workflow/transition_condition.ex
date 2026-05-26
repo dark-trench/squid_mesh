@@ -8,13 +8,14 @@ defmodule SquidMesh.Workflow.TransitionCondition do
           | String.t()
           | [json_value()]
           | %{optional(String.t()) => json_value()}
-  @type operator :: :equals | :greater_than
+  @type operator :: :equals | :greater_than | :less_than
   @type t ::
           %{required(:path) => [atom()], required(:equals) => json_value()}
           | %{required(:path) => [atom()], required(:greater_than) => number()}
+          | %{required(:path) => [atom()], required(:less_than) => number()}
   @type error :: :invalid_condition
 
-  @operators [:equals, :greater_than]
+  @operators [:equals, :greater_than, :less_than]
 
   @doc false
   @spec normalize(term()) :: {:ok, t()} | {:error, error()}
@@ -54,6 +55,12 @@ defmodule SquidMesh.Workflow.TransitionCondition do
           _value -> false
         end)
 
+      {:ok, %{path: path, less_than: expected}} ->
+        match_fetched_value?(context, path, fn
+          value when is_number(value) -> value < expected
+          _value -> false
+        end)
+
       {:error, :invalid_condition} ->
         false
     end
@@ -72,6 +79,9 @@ defmodule SquidMesh.Workflow.TransitionCondition do
 
       {:ok, %{path: path, greater_than: expected}} ->
         %{"path" => Enum.map(path, &Atom.to_string/1), "greater_than" => expected}
+
+      {:ok, %{path: path, less_than: expected}} ->
+        %{"path" => Enum.map(path, &Atom.to_string/1), "less_than" => expected}
 
       {:error, :invalid_condition} ->
         nil
@@ -145,6 +155,7 @@ defmodule SquidMesh.Workflow.TransitionCondition do
   defp condition_key?(operator) when operator in @operators, do: true
   defp condition_key?("equals"), do: true
   defp condition_key?("greater_than"), do: true
+  defp condition_key?("less_than"), do: true
   defp condition_key?(_key), do: false
 
   defp fetch_condition_operator(condition) do
@@ -171,6 +182,10 @@ defmodule SquidMesh.Workflow.TransitionCondition do
   defp valid_operator_value?(:equals, expected), do: json_value?(expected)
 
   defp valid_operator_value?(:greater_than, expected) do
+    is_number(expected) and json_value?(expected)
+  end
+
+  defp valid_operator_value?(:less_than, expected) do
     is_number(expected) and json_value?(expected)
   end
 
