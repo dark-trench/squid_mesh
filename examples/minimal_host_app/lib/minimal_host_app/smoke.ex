@@ -39,22 +39,49 @@ defmodule MinimalHostApp.Smoke do
       gateway_url: RuntimeHarness.endpoint_url(port, "/gateway")
     }
 
-    with {:ok, run} <- WorkflowRuns.start_payment_recovery(attrs),
-         :ok <- RuntimeHarness.wait_for_execution(),
-         {:ok, inspected_run} <-
-           RuntimeHarness.await_terminal_run(run.run_id, attempts: @poll_attempts) do
-      IO.puts("started run #{run.run_id} for #{inspect(run.workflow)}")
-      RuntimeHarness.stop_gateway_server(server_pid)
+    try do
+      with {:ok, run} <- WorkflowRuns.start_payment_recovery(attrs),
+           :ok <- RuntimeHarness.wait_for_execution(),
+           {:ok, inspected_run} <-
+             RuntimeHarness.await_terminal_run(run.run_id, attempts: @poll_attempts),
+           {:ok, graph} <- SquidMesh.inspect_run_graph(run.run_id) do
+        IO.puts("started run #{run.run_id} for #{inspect(run.workflow)}")
 
-      unless inspected_run.run_id == run.run_id and inspected_run.status == :completed do
-        raise "unexpected smoke result"
+        unless inspected_run.run_id == run.run_id and inspected_run.status == :completed do
+          raise "unexpected smoke result"
+        end
+
+        unless selected_gateway_success_route?(graph) do
+          raise "unexpected payment recovery conditional route"
+        end
+
+        inspected_run
+      else
+        {:error, reason} ->
+          raise "smoke test failed: #{inspect(reason)}"
       end
-
-      inspected_run
-    else
-      {:error, reason} ->
-        raise "smoke test failed: #{inspect(reason)}"
+    after
+      RuntimeHarness.stop_gateway_server(server_pid)
     end
+  end
+
+  defp selected_gateway_success_route?(graph) do
+    graph
+    |> SquidMesh.Runs.GraphInspection.to_map()
+    |> Map.fetch!(:edges)
+    |> Enum.any?(fn
+      %{
+        from: "check_gateway_status",
+        to: "notify_customer",
+        outcome: :ok,
+        selected?: true,
+        condition: %{path: [:gateway_check, :status_code], greater_than: 199}
+      } ->
+        true
+
+      _edge ->
+        false
+    end)
   end
 
   @spec run_all!() :: %{
@@ -403,39 +430,58 @@ defmodule MinimalHostApp.Smoke do
     RuntimeHarness.ensure_runtime_started()
     queue = journal_run_queue()
 
+    {server_pid, port} =
+      RuntimeHarness.start_gateway_server(
+        fn _attempt -> RuntimeHarness.success_gateway_response("retry_required") end,
+        2
+      )
+
     attrs = %{
       account_id: "acct_journal_replay_demo",
       invoice_id: "inv_journal_replay_demo",
-      attempt_id: "attempt_journal_replay_demo"
+      attempt_id: "attempt_journal_replay_demo",
+      gateway_url: RuntimeHarness.endpoint_url(port, "/gateway")
     }
 
-    with_journal_runtime_config(queue, fn ->
-      with {:ok, started_run} <-
-             SquidMesh.start_run(
-               MinimalHostApp.Workflows.DependencyRecovery,
-               :dependency_recovery,
-               attrs
-             ),
-           {:ok, completed_run} <-
-             drain_journal_run(started_run.run_id, @journal_run_attempts),
-           {:ok, replayed_run} <- SquidMesh.replay_run(completed_run.run_id),
-           {:ok, completed_replay} <-
-             drain_journal_run(replayed_run.run_id, @journal_run_attempts) do
-        unless completed_run.status == :completed and completed_replay.status == :completed do
-          raise "unexpected journal replay smoke result"
-        end
+    try do
+      with_journal_runtime_config(queue, fn ->
+        with {:ok, started_run} <-
+               SquidMesh.start_run(
+                 MinimalHostApp.Workflows.PaymentRecovery,
+                 :payment_recovery,
+                 attrs
+               ),
+             {:ok, completed_run} <-
+               drain_journal_run(started_run.run_id, @journal_run_attempts),
+             {:ok, replayed_run} <-
+               SquidMesh.replay_run(completed_run.run_id, allow_irreversible: true),
+             {:ok, completed_replay} <-
+               drain_journal_run(replayed_run.run_id, @journal_run_attempts),
+             {:ok, replay_graph} <- SquidMesh.inspect_run_graph(completed_replay.run_id) do
+          unless completed_run.status == :completed and completed_replay.status == :completed do
+            raise "unexpected journal replay smoke result"
+          end
 
-        unless replayed_run.replayed_from_run_id == completed_run.run_id and
-                 replayed_run.input == attrs do
-          raise "unexpected journal replay lineage"
-        end
+          unless replayed_run.replayed_from_run_id == completed_run.run_id and
+                   replayed_run.input == attrs do
+            raise "unexpected journal replay lineage"
+          end
 
-        completed_replay
-      else
-        {:error, reason} ->
-          raise "journal replay smoke test failed: #{inspect(reason)}"
-      end
-    end)
+          unless selected_gateway_success_route?(replay_graph) and
+                   completed_replay.context.notification.channel == "email" and
+                   completed_replay.context.gateway_check.status == "retry_required" do
+            raise "unexpected journal replay conditional route"
+          end
+
+          completed_replay
+        else
+          {:error, reason} ->
+            raise "journal replay smoke test failed: #{inspect(reason)}"
+        end
+      end)
+    after
+      RuntimeHarness.stop_gateway_server(server_pid)
+    end
   end
 
   @doc """

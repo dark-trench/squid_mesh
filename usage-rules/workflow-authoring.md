@@ -39,7 +39,9 @@
 - Use step `input:` to select only the data a step needs.
 - Use step `output:` to place returned data under stable keys.
 - Use conditional transitions for inspectable routing decisions.
-- Keep condition `equals` values JSON-safe.
+- Use `equals` for exact matches and `greater_than` or `less_than` for numeric
+  threshold routing.
+- Keep condition values JSON-safe so selected routes can be persisted.
 
 ## Manual And Long-Running Work
 

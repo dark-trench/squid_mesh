@@ -66,6 +66,32 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert Enum.any?(payment_recovery_entities, fn
              %SquidMesh.Workflow.TransitionSpec{
                from: :check_gateway_status,
+               on: :ok,
+               to: :notify_customer,
+               condition: %{path: [:gateway_check, :status_code], greater_than: 199}
+             } ->
+               true
+
+             _other ->
+               false
+           end)
+
+    assert Enum.any?(payment_recovery_entities, fn
+             %SquidMesh.Workflow.TransitionSpec{
+               from: :check_gateway_status,
+               on: :ok,
+               to: :issue_gateway_credit,
+               condition: condition
+             } ->
+               is_nil(condition)
+
+             _other ->
+               false
+           end)
+
+    assert Enum.any?(payment_recovery_entities, fn
+             %SquidMesh.Workflow.TransitionSpec{
+               from: :check_gateway_status,
                on: :error,
                to: :issue_gateway_credit,
                recovery: :compensation
@@ -146,6 +172,22 @@ defmodule MinimalHostApp.WorkflowRunsTest do
            ]
 
     assert Enum.any?(graph["edges"], &(&1["recovery"] == "compensation"))
+
+    assert Enum.any?(graph["edges"], fn edge ->
+             edge["from"] == "check_gateway_status" and
+               edge["to"] == "notify_customer" and
+               edge["condition"] == %{
+                 "path" => ["gateway_check", "status_code"],
+                 "greater_than" => 199
+               }
+           end)
+
+    assert Enum.any?(graph["edges"], fn edge ->
+             edge["from"] == "check_gateway_status" and
+               edge["to"] == "issue_gateway_credit" and
+               edge["outcome"] == "ok" and
+               edge["condition"] == nil
+           end)
   end
 
   test "starts the example payment recovery workflow through the host boundary" do
@@ -916,6 +958,8 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert journal_replay.status == :completed
     assert journal_replay.replayed_from_run_id
+    assert journal_replay.context.notification.channel == "email"
+    assert journal_replay.context.gateway_check.status == "retry_required"
 
     assert journal_cron_digest.status == :completed
     assert journal_cron_digest.trigger == "daily_digest"

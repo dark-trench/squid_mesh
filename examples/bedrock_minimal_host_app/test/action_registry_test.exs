@@ -2,6 +2,7 @@ defmodule BedrockMinimalHostApp.ActionRegistryTest do
   use ExUnit.Case, async: true
 
   alias BedrockMinimalHostApp.Steps
+  alias BedrockMinimalHostApp.Workflows.PaymentRecovery
 
   test "validates runtime-authored specs through host-owned action keys" do
     spec = %SquidMesh.Workflow.Spec{
@@ -49,5 +50,29 @@ defmodule BedrockMinimalHostApp.ActionRegistryTest do
              {:load_invoice, Steps.LoadInvoice, "payment.load_invoice"},
              {:notify_customer, Steps.NotifyCustomer, "payment.notify_customer"}
            ]
+  end
+
+  test "compiled payment recovery workflow exposes numeric gateway routing condition" do
+    assert {:ok, spec} = SquidMesh.Workflow.to_spec(PaymentRecovery)
+
+    assert Enum.any?(spec.transitions, fn
+             %{
+               from: :check_gateway_status,
+               on: :ok,
+               to: :notify_customer,
+               condition: %{path: [:gateway_check, :status_code], greater_than: 199}
+             } ->
+               true
+
+             _transition ->
+               false
+           end)
+
+    assert Enum.any?(spec.transitions, fn transition ->
+             match?(
+               %{from: :check_gateway_status, on: :ok, to: :issue_gateway_credit},
+               transition
+             ) and is_nil(Map.get(transition, :condition))
+           end)
   end
 end

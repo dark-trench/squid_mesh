@@ -288,6 +288,23 @@ transition :classify,
 transition :classify, on: :ok, to: :manual_review
 ```
 
+Numeric routing can use `greater_than` and `less_than` against accumulated
+durable context:
+
+```elixir
+transition :check_gateway_status,
+  on: :ok,
+  to: :notify_customer,
+  condition: [path: [:gateway_check, :status_code], greater_than: 199]
+
+transition :score_invoice,
+  on: :ok,
+  to: :auto_approve,
+  condition: [path: [:risk, :score], less_than: 30]
+
+transition :check_gateway_status, on: :ok, to: :issue_gateway_credit
+```
+
 The normalized spec exposes the condition as data:
 
 ```elixir
@@ -306,8 +323,10 @@ The normalized spec exposes the condition as data:
 
 At runtime, Squid Mesh evaluates conditional transitions in declaration order.
 The first matching condition wins; an unconditional transition is the fallback.
-Condition `equals` values must be JSON-safe values because the selected route is
-persisted in durable run history.
+Condition values must be JSON-safe because the selected route is persisted in
+durable run history. `greater_than` and `less_than` expect numeric condition
+values and only match numeric runtime values; missing paths and type mismatches
+fall through to the next declared condition or fallback.
 
 Invalid specs return structured errors:
 

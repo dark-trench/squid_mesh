@@ -26,7 +26,13 @@ defmodule MinimalHostApp.Workflows.PaymentRecovery do
     step :notify_customer, MinimalHostApp.Steps.NotifyCustomer, compensatable: false
 
     transition :load_invoice, on: :ok, to: :check_gateway_status
-    transition :check_gateway_status, on: :ok, to: :notify_customer
+
+    transition :check_gateway_status,
+      on: :ok,
+      to: :notify_customer,
+      condition: [path: [:gateway_check, :status_code], greater_than: 199]
+
+    transition :check_gateway_status, on: :ok, to: :issue_gateway_credit
 
     transition :check_gateway_status,
       on: :error,

@@ -54,6 +54,22 @@ The stress test covers:
 - the `SquidMesh.Executor.Leases` contract through a Bedrock-backed example
   adapter
 
+The Bedrock host app keeps the same payment recovery workflow shape as the
+minimal host app. Its successful gateway route uses the persisted numeric
+condition syntax, so Bedrock-backed runs expose the same graph metadata as the
+plain host-app smoke path. Numeric threshold routing supports both
+`greater_than` and `less_than` conditions; this host app exercises
+`greater_than` through the real gateway response:
+
+```elixir
+transition :check_gateway_status,
+  on: :ok,
+  to: :notify_customer,
+  condition: [path: [:gateway_check, :status_code], greater_than: 199]
+
+transition :check_gateway_status, on: :ok, to: :issue_gateway_credit
+```
+
 The example intentionally does not include another job backend. That keeps the
 adapter boundary clear while the spike evaluates Bedrock as the host-owned
 delivery and leasing layer for Jido-native Squid Mesh execution.
