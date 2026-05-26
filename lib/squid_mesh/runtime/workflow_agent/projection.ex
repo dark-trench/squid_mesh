@@ -12,6 +12,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   @type anomaly :: %{
           required(:reason) => atom(),
           required(:entry_type) => atom(),
+          optional(:child_run_id) => String.t(),
           optional(:runnable_key) => String.t(),
           optional(:run_id) => String.t(),
           optional(:step) => String.t()
@@ -40,6 +41,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
           applied_results: %{optional(String.t()) => map() | nil},
           applied_execution_opts: %{optional(String.t()) => keyword()},
           applied_at: %{optional(String.t()) => DateTime.t()},
+          child_runs: [map()],
           manual_state: manual_state() | nil,
           terminal_status: atom() | nil,
           anomalies: [anomaly()]
@@ -58,6 +60,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
             applied_results: %{},
             applied_execution_opts: %{},
             applied_at: %{},
+            child_runs: [],
             manual_state: nil,
             terminal_status: nil,
             anomalies: []
@@ -178,6 +181,22 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   end
 
   @doc false
+  @spec child_runs(t()) :: [map()]
+  def child_runs(%__MODULE__{} = projection) do
+    child_runs = Map.get(projection, :child_runs, [])
+
+    child_runs
+    |> Enum.reverse()
+    |> Enum.sort_by(&{Map.get(&1, :child_key), Map.get(&1, :child_run_id)})
+  end
+
+  @doc false
+  @spec upgrade(t()) :: t()
+  def upgrade(%__MODULE__{} = projection) do
+    Map.put_new(projection, :child_runs, [])
+  end
+
+  @doc false
   @spec anomalies(t()) :: [anomaly()]
   def anomalies(%__MODULE__{anomalies: anomalies}), do: Enum.reverse(anomalies)
 
@@ -218,6 +237,17 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
     if required_present?(data, [:run_id, :runnable_key]) do
       runnable_key = Map.fetch!(data, :runnable_key)
       apply_runnable_result(projection, entry, data, runnable_key)
+    else
+      add_anomaly(projection, entry, :malformed_entry)
+    end
+  end
+
+  defp apply_entry(
+         %Entry{type: :child_run_started, data: data} = entry,
+         %__MODULE__{} = projection
+       ) do
+    if child_run_data?(data) do
+      put_child_run(projection, entry, data)
     else
       add_anomaly(projection, entry, :malformed_entry)
     end
@@ -298,6 +328,60 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
       |> refresh_status()
     else
       add_anomaly(projection, entry, :unknown_runnable_intent)
+    end
+  end
+
+  defp child_run_data?(data) do
+    required_present?(
+      data,
+      [:run_id, :child_run_id, :child_workflow, :child_trigger, :child_key, :origin]
+    ) and is_map(Map.fetch!(data, :origin)) and is_map(Map.get(data, :metadata, %{}))
+  end
+
+  defp put_child_run(%__MODULE__{} = projection, entry, data) do
+    child_run = %{
+      child_run_id: data.child_run_id,
+      child_workflow: data.child_workflow,
+      child_trigger: data.child_trigger,
+      child_key: data.child_key,
+      origin: data.origin,
+      metadata: Map.get(data, :metadata, %{}),
+      started_at: child_started_at(data, entry)
+    }
+
+    child_runs = Map.get(projection, :child_runs, [])
+
+    cond do
+      Enum.any?(child_runs, &conflicting_child_run?(&1, child_run)) ->
+        add_child_run_anomaly(projection, entry, child_run.child_run_id)
+
+      Enum.any?(child_runs, &same_child_run?(&1, child_run)) ->
+        projection
+
+      true ->
+        %__MODULE__{
+          projection
+          | run_id: projection.run_id || data.run_id,
+            child_runs: [child_run | child_runs]
+        }
+    end
+  end
+
+  defp same_child_run?(left, right) do
+    Map.take(left, [:child_run_id, :child_workflow, :child_trigger, :child_key]) ==
+      Map.take(right, [:child_run_id, :child_workflow, :child_trigger, :child_key])
+  end
+
+  defp conflicting_child_run?(left, right) do
+    Map.get(left, :child_run_id) == Map.get(right, :child_run_id) and
+      Map.take(left, [:child_workflow, :child_trigger, :child_key, :metadata]) !=
+        Map.take(right, [:child_workflow, :child_trigger, :child_key, :metadata])
+  end
+
+  defp child_started_at(data, entry) do
+    case Map.get(data, :started_at) do
+      %DateTime{} = started_at -> started_at
+      _missing -> entry.occurred_at
     end
   end
 
@@ -460,6 +544,20 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
     %__MODULE__{projection | anomalies: [anomaly | projection.anomalies]}
   end
 
+  defp add_child_run_anomaly(%__MODULE__{} = projection, %Entry{} = entry, child_run_id) do
+    data = data_map(entry)
+
+    anomaly =
+      %{
+        reason: :conflicting_child_run,
+        entry_type: entry.type
+      }
+      |> maybe_put_run_id(Map.get(data, :run_id))
+      |> maybe_put_child_run_id(child_run_id)
+
+    %__MODULE__{projection | anomalies: [anomaly | projection.anomalies]}
+  end
+
   defp required_present?(data, fields) when is_map(data) do
     Enum.all?(fields, &(Map.has_key?(data, &1) and not is_nil(Map.fetch!(data, &1))))
   end
@@ -471,6 +569,12 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
 
   defp maybe_put_run_id(anomaly, nil), do: anomaly
   defp maybe_put_run_id(anomaly, run_id), do: Map.put(anomaly, :run_id, run_id)
+
+  defp maybe_put_child_run_id(anomaly, nil), do: anomaly
+
+  defp maybe_put_child_run_id(anomaly, child_run_id) do
+    Map.put(anomaly, :child_run_id, child_run_id)
+  end
 
   defp maybe_put_runnable_key(anomaly, nil), do: anomaly
 

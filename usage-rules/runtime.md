@@ -14,6 +14,9 @@
   durable in the dispatch thread.
 - Preserve terminal-run fencing: later claims, completions, manual actions, or
   wakeups for a terminal run must not mutate terminal state.
+- Preserve child-run lineage as durable journal facts. Child starts must be
+  idempotent for the parent run, parent step, child workflow, child trigger, and
+  `child_key`.
 
 ## Execution
 
@@ -26,6 +29,9 @@
   worker.
 - Cancellation, replay, pause, approval, rejection, and unblock behavior must
   append durable facts before exposing success.
+- Starting a child run must append parent lineage and start the child as one
+  repairable journal operation; stale parent contexts and terminal parent runs
+  must be rejected at the boundary.
 
 ## Storage
 

@@ -13,6 +13,11 @@
 ## Steps
 
 - Prefer `use SquidMesh.Step` for custom steps.
+- Use `SquidMesh.start_child_run/4` or `SquidMesh.start_child_run/5` only from
+  native steps that receive `SquidMesh.Step.Context`.
+- Provide a stable, storage-safe `:child_key` for every child run; treat it as
+  the idempotency key for the parent run and parent step.
+- Keep child workflow modules backend-neutral, the same as parent workflows.
 - Return `{:ok, output}` for success.
 - Return `{:error, reason}` for terminal failure governed by workflow routing.
 - Return `{:retry, reason}` or `{:retry, reason, opts}` for retryable failure.
@@ -41,5 +46,8 @@
   `compensatable: false`.
 - Use `recovery: :compensation` or `recovery: :undo` on error transitions when
   the route has operational meaning.
+- Treat child runs as separate replay, retry, cancellation, and inspection
+  boundaries. Do not mutate already-run parent steps to simulate dynamic
+  expansion.
 - Do not rely on "this step should only run once" as the side-effect safety
   model.

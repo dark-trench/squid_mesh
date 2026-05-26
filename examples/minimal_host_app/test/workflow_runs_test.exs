@@ -149,6 +149,193 @@ defmodule MinimalHostApp.WorkflowRunsTest do
            }
   end
 
+  test "executes a nested workflow through the host boundary with durable parent and child retries" do
+    child_queue = "minimal-host-app-nested-child-#{System.unique_integer([:positive])}"
+
+    attrs = %{
+      party_id: "party_123",
+      guest_id: "guest_456",
+      child_queue: child_queue,
+      fail_after_child_start: true,
+      fail_child_once: true
+    }
+
+    assert {:ok, run} = WorkflowRuns.start_nested_invite_delivery(attrs)
+    assert [%{step: "start_nested_invite", status: :available}] = run.visible_attempts
+
+    assert {:ok, retried_parent} =
+             SquidMesh.execute_next(owner_id: "minimal-host-app-nested-parent-test")
+
+    assert retried_parent.status == :running
+
+    assert [
+             %{
+               child_run_id: child_run_id,
+               child_key: "invite_guest_456",
+               child_trigger: "deliver_invite",
+               metadata: %{guest_id: "guest_456"}
+             }
+           ] = retried_parent.child_runs
+
+    assert [%{step: "start_nested_invite", status: :retry_scheduled, attempt_number: 2}] =
+             retried_parent.visible_attempts
+
+    assert {:ok, child_before_parent_retry} =
+             WorkflowRuns.inspect_run(child_run_id, queue: child_queue)
+
+    assert child_before_parent_retry.status == :running
+
+    assert [%{step: "deliver_invite", status: :available}] =
+             child_before_parent_retry.visible_attempts
+
+    Repo.delete_all("squid_mesh_journal_checkpoints")
+
+    assert {:ok, reconstructed_retried_parent} = WorkflowRuns.inspect_run(run.run_id)
+
+    assert {:ok, reconstructed_waiting_child} =
+             WorkflowRuns.inspect_run(child_run_id, queue: child_queue)
+
+    assert reconstructed_retried_parent.child_runs == retried_parent.child_runs
+    assert reconstructed_waiting_child.parent_run == child_before_parent_retry.parent_run
+    assert reconstructed_waiting_child.status == :running
+
+    assert {:ok, completed_parent} =
+             SquidMesh.execute_next(owner_id: "minimal-host-app-nested-parent-test")
+
+    assert completed_parent.status == :completed
+
+    assert {:ok, child_still_running} = WorkflowRuns.inspect_run(child_run_id, queue: child_queue)
+    assert child_still_running.status == :running
+
+    assert {:ok, child_retrying} =
+             SquidMesh.execute_next(
+               owner_id: "minimal-host-app-nested-child-test",
+               queue: child_queue
+             )
+
+    assert child_retrying.status == :running
+
+    assert [%{step: "deliver_invite", status: :retry_scheduled, attempt_number: 2}] =
+             child_retrying.visible_attempts
+
+    Repo.delete_all("squid_mesh_journal_checkpoints")
+
+    assert {:ok, reconstructed_retrying_child} =
+             WorkflowRuns.inspect_run(child_run_id, queue: child_queue)
+
+    assert reconstructed_retrying_child.visible_attempts == child_retrying.visible_attempts
+    assert reconstructed_retrying_child.parent_run == child_before_parent_retry.parent_run
+
+    assert {:ok, completed_child} =
+             SquidMesh.execute_next(
+               owner_id: "minimal-host-app-nested-child-test",
+               queue: child_queue
+             )
+
+    assert completed_child.status == :completed
+
+    assert completed_parent.context.invite_child == %{
+             run_id: child_run_id,
+             child_key: "invite_guest_456",
+             queue: child_queue,
+             reused_after_retry?: true
+           }
+
+    assert {:ok, parent_history} = WorkflowRuns.inspect_run(run.run_id, include_history: true)
+
+    assert {:ok, child_history} =
+             WorkflowRuns.inspect_run(child_run_id, queue: child_queue, include_history: true)
+
+    assert [
+             {"start_nested_invite", :failed, false, 1},
+             {"start_nested_invite", :completed, true, 2}
+           ] =
+             Enum.map(
+               parent_history.attempts,
+               &{&1.step, &1.status, &1.applied?, &1.attempt_number}
+             )
+
+    assert [
+             {"deliver_invite", :failed, false, 1},
+             {"deliver_invite", :completed, true, 2}
+           ] =
+             Enum.map(
+               child_history.attempts,
+               &{&1.step, &1.status, &1.applied?, &1.attempt_number}
+             )
+
+    assert [%{runnable_key: parent_runnable_key} | _remaining_parent_attempts] =
+             parent_history.attempts
+
+    assert child_history.parent_run == %{
+             run_id: run.run_id,
+             runnable_key: parent_runnable_key,
+             step: "start_nested_invite",
+             attempt: 1,
+             child_key: "invite_guest_456",
+             metadata: %{guest_id: "guest_456"}
+           }
+
+    Repo.delete_all("squid_mesh_journal_checkpoints")
+
+    assert {:ok, reconstructed_parent} = WorkflowRuns.inspect_run(run.run_id)
+    assert {:ok, reconstructed_child} = WorkflowRuns.inspect_run(child_run_id, queue: child_queue)
+
+    assert reconstructed_parent.child_runs == parent_history.child_runs
+    assert reconstructed_child.parent_run == child_history.parent_run
+
+    assert {:ok, replayed_parent} = WorkflowRuns.replay_run(run.run_id)
+    assert replayed_parent.replayed_from_run_id == run.run_id
+    assert replayed_parent.child_runs == []
+
+    assert {:ok, replayed_after_first_attempt} =
+             SquidMesh.execute_next(owner_id: "minimal-host-app-nested-replay-test")
+
+    assert [%{child_run_id: replayed_child_run_id}] = replayed_after_first_attempt.child_runs
+    refute replayed_child_run_id == child_run_id
+
+    assert {:ok, replayed_completed_parent} =
+             SquidMesh.execute_next(owner_id: "minimal-host-app-nested-replay-test")
+
+    assert replayed_completed_parent.status == :completed
+    assert replayed_completed_parent.context.invite_child.run_id == replayed_child_run_id
+    assert replayed_completed_parent.context.invite_child.reused_after_retry? == true
+
+    assert {:ok, replayed_retrying_child} =
+             SquidMesh.execute_next(
+               owner_id: "minimal-host-app-nested-replay-child-test",
+               queue: child_queue
+             )
+
+    assert replayed_retrying_child.status == :running
+
+    assert {:ok, replayed_completed_child} =
+             SquidMesh.execute_next(
+               owner_id: "minimal-host-app-nested-replay-child-test",
+               queue: child_queue
+             )
+
+    assert replayed_completed_child.status == :completed
+
+    assert {:ok, replayed_child_history} =
+             WorkflowRuns.inspect_run(replayed_child_run_id,
+               queue: child_queue,
+               include_history: true
+             )
+
+    assert [
+             {"deliver_invite", :failed, false, 1},
+             {"deliver_invite", :completed, true, 2}
+           ] =
+             Enum.map(
+               replayed_child_history.attempts,
+               &{&1.step, &1.status, &1.applied?, &1.attempt_number}
+             )
+
+    assert replayed_child_history.parent_run.run_id == replayed_parent.run_id
+    assert replayed_child_history.parent_run.child_key == "invite_guest_456"
+  end
+
   test "executes a dependency workflow through the supervised journal run loop" do
     attrs = %{
       account_id: "acct_supervised_run",
@@ -558,6 +745,8 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              manual_digest: manual_digest,
              local_ledger_checkout: local_ledger_checkout,
              local_ledger_rollback: local_ledger_rollback,
+             nested_invite_delivery: nested_invite_delivery,
+             nested_invite_child: nested_invite_child,
              journal_run: journal_run,
              journal_recovery: journal_recovery,
              journal_cancellation: journal_cancellation,
@@ -587,6 +776,12 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert [%{step: "post_local_ledger_entries", status: :failed}] =
              local_ledger_rollback.attempts
+
+    assert nested_invite_delivery.status == :completed
+    assert nested_invite_delivery.context.invite_child.reused_after_retry? == true
+
+    assert nested_invite_child.status == :completed
+    assert nested_invite_child.context.invite_delivery.status == "delivered"
 
     assert journal_run.status == :completed
     assert journal_run.applied_runnable_keys == journal_run.planned_runnable_keys

@@ -115,6 +115,8 @@ defmodule SquidMesh.ReadModel.Inspection do
       trigger: workflow_projection.trigger,
       input: workflow_projection.input,
       context: snapshot_context(workflow_projection),
+      parent_run: parent_run(workflow_projection),
+      child_runs: WorkflowAgent.Projection.child_runs(workflow_projection),
       replayed_from_run_id: workflow_projection.replayed_from_run_id,
       queue: queue,
       status: WorkflowAgent.status(workflow_agent),
@@ -189,6 +191,13 @@ defmodule SquidMesh.ReadModel.Inspection do
     projection
     |> applied_result_context()
     |> Map.merge(projection.context)
+  end
+
+  defp parent_run(%WorkflowAgent.Projection{context: context}) when is_map(context) do
+    case Map.fetch(context, :parent) do
+      {:ok, parent} -> parent
+      :error -> Map.get(context, "parent")
+    end
   end
 
   defp applied_result_context(%WorkflowAgent.Projection{} = projection) do

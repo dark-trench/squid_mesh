@@ -55,6 +55,150 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
     assert WorkflowAgent.applied_runnable_keys(agent) == MapSet.new()
   end
 
+  test "rebuilds parent and child run lineage from durable run entries" do
+    child_run_id = "child_run_123"
+
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, child_started} =
+             DispatchProtocol.new_entry(:child_run_started, %{
+               run_id: @run_id,
+               child_run_id: child_run_id,
+               child_workflow: @workflow,
+               child_trigger: "manual",
+               child_key: "digest_subscription_1",
+               origin: %{
+                 runnable_key: @runnable_key,
+                 step: "charge_card",
+                 attempt: 1
+               },
+               metadata: %{subscription_id: "sub_123"},
+               started_at: @completed_at,
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, [run_started, child_started])
+
+    assert {:ok, agent} = WorkflowAgent.rebuild(@storage, @run_id)
+
+    assert [
+             %{
+               child_run_id: ^child_run_id,
+               child_workflow: @workflow,
+               child_trigger: "manual",
+               child_key: "digest_subscription_1",
+               origin: %{
+                 runnable_key: @runnable_key,
+                 step: "charge_card",
+                 attempt: 1
+               },
+               metadata: %{subscription_id: "sub_123"},
+               started_at: @completed_at
+             }
+           ] = Projection.child_runs(agent.state.projection)
+  end
+
+  test "deduplicates matching child run lineage during reconstruction" do
+    child_run_id = "child_run_123"
+
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, child_started} =
+             DispatchProtocol.new_entry(:child_run_started, %{
+               run_id: @run_id,
+               child_run_id: child_run_id,
+               child_workflow: @workflow,
+               child_trigger: "manual",
+               child_key: "digest_subscription_1",
+               origin: %{runnable_key: @runnable_key, step: "charge_card", attempt: 1},
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, retry_child_started} =
+             DispatchProtocol.new_entry(:child_run_started, %{
+               run_id: @run_id,
+               child_run_id: child_run_id,
+               child_workflow: @workflow,
+               child_trigger: "manual",
+               child_key: "digest_subscription_1",
+               origin: %{runnable_key: "#{@runnable_key}:retry", step: "charge_card", attempt: 2},
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, %{rev: 3}} =
+             Journal.append_entries(@storage, [run_started, child_started, retry_child_started])
+
+    assert {:ok, agent} = WorkflowAgent.rebuild(@storage, @run_id)
+
+    assert [%{child_run_id: ^child_run_id}] = Projection.child_runs(agent.state.projection)
+    assert Projection.anomalies(agent.state.projection) == []
+  end
+
+  test "records an anomaly for conflicting child run lineage during reconstruction" do
+    child_run_id = "child_run_123"
+
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, child_started} =
+             DispatchProtocol.new_entry(:child_run_started, %{
+               run_id: @run_id,
+               child_run_id: child_run_id,
+               child_workflow: @workflow,
+               child_trigger: "manual",
+               child_key: "digest_subscription_1",
+               origin: %{runnable_key: @runnable_key, step: "charge_card", attempt: 1},
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, conflicting_child_started} =
+             DispatchProtocol.new_entry(:child_run_started, %{
+               run_id: @run_id,
+               child_run_id: child_run_id,
+               child_workflow: @workflow,
+               child_trigger: "manual",
+               child_key: "digest_subscription_1",
+               origin: %{runnable_key: @runnable_key, step: "charge_card", attempt: 1},
+               metadata: %{subscription_id: "conflicting"},
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, %{rev: 3}} =
+             Journal.append_entries(@storage, [
+               run_started,
+               child_started,
+               conflicting_child_started
+             ])
+
+    assert {:ok, agent} = WorkflowAgent.rebuild(@storage, @run_id)
+
+    assert [%{child_run_id: ^child_run_id, metadata: %{}}] =
+             Projection.child_runs(agent.state.projection)
+
+    assert [
+             %{
+               reason: :conflicting_child_run,
+               entry_type: :child_run_started,
+               run_id: @run_id,
+               child_run_id: ^child_run_id
+             }
+           ] = Projection.anomalies(agent.state.projection)
+  end
+
   test "uses a current checkpoint instead of replaying the full run thread" do
     assert {:ok, run_started} =
              DispatchProtocol.new_entry(:run_started, %{
@@ -81,6 +225,36 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
 
     assert agent.state.projection == checkpoint_projection
     assert WorkflowAgent.planned_runnable_keys(agent) == [@runnable_key]
+  end
+
+  test "upgrades older checkpoints without child run projection fields" do
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, thread} = Journal.append_entries(@storage, [run_started])
+
+    checkpoint_projection =
+      Map.delete(
+        %Projection{
+          run_id: @run_id,
+          workflow: @workflow,
+          status: :running
+        },
+        :child_runs
+      )
+
+    assert :ok =
+             Journal.put_checkpoint(@storage, {:run, @run_id}, checkpoint_projection, thread.rev,
+               updated_at: @visible_at
+             )
+
+    assert {:ok, agent} = WorkflowAgent.rebuild(@storage, @run_id)
+
+    assert Projection.child_runs(agent.state.projection) == []
   end
 
   test "persists a checkpoint from the rebuilt workflow agent state" do

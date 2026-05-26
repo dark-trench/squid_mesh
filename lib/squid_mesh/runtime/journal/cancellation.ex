@@ -50,7 +50,7 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
 
   defp cancel_or_repair(storage, run_id, %DateTime{} = now, retries_left) do
     with {:ok, workflow_agent} <- rebuild_workflow_agent(storage, run_id),
-         :ok <- cancellable?(workflow_agent),
+         :ok <- cancellable?(storage, workflow_agent),
          {:ok, terminal_entry} <- run_terminal_entry(run_id, :cancelled, now) do
       append_cancellation(storage, workflow_agent, terminal_entry, now, retries_left)
     end
@@ -76,7 +76,7 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
     end
   end
 
-  defp cancellable?(%Agent{
+  defp cancellable?(storage, %Agent{
          agent_module: WorkflowAgent,
          state: %{projection: %Projection{} = projection}
        }) do
@@ -85,9 +85,45 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
     if status in @terminal_statuses do
       {:error, {:invalid_transition, status, :cancelling}}
     else
-      :ok
+      linked_children_started?(storage, projection)
     end
   end
+
+  defp linked_children_started?(storage, %Projection{} = projection) do
+    projection
+    |> Projection.child_runs()
+    |> Enum.reduce_while(:ok, fn child_run, :ok ->
+      case child_started?(storage, child_run) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp child_started?(storage, child_run) do
+    case child_run_id(child_run) do
+      run_id when is_binary(run_id) -> load_child_thread(storage, run_id)
+      _missing_or_invalid -> child_starting_error()
+    end
+  end
+
+  defp load_child_thread(storage, run_id) do
+    case Journal.load_thread(storage, {:run, run_id}) do
+      {:ok, _thread} -> :ok
+      {:error, :not_found} -> child_starting_error()
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp child_starting_error do
+    {:error, {:invalid_transition, :child_starting, :cancelling}}
+  end
+
+  defp child_run_id(child_run) when is_map(child_run) do
+    Map.get(child_run, :child_run_id) || Map.get(child_run, "child_run_id")
+  end
+
+  defp child_run_id(_child_run), do: nil
 
   defp rebuild_workflow_agent(storage, run_id) do
     case WorkflowAgent.rebuild(storage, run_id) do

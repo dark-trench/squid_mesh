@@ -60,6 +60,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
          {:ok, planner} <- RunicPlanner.new(workflow),
          {:ok, _planned, runnables} <- RunicPlanner.plan(planner, resolved_payload),
          {:ok, run_id} <- run_id(opts),
+         :ok <- validate_initial_context(opts),
          {:ok, journal_runnables} <- journal_runnables(definition, run_id, queue, runnables, now),
          {:ok, start_state} <-
            ensure_run_started(
@@ -693,6 +694,91 @@ defmodule SquidMesh.Runtime.Journal.Starter do
     end
   end
 
+  defp validate_initial_context(opts) do
+    opts
+    |> Keyword.get(:initial_context, %{})
+    |> validate_initial_parent_context()
+  end
+
+  defp validate_initial_parent_context(context) when is_map(context) do
+    case initial_parent_context(context) do
+      nil -> :ok
+      parent when is_map(parent) -> validate_reserved_parent_context(parent)
+      _parent -> {:error, {:invalid_initial_context, {:parent, :invalid}}}
+    end
+  end
+
+  defp validate_initial_parent_context(_context), do: :ok
+
+  defp initial_parent_context(context) do
+    case Map.fetch(context, :parent) do
+      {:ok, parent} -> parent
+      :error -> Map.get(context, "parent")
+    end
+  end
+
+  defp validate_reserved_parent_context(parent) do
+    cond do
+      parent_extra_keys?(parent) ->
+        {:error, {:invalid_initial_context, {:parent, :invalid}}}
+
+      not valid_parent_identity?(parent) ->
+        {:error, {:invalid_initial_context, {:parent, :invalid}}}
+
+      not storage_safe_parent_metadata?(parent_value(parent, :metadata)) ->
+        {:error, {:invalid_initial_context, {:parent, :invalid}}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp parent_extra_keys?(parent) do
+    Enum.any?(Map.keys(parent), fn key ->
+      key not in [:run_id, :runnable_key, :step, :attempt, :child_key, :metadata] and
+        key not in ["run_id", "runnable_key", "step", "attempt", "child_key", "metadata"]
+    end)
+  end
+
+  defp valid_parent_identity?(parent) do
+    is_binary(parent_value(parent, :run_id)) and
+      is_binary(parent_value(parent, :runnable_key)) and
+      is_binary(parent_value(parent, :step)) and
+      is_integer(parent_value(parent, :attempt)) and
+      is_binary(parent_value(parent, :child_key))
+  end
+
+  defp storage_safe_parent_metadata?(metadata) when is_map(metadata),
+    do: storage_safe_value?(metadata)
+
+  defp storage_safe_parent_metadata?(nil), do: true
+
+  defp storage_safe_parent_metadata?(_metadata), do: false
+
+  defp storage_safe_value?(value) when is_binary(value) or is_number(value) or is_boolean(value),
+    do: true
+
+  defp storage_safe_value?(nil), do: true
+
+  defp storage_safe_value?(values) when is_list(values),
+    do: Enum.all?(values, &storage_safe_value?/1)
+
+  defp storage_safe_value?(%{} = map) when not is_struct(map) do
+    Enum.all?(map, fn
+      {key, value} when is_binary(key) or is_atom(key) -> storage_safe_value?(value)
+      {_key, _value} -> false
+    end)
+  end
+
+  defp storage_safe_value?(_value), do: false
+
+  defp parent_value(parent, key) when is_map(parent) do
+    case Map.fetch(parent, key) do
+      {:ok, value} -> value
+      :error -> Map.get(parent, Atom.to_string(key))
+    end
+  end
+
   defp initial_context(opts) do
     opts
     |> Keyword.get(:initial_context, %{})
@@ -701,8 +787,9 @@ defmodule SquidMesh.Runtime.Journal.Starter do
 
   defp pick_reserved_context(context) when is_map(context) do
     context
-    |> Map.take([:schedule, "schedule"])
+    |> Map.take([:schedule, "schedule", :parent, "parent"])
     |> normalize_schedule_context()
+    |> normalize_parent_context(context)
   end
 
   defp pick_reserved_context(_context), do: %{}
@@ -720,6 +807,37 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   end
 
   defp normalize_schedule_context(_context), do: %{}
+
+  defp normalize_parent_context(context, source) do
+    case Map.fetch(source, :parent) do
+      {:ok, parent} when is_map(parent) ->
+        Map.put(context, :parent, normalize_reserved_parent_context(parent))
+
+      _missing ->
+        normalize_string_parent_context(context, source)
+    end
+  end
+
+  defp normalize_string_parent_context(context, source) do
+    case Map.fetch(source, "parent") do
+      {:ok, parent} when is_map(parent) ->
+        Map.put(context, :parent, normalize_reserved_parent_context(parent))
+
+      _missing ->
+        context
+    end
+  end
+
+  defp normalize_reserved_parent_context(parent) do
+    %{
+      run_id: parent_value(parent, :run_id),
+      runnable_key: parent_value(parent, :runnable_key),
+      step: parent_value(parent, :step),
+      attempt: parent_value(parent, :attempt),
+      child_key: parent_value(parent, :child_key),
+      metadata: parent_value(parent, :metadata) || %{}
+    }
+  end
 
   defp replayed_from_run_id(opts) do
     case Keyword.get(opts, :replayed_from_run_id) do

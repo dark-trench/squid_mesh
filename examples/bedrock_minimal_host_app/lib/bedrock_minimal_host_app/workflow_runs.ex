@@ -46,6 +46,14 @@ defmodule BedrockMinimalHostApp.WorkflowRuns do
           optional(:fail_after_reserve) => boolean()
         }
 
+  @type nested_invite_delivery_attrs :: %{
+          required(:party_id) => String.t(),
+          required(:guest_id) => String.t(),
+          required(:child_queue) => String.t(),
+          optional(:fail_after_child_start) => boolean(),
+          optional(:fail_child_once) => boolean()
+        }
+
   @type run_result :: SquidMesh.ReadModel.Inspection.Snapshot.t()
   @type explanation_result :: SquidMesh.ReadModel.Explanation.Diagnostic.t()
   @type listing_result :: SquidMesh.ReadModel.Listing.Summary.t()
@@ -111,6 +119,19 @@ defmodule BedrockMinimalHostApp.WorkflowRuns do
     SquidMesh.start_run(
       BedrockMinimalHostApp.Workflows.LocalLedgerCheckout,
       :local_ledger_checkout,
+      attrs
+    )
+  end
+
+  @doc """
+  Starts the nested invite delivery example that creates a child workflow run.
+  """
+  @spec start_nested_invite_delivery(nested_invite_delivery_attrs()) ::
+          {:ok, run_result()} | {:error, term()}
+  def start_nested_invite_delivery(attrs) when is_map(attrs) do
+    SquidMesh.start_run(
+      BedrockMinimalHostApp.Workflows.NestedInviteDelivery,
+      :nested_invite_delivery,
       attrs
     )
   end

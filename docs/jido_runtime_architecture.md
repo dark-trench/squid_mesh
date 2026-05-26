@@ -33,13 +33,15 @@ The current shape is anchored in the public issue roadmap:
 | [#170](https://github.com/dark-trench/squid_mesh/issues/170) | Closed | Adds backend-owned leases, heartbeats, and fencing for running attempts |
 | [#163](https://github.com/dark-trench/squid_mesh/issues/163) | Closed | Rebuilds inspection and explanation as projections over journals and checkpoints |
 | [#140](https://github.com/dark-trench/squid_mesh/issues/140) | Closed | Adds conditional and deferred continuation through durable planner facts |
-| [#141](https://github.com/dark-trench/squid_mesh/issues/141) | Open | Adds dynamic graph expansion after the static Jido-native core is proven |
+| [#141](https://github.com/dark-trench/squid_mesh/issues/141) | Open | Adds native child workflow starts with durable parent lineage and idempotent child identity |
 | [#109](https://github.com/dark-trench/squid_mesh/issues/109) | Open | Adds reference workflows that demonstrate the target product surface |
 
-The ground rule from #160 still applies: the first core should prove a small,
-trustworthy static workflow runtime. Dynamic graph expansion, richer agent-step
-execution, and advanced reference workflows come after the journaled core is
-stable.
+The ground rule from #160 still applies: the core should keep workflow state in
+the journal and keep backend-specific delivery behind host boundaries. Dynamic
+child runs now use that rule by recording parent lineage as durable facts and
+starting each child as a normal journal run. Runtime-authored workflow specs,
+richer agent-step execution, and advanced reference workflows remain separate
+future work.
 
 ## System Overview
 
@@ -528,7 +530,7 @@ configured journal runtime.
 | --- | --- | --- |
 | Projection-backed inspection and explanation hardening | No active issue | Additional coverage for ambiguous attempt states and operator-facing edge cases |
 | Conditional paths and deferred continuation | [#140](https://github.com/dark-trench/squid_mesh/issues/140) | Durable planner facts and wakeup metadata |
-| Dynamic graph expansion | [#141](https://github.com/dark-trench/squid_mesh/issues/141) | Proven static Runic planning, stable identifiers, inspectable origin metadata |
+| Dynamic child runs | [#141](https://github.com/dark-trench/squid_mesh/issues/141) | Stable parent runnable keys, idempotent child keys, inspectable parent-child lineage |
 | Advanced reference workflows | [#109](https://github.com/dark-trench/squid_mesh/issues/109) | Implemented target features only, without Oban-specific assumptions |
 | Child-agent step lifecycle | No active core issue | Only relevant if normal steps are insufficient because child journal semantics are required |
 

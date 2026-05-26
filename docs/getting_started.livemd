@@ -10,8 +10,14 @@ integration guide.
 ## Install
 
 ```elixir
+squid_mesh_ref =
+  System.get_env(
+    "SQUID_MESH_DOCS_REF",
+    "d6f21be53c655246d18c01c94bd51a3405ff9086"
+  )
+
 Mix.install([
-  {:squid_mesh, "~> 0.1.0-beta.3"}
+  {:squid_mesh, git: "https://github.com/dark-trench/squid_mesh.git", ref: squid_mesh_ref}
 ])
 ```
 
@@ -234,6 +240,185 @@ After the first call, the `pack_lembas` attempt has been applied and the
 `cross_moria` attempt becomes visible. After the second call, the run is
 terminal. The third call returns `:none` because this queue has no visible work
 left.
+
+## Start A Child Workflow
+
+Steps can start child workflow runs when a larger workflow needs durable
+fan-out. Child starts require an explicit `child_key`; calling the same child
+start again from a retried parent step returns the same child run instead of
+creating a duplicate.
+
+This example keeps the parent and child on different queues so you can see that
+the parent retry completes before the child is drained.
+
+```elixir
+defmodule SquidMeshLivebook.DeliverInvite do
+  use SquidMesh.Step,
+    name: :deliver_invite,
+    description: "Delivers an invite from a child workflow",
+    input_schema: [
+      party_id: [type: :string, required: true],
+      guest_id: [type: :string, required: true],
+      fail_child_once: [type: :boolean, required: false]
+    ],
+    output_schema: [
+      invite_delivery: [type: :map, required: true]
+    ]
+
+  @impl SquidMesh.Step
+  def run(%{party_id: party_id, guest_id: guest_id} = input, %SquidMesh.Step.Context{
+        attempt: attempt
+      }) do
+    if Map.get(input, :fail_child_once, false) and attempt == 1 do
+      {:retry, %{message: "retry child delivery"}}
+    else
+      {:ok, %{invite_delivery: %{party_id: party_id, guest_id: guest_id, status: "delivered"}}}
+    end
+  end
+end
+
+defmodule SquidMeshLivebook.InviteDeliveryWorkflow do
+  use SquidMesh.Workflow
+
+  workflow do
+    trigger :deliver_invite do
+      manual()
+
+      payload do
+        field :party_id, :string
+        field :guest_id, :string
+        field :fail_child_once, :boolean, default: false
+      end
+    end
+
+    step :deliver_invite, SquidMeshLivebook.DeliverInvite, retry: [max_attempts: 2]
+
+    transition :deliver_invite, on: :ok, to: :complete
+  end
+end
+
+defmodule SquidMeshLivebook.StartInviteChild do
+  use SquidMesh.Step,
+    name: :start_invite_child,
+    description: "Starts a child invite workflow",
+    input_schema: [
+      party_id: [type: :string, required: true],
+      guest_id: [type: :string, required: true],
+      child_queue: [type: :string, required: true],
+      fail_after_child_start: [type: :boolean, required: false],
+      fail_child_once: [type: :boolean, required: false]
+    ],
+    output_schema: [
+      invite_child: [type: :map, required: true]
+    ]
+
+  @impl SquidMesh.Step
+  def run(
+        %{party_id: party_id, guest_id: guest_id, child_queue: child_queue} = input,
+        %SquidMesh.Step.Context{attempt: attempt} = context
+      ) do
+    child_key = "invite_#{guest_id}"
+
+    with {:ok, child_run} <-
+           SquidMesh.start_child_run(
+             context,
+             SquidMeshLivebook.InviteDeliveryWorkflow,
+             %{
+               party_id: party_id,
+               guest_id: guest_id,
+               fail_child_once: Map.get(input, :fail_child_once, false)
+             },
+             child_key: child_key,
+             metadata: %{guest_id: guest_id},
+             queue: child_queue
+           ) do
+      if Map.get(input, :fail_after_child_start, false) and attempt == 1 do
+        {:retry, %{message: "retry after child start"}}
+      else
+        {:ok,
+         %{
+           invite_child: %{
+             run_id: child_run.run_id,
+             child_key: child_key,
+             queue: child_queue,
+             reused_after_retry?: attempt > 1
+           }
+         }}
+      end
+    else
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+end
+```
+
+```elixir
+defmodule SquidMeshLivebook.NestedInviteWorkflow do
+  use SquidMesh.Workflow
+
+  workflow do
+    trigger :nested_invite do
+      manual()
+
+      payload do
+        field :party_id, :string
+        field :guest_id, :string
+        field :child_queue, :string
+        field :fail_after_child_start, :boolean, default: true
+        field :fail_child_once, :boolean, default: true
+      end
+    end
+
+    step :start_invite_child, SquidMeshLivebook.StartInviteChild, retry: [max_attempts: 2]
+
+    transition :start_invite_child, on: :ok, to: :complete
+  end
+end
+```
+
+```elixir
+child_queue = "livebook-child"
+
+{:ok, nested_parent} =
+  SquidMesh.start_run(
+    SquidMeshLivebook.NestedInviteWorkflow,
+    %{
+      party_id: "shire-party",
+      guest_id: "frodo",
+      child_queue: child_queue,
+      fail_after_child_start: true,
+      fail_child_once: true
+    },
+    opts
+  )
+
+{:ok, parent_retrying} = SquidMesh.execute_next(worker_opts)
+{:ok, parent_completed} = SquidMesh.execute_next(worker_opts)
+
+[%{child_run_id: child_run_id}] = parent_completed.child_runs
+
+{:ok, child_retrying} =
+  SquidMesh.execute_next(Keyword.merge(worker_opts, queue: child_queue))
+
+{:ok, child_completed} =
+  SquidMesh.execute_next(Keyword.merge(worker_opts, queue: child_queue))
+
+%{
+  parent_attempts: Enum.map(parent_completed.attempts, &SquidMeshLivebook.Output.attempt/1),
+  parent_child_runs: parent_completed.child_runs,
+  parent_context: parent_completed.context.invite_child,
+  child_before_drain: child_run_id,
+  child_retrying_attempts: Enum.map(child_retrying.attempts, &SquidMeshLivebook.Output.attempt/1),
+  child_completed_attempts: Enum.map(child_completed.attempts, &SquidMeshLivebook.Output.attempt/1),
+  child_parent_link: child_completed.parent_run
+}
+```
+
+The parent attempted `start_invite_child` twice, but `child_runs` contains one
+child because the second parent attempt reused the original `child_key`. The
+child also retried once before completing, and its `parent_run` points back to
+the parent step that created it.
 
 ## Inspect The Run
 

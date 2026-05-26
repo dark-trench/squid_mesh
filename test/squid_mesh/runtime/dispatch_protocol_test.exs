@@ -85,6 +85,48 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
     assert catalog_entry.data.queue == "squid_mesh"
   end
 
+  test "classifies child run lineage entries on the parent run thread" do
+    assert {:ok, entry} =
+             DispatchProtocol.new_entry(:child_run_started, %{
+               run_id: @run_id,
+               child_run_id: "child_run_123",
+               child_workflow: __MODULE__,
+               child_trigger: :manual,
+               child_key: :digest_subscription_1,
+               origin: %{
+                 runnable_key: @runnable_key,
+                 step: :charge_card,
+                 attempt: 1
+               },
+               metadata: %{subscription_id: "sub_123"},
+               occurred_at: @started_at
+             })
+
+    assert entry.thread == {:run, @run_id}
+    assert entry.data.child_workflow == Atom.to_string(__MODULE__)
+    assert entry.data.child_trigger == "manual"
+    assert entry.data.child_key == "digest_subscription_1"
+
+    assert entry.data.origin == %{
+             runnable_key: @runnable_key,
+             step: "charge_card",
+             attempt: 1
+           }
+
+    assert {:ok, legacy_origin_entry} =
+             DispatchProtocol.new_entry(:child_run_started, %{
+               run_id: @run_id,
+               child_run_id: "child_run_legacy",
+               child_workflow: @workflow,
+               child_trigger: "manual",
+               child_key: "digest_subscription_legacy",
+               origin: "legacy-origin",
+               occurred_at: @started_at
+             })
+
+    assert legacy_origin_entry.data.origin == "legacy-origin"
+  end
+
   test "normalizes manual step lifecycle entries on the run thread" do
     assert {:ok, paused_entry} =
              DispatchProtocol.new_entry(:manual_step_paused, %{
@@ -164,6 +206,26 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
                step: :wait_for_review,
                action: nil,
                occurred_at: @visible_at
+             })
+
+    assert {:error, {:missing_fields, [:child_key, :origin]}} =
+             DispatchProtocol.new_entry(:child_run_started, %{
+               run_id: @run_id,
+               child_run_id: "child_run_123",
+               child_workflow: @workflow,
+               child_trigger: "manual",
+               occurred_at: @started_at
+             })
+
+    assert {:error, {:missing_fields, [:origin]}} =
+             DispatchProtocol.new_entry(:child_run_started, %{
+               run_id: @run_id,
+               child_run_id: "child_run_123",
+               child_workflow: @workflow,
+               child_trigger: "manual",
+               child_key: "digest_subscription_1",
+               origin: nil,
+               occurred_at: @started_at
              })
   end
 

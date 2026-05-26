@@ -672,6 +672,42 @@ Step modules implement the domain work while Squid Mesh manages:
 - pause and approval flows
 - inspection and graph state
 
+Native steps can also start durable child workflow runs when runtime data
+expands the amount of work. The parent step must pass its
+`SquidMesh.Step.Context` and a stable `child_key`:
+
+```elixir
+defmodule Hobbiton.Steps.SendPartyInvites do
+  use SquidMesh.Step, name: :send_party_invites
+
+  @impl true
+  def run(%{party_id: party_id, guests: guests}, %SquidMesh.Step.Context{} = context) do
+    children =
+      for guest <- guests do
+        {:ok, child} =
+          SquidMesh.start_child_run(
+            context,
+            Hobbiton.Workflows.DeliverInvite,
+            %{party_id: party_id, guest_id: guest.id},
+            child_key: "invite_#{guest.id}"
+          )
+
+        child.run_id
+      end
+
+    {:ok, %{invite_run_ids: children}}
+  end
+end
+```
+
+The child is a normal journal run with its own inspection, retry, replay, and
+cancellation boundary. Repeating the same parent step and `child_key` returns
+the existing child run instead of appending duplicate lineage. Terminal parent
+runs reject new child starts, and stale parent step contexts are rejected before
+new lineage is appended. Keep child workflows backend-neutral; delivery systems
+such as Bedrock or Oban belong behind host adapter boundaries, not inside the
+workflow module.
+
 For approval or manual-review gates, use `approval_step/2` in
 transition-oriented workflows and resume execution through the explicit
 decision APIs.

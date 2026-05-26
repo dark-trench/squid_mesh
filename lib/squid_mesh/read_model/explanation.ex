@@ -208,6 +208,8 @@ defmodule SquidMesh.ReadModel.Explanation do
       thread_revisions: snapshot.thread_revisions,
       terminal_status: snapshot.terminal_status,
       manual_state: snapshot.manual_state,
+      parent_run: snapshot.parent_run,
+      child_runs: snapshot.child_runs,
       planned_runnable_keys: snapshot.planned_runnable_keys,
       applied_runnable_keys: snapshot.applied_runnable_keys,
       next_visible_at: snapshot.next_visible_at,

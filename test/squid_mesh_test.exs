@@ -46,6 +46,73 @@ defmodule SquidMeshTest do
     def delete_thread(_thread_id, _opts), do: :ok
   end
 
+  defmodule FaultInjectingStorage do
+    @behaviour Jido.Storage
+
+    @impl Jido.Storage
+    def get_checkpoint(key, opts) do
+      {adapter, delegate_opts} = delegate(opts)
+      adapter.get_checkpoint(key, delegate_opts)
+    end
+
+    @impl Jido.Storage
+    def put_checkpoint(key, data, opts) do
+      {adapter, delegate_opts} = delegate(opts)
+      adapter.put_checkpoint(key, data, delegate_opts)
+    end
+
+    @impl Jido.Storage
+    def delete_checkpoint(key, opts) do
+      {adapter, delegate_opts} = delegate(opts)
+      adapter.delete_checkpoint(key, delegate_opts)
+    end
+
+    @impl Jido.Storage
+    def load_thread(thread_id, opts) do
+      if thread_id == Keyword.get(opts, :fail_load_thread_id) do
+        {:error, :load_failed}
+      else
+        {adapter, delegate_opts} = delegate(opts)
+        adapter.load_thread(thread_id, delegate_opts)
+      end
+    end
+
+    @impl Jido.Storage
+    def append_thread(thread_id, entries, opts) do
+      cond do
+        thread_id == Keyword.get(opts, :conflict_thread_id) ->
+          {:error, :conflict}
+
+        thread_id == Keyword.get(opts, :fail_append_thread_id) ->
+          {:error, :append_failed}
+
+        true ->
+          {adapter, delegate_opts} = delegate(opts)
+
+          adapter.append_thread(
+            thread_id,
+            entries,
+            Keyword.merge(delegate_opts, append_opts(opts))
+          )
+      end
+    end
+
+    @impl Jido.Storage
+    def delete_thread(thread_id, opts) do
+      {adapter, delegate_opts} = delegate(opts)
+      adapter.delete_thread(thread_id, delegate_opts)
+    end
+
+    defp delegate(opts) do
+      case Keyword.fetch!(opts, :delegate) do
+        {adapter, delegate_opts} -> {adapter, delegate_opts}
+        adapter when is_atom(adapter) -> {adapter, []}
+      end
+    end
+
+    defp append_opts(opts), do: Keyword.take(opts, [:expected_rev])
+  end
+
   defmodule InvoiceReminderWorkflow do
     use SquidMesh.Workflow
 
@@ -81,6 +148,23 @@ defmodule SquidMeshTest do
 
       step :check_gateway, PaymentRecoveryWorkflow.CheckGateway, retry: [max_attempts: 2]
       transition :check_gateway, on: :ok, to: :complete
+    end
+  end
+
+  defmodule ChildDigestWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :deliver_digest do
+        manual()
+
+        payload do
+          field :subscription_id, :string
+        end
+      end
+
+      step :deliver_digest, ChildDigestWorkflow.DeliverDigest
+      transition :deliver_digest, on: :ok, to: :complete
     end
   end
 
@@ -123,6 +207,18 @@ defmodule SquidMeshTest do
       ])
 
       {:ok, %{event: "recorded"}}
+    end
+  end
+
+  defmodule ChildDigestWorkflow.DeliverDigest do
+    use SquidMesh.Step,
+      name: :deliver_digest,
+      input_schema: [subscription_id: [type: :string, required: true]],
+      output_schema: [delivered: [type: :map, required: true]]
+
+    @impl SquidMesh.Step
+    def run(%{subscription_id: subscription_id}, _context) do
+      {:ok, %{delivered: %{subscription_id: subscription_id}}}
     end
   end
 
@@ -1824,6 +1920,1777 @@ defmodule SquidMeshTest do
       assert SquidMesh.Runtime.RunIndexProjection.run_ids(run_index_projection) == [
                snapshot.run_id
              ]
+    end
+
+    test "start_child_run/4 starts a deterministic child and links it to the parent" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_parent_child"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+
+      parent_context =
+        step_context(parent,
+          step: :check_gateway,
+          runnable_key: parent_runnable_key,
+          state: %{account_id: "acct_parent_child"}
+        )
+
+      assert {:ok, %Snapshot{} = child} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: "digest_subscription_1",
+                 metadata: %{subscription_id: "sub_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert child.run_id != parent.run_id
+      assert child.workflow == Atom.to_string(ChildDigestWorkflow)
+
+      assert child.parent_run == %{
+               run_id: parent.run_id,
+               runnable_key: parent_runnable_key,
+               step: "check_gateway",
+               attempt: 1,
+               child_key: "digest_subscription_1",
+               metadata: %{subscription_id: "sub_123"}
+             }
+
+      assert {:ok, %Snapshot{} = inspected_parent} =
+               SquidMesh.inspect_run(parent.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      child_run_id = child.run_id
+      child_workflow = Atom.to_string(ChildDigestWorkflow)
+
+      assert [
+               %{
+                 child_run_id: ^child_run_id,
+                 child_workflow: ^child_workflow,
+                 child_trigger: "deliver_digest",
+                 child_key: "digest_subscription_1",
+                 origin: %{
+                   runnable_key: ^parent_runnable_key,
+                   step: "check_gateway",
+                   attempt: 1
+                 },
+                 metadata: %{subscription_id: "sub_123"}
+               }
+             ] = inspected_parent.child_runs
+    end
+
+    test "start_child_run/4 is idempotent for duplicate child keys" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_duplicate_child"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+
+      parent_context =
+        step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key)
+
+      child_opts = [
+        child_key: "digest_subscription_1",
+        runtime: :journal,
+        journal_storage: @read_model_storage,
+        queue: @read_model_queue,
+        now: @read_model_visible_at
+      ]
+
+      assert {:ok, %Snapshot{} = first_child} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_opts
+               )
+
+      assert {:ok, %Snapshot{} = duplicate_child} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_opts
+               )
+
+      assert duplicate_child.run_id == first_child.run_id
+
+      assert {:error, {:invalid_parent_context, :workflow}} =
+               SquidMesh.start_child_run(
+                 %SquidMesh.Step.Context{parent_context | workflow: RepoTransactionWorkflow},
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_opts
+               )
+
+      assert {:ok, parent_entries} =
+               Journal.load_entries(@read_model_storage, {:run, parent.run_id})
+
+      assert 1 ==
+               Enum.count(parent_entries, &(&1.type == :child_run_started))
+    end
+
+    test "start_child_run/4 uses the child workflow default trigger" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_default_child_trigger"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+
+      assert {:ok, %Snapshot{} = child} =
+               SquidMesh.start_child_run(
+                 step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key),
+                 ChildDigestWorkflow,
+                 %{subscription_id: "sub_default"},
+                 child_key: "digest_subscription_default",
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert child.trigger == "deliver_digest"
+
+      assert {:ok, %Snapshot{} = inspected_parent} =
+               SquidMesh.inspect_run(parent.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert [%{child_trigger: "deliver_digest"}] = inspected_parent.child_runs
+    end
+
+    test "start_child_run/4 rejects missing child keys and terminal parents" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_terminal_child"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+
+      parent_context =
+        step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key)
+
+      assert {:error, {:invalid_option, {:child_key, :missing}}} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 %{subscription_id: "sub_123"}
+               )
+
+      assert {:error, {:invalid_option, {:opts, :invalid}}} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 %{subscription_id: "sub_123"},
+                 [:bad]
+               )
+
+      assert {:error, {:invalid_option, {:opts, :invalid}}} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 %{subscription_id: "sub_123"},
+                 %{child_key: "digest_subscription_1"}
+               )
+
+      assert {:error, {:invalid_option, {:opts, :invalid}}} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 %{child_key: "digest_subscription_1"}
+               )
+
+      assert {:error, {:invalid_option, {:child_key, :missing}}} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:error, {:invalid_payload, :expected_map}} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 :invalid_payload,
+                 child_key: "digest_subscription_1",
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:error, {:invalid_trigger, :expected_atom}} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 "deliver_digest",
+                 %{subscription_id: "sub_123"},
+                 child_key: "digest_subscription_1",
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:error, {:invalid_payload, :expected_map}} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 "deliver_digest",
+                 :invalid_payload,
+                 child_key: "digest_subscription_1",
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:error, {:invalid_payload, :expected_map}} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :invalid_payload,
+                 child_key: "digest_subscription_1",
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:error, {:invalid_option, {:child_key, :invalid}}} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: %{token: "super-secret-token"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:error, reason} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: "digest_subscription_1",
+                 metadata: %{secret: {:token, "super-secret-token"}},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert reason == {:invalid_option, {:metadata, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+
+      assert {:error, {:invalid_option, {:metadata, :invalid}}} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: "digest_subscription_1",
+                 metadata: :invalid,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:error, {:invalid_option, {:metadata, :invalid}}} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: "digest_subscription_1",
+                 metadata: %{[] => "invalid"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:error, {:invalid_option, {:now, :invalid}}} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: "digest_subscription_1",
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: :invalid
+               )
+
+      assert {:error, {:invalid_parent_context, :run_id}} =
+               SquidMesh.start_child_run(
+                 %SquidMesh.Step.Context{parent_context | run_id: nil},
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: "digest_subscription_1",
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:error, {:invalid_parent_context, :origin}} =
+               SquidMesh.start_child_run(
+                 %SquidMesh.Step.Context{parent_context | runnable_key: nil},
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: "digest_subscription_1",
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:error, {:invalid_parent_context, :attempt}} =
+               SquidMesh.start_child_run(
+                 %SquidMesh.Step.Context{parent_context | attempt: "one"},
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: "digest_subscription_1",
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:ok, %Snapshot{terminal?: true}} =
+               SquidMesh.cancel_run(parent.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert {:error, {:invalid_parent_run, :terminal}} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: "digest_subscription_1",
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+    end
+
+    test "child starter validates direct journal boundary inputs" do
+      parent_context = %SquidMesh.Step.Context{
+        run_id: Ecto.UUID.generate(),
+        workflow: PaymentRecoveryWorkflow,
+        step: :check_gateway,
+        attempt: 1,
+        runnable_key: "parent_run:check_gateway:1",
+        state: %{}
+      }
+
+      opts = [
+        child_key: "digest_subscription_direct",
+        journal_storage: @read_model_storage,
+        queue: @read_model_queue
+      ]
+
+      assert {:error, {:invalid_payload, :expected_map}} =
+               SquidMesh.Runtime.Journal.ChildStarter.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 :invalid_payload,
+                 opts
+               )
+
+      assert {:error, {:invalid_parent_context, :expected_step_context}} =
+               SquidMesh.Runtime.Journal.ChildStarter.start_child_run(
+                 %{},
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 opts
+               )
+    end
+
+    test "start_child_run/4 accepts atom child keys and storage-safe metadata" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_atom_child_key"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+
+      assert {:ok, %Snapshot{} = child} =
+               SquidMesh.start_child_run(
+                 step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key),
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: :digest_subscription_atom,
+                 metadata: %{optional: nil, tags: ["digest", nil]},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert child.parent_run.child_key == "digest_subscription_atom"
+      assert child.parent_run.metadata == %{optional: nil, tags: ["digest", nil]}
+    end
+
+    test "start_child_run/4 returns storage errors while checking child availability" do
+      parent_context = %SquidMesh.Step.Context{
+        run_id: Ecto.UUID.generate(),
+        workflow: PaymentRecoveryWorkflow,
+        step: :check_gateway,
+        attempt: 1,
+        runnable_key: "parent_run:check_gateway:1",
+        state: %{}
+      }
+
+      assert {:error, :load_failed} =
+               SquidMesh.start_child_run(
+                 parent_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_storage_error"},
+                 child_key: "digest_subscription_storage_error",
+                 runtime: :journal,
+                 journal_storage: CommitThenFailStorage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+    end
+
+    test "start_child_run/4 repairs a missing parent link for an existing child" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_repair_child_link"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+      child_key = "digest_subscription_1"
+
+      assert {:ok, child_run_id} =
+               SquidMesh.Runtime.ScheduleIdentity.run_id(
+                 Atom.to_string(ChildDigestWorkflow),
+                 "deliver_digest",
+                 Enum.join([parent.run_id, "check_gateway", child_key], "|")
+               )
+
+      parent_metadata = %{
+        run_id: parent.run_id,
+        runnable_key: parent_runnable_key,
+        step: "check_gateway",
+        attempt: 1,
+        child_key: child_key,
+        metadata: %{subscription_id: "sub_123"}
+      }
+
+      assert {:ok, %Snapshot{run_id: ^child_run_id}} =
+               SquidMesh.start_run_with_initial_context(
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 %{parent: parent_metadata},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 run_id: child_run_id,
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, parent_entries_before} =
+               Journal.load_entries(@read_model_storage, {:run, parent.run_id})
+
+      refute Enum.any?(parent_entries_before, &(&1.type == :child_run_started))
+
+      assert {:ok, %Snapshot{run_id: ^child_run_id}} =
+               SquidMesh.start_child_run(
+                 step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key),
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: child_key,
+                 metadata: %{subscription_id: "sub_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert {:ok, %Snapshot{} = repaired_parent} =
+               SquidMesh.inspect_run(parent.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert [%{child_run_id: ^child_run_id}] = repaired_parent.child_runs
+    end
+
+    test "start_child_run/4 rejects stale contexts when parent link exists without child" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_stale_linked_child"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+      child_key = "digest_subscription_1"
+
+      assert {:ok, child_run_id} =
+               SquidMesh.Runtime.ScheduleIdentity.run_id(
+                 Atom.to_string(ChildDigestWorkflow),
+                 "deliver_digest",
+                 Enum.join([parent.run_id, "check_gateway", child_key], "|")
+               )
+
+      assert {:ok, link_entry} =
+               DispatchProtocol.new_entry(:child_run_started, %{
+                 run_id: parent.run_id,
+                 child_run_id: child_run_id,
+                 child_workflow: Atom.to_string(ChildDigestWorkflow),
+                 child_trigger: "deliver_digest",
+                 child_key: child_key,
+                 origin: %{runnable_key: parent_runnable_key, step: "check_gateway", attempt: 1},
+                 occurred_at: @read_model_visible_at
+               })
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [link_entry])
+
+      stale_context =
+        step_context(parent,
+          step: :check_gateway,
+          runnable_key: "#{parent.run_id}:check_gateway:stale"
+        )
+
+      assert {:error, {:invalid_parent_context, :runnable_key}} =
+               SquidMesh.start_child_run(
+                 stale_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: child_key,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert {:error, :not_found} = Journal.load_thread(@read_model_storage, {:run, child_run_id})
+    end
+
+    test "start_child_run/4 rejects terminal parents after the child link exists" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_linked_then_terminal_child"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+      child_key = "digest_subscription_1"
+
+      assert {:ok, child_run_id} =
+               SquidMesh.Runtime.ScheduleIdentity.run_id(
+                 Atom.to_string(ChildDigestWorkflow),
+                 "deliver_digest",
+                 Enum.join([parent.run_id, "check_gateway", child_key], "|")
+               )
+
+      assert {:ok, link_entry} =
+               DispatchProtocol.new_entry(:child_run_started, %{
+                 run_id: parent.run_id,
+                 child_run_id: child_run_id,
+                 child_workflow: Atom.to_string(ChildDigestWorkflow),
+                 child_trigger: "deliver_digest",
+                 child_key: child_key,
+                 origin: %{runnable_key: parent_runnable_key, step: "check_gateway", attempt: 1},
+                 occurred_at: @read_model_visible_at
+               })
+
+      assert {:ok, terminal_entry} =
+               DispatchProtocol.new_entry(:run_terminal, %{
+                 run_id: parent.run_id,
+                 status: :cancelled,
+                 occurred_at: DateTime.add(@read_model_visible_at, 1, :second)
+               })
+
+      assert {:ok, _thread} =
+               Journal.append_entries(@read_model_storage, [link_entry, terminal_entry])
+
+      assert {:error, {:invalid_parent_run, :terminal}} =
+               SquidMesh.start_child_run(
+                 step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key),
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: child_key,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 2, :second)
+               )
+
+      assert {:error, :not_found} = Journal.load_thread(@read_model_storage, {:run, child_run_id})
+    end
+
+    test "start_child_run/4 rejects parent links that reuse a child key for another child" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_reused_child_key"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+      child_key = "digest_subscription_1"
+
+      assert {:ok, link_entry} =
+               DispatchProtocol.new_entry(:child_run_started, %{
+                 run_id: parent.run_id,
+                 child_run_id: Ecto.UUID.generate(),
+                 child_workflow: Atom.to_string(ChildDigestWorkflow),
+                 child_trigger: "deliver_digest",
+                 child_key: child_key,
+                 origin: %{runnable_key: parent_runnable_key, step: "check_gateway", attempt: 1},
+                 occurred_at: @read_model_visible_at
+               })
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [link_entry])
+
+      assert {:error, :conflict} =
+               SquidMesh.start_child_run(
+                 step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key),
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: child_key,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert {:ok, parent_entries} =
+               Journal.load_entries(@read_model_storage, {:run, parent.run_id})
+
+      assert 1 == Enum.count(parent_entries, &(&1.type == :child_run_started))
+    end
+
+    test "start_child_run/4 allows the same child key from different parent steps" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 JournalDependencyWorkflow,
+                 %{account_id: "acct_child_key_steps", invoice_id: "inv_child_key_steps"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [
+               %{runnable_key: load_account_key, step: "load_account"},
+               %{runnable_key: load_invoice_key, step: "load_invoice"}
+             ] = Enum.sort_by(parent.visible_attempts, & &1.step)
+
+      child_opts = [
+        child_key: "sync",
+        runtime: :journal,
+        journal_storage: @read_model_storage,
+        queue: @read_model_queue,
+        now: @read_model_visible_at
+      ]
+
+      assert {:ok, %Snapshot{} = account_child} =
+               SquidMesh.start_child_run(
+                 %SquidMesh.Step.Context{
+                   run_id: parent.run_id,
+                   workflow: JournalDependencyWorkflow,
+                   step: :load_account,
+                   attempt: 1,
+                   runnable_key: load_account_key,
+                   state: %{}
+                 },
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_account"},
+                 child_opts
+               )
+
+      assert {:ok, %Snapshot{} = invoice_child} =
+               SquidMesh.start_child_run(
+                 %SquidMesh.Step.Context{
+                   run_id: parent.run_id,
+                   workflow: JournalDependencyWorkflow,
+                   step: :load_invoice,
+                   attempt: 1,
+                   runnable_key: load_invoice_key,
+                   state: %{}
+                 },
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_invoice"},
+                 Keyword.put(child_opts, :now, DateTime.add(@read_model_visible_at, 1, :second))
+               )
+
+      assert account_child.run_id != invoice_child.run_id
+      assert account_child.parent_run.child_key == "sync"
+      assert account_child.parent_run.step == "load_account"
+      assert invoice_child.parent_run.child_key == "sync"
+      assert invoice_child.parent_run.step == "load_invoice"
+    end
+
+    test "start_child_run/4 reuses string-keyed persisted parent links" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_string_keyed_child_link"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+      child_key = "digest_subscription_1"
+
+      assert {:ok, child_run_id} =
+               SquidMesh.Runtime.ScheduleIdentity.run_id(
+                 Atom.to_string(ChildDigestWorkflow),
+                 "deliver_digest",
+                 Enum.join([parent.run_id, "check_gateway", child_key], "|")
+               )
+
+      link_entry = %SquidMesh.Runtime.DispatchProtocol.Entry{
+        type: :child_run_started,
+        thread: {:run, parent.run_id},
+        data: %{
+          "run_id" => parent.run_id,
+          "child_run_id" => child_run_id,
+          "child_workflow" => Atom.to_string(ChildDigestWorkflow),
+          "child_trigger" => "deliver_digest",
+          "child_key" => child_key,
+          "origin" => %{
+            "runnable_key" => parent_runnable_key,
+            "step" => "check_gateway",
+            "attempt" => 1
+          },
+          "metadata" => %{"subscription_id" => "sub_123"}
+        },
+        occurred_at: @read_model_visible_at
+      }
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [link_entry])
+
+      assert {:ok, %Snapshot{} = child} =
+               SquidMesh.start_child_run(
+                 step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key),
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: child_key,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert child.run_id == child_run_id
+
+      assert child.parent_run == %{
+               run_id: parent.run_id,
+               runnable_key: parent_runnable_key,
+               step: "check_gateway",
+               attempt: 1,
+               child_key: child_key,
+               metadata: %{"subscription_id" => "sub_123"}
+             }
+    end
+
+    test "start_child_run/4 rejects an existing child with matching input but no parent lineage" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_orphaned_child_conflict"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+      child_key = "digest_subscription_1"
+
+      assert {:ok, child_run_id} =
+               SquidMesh.Runtime.ScheduleIdentity.run_id(
+                 Atom.to_string(ChildDigestWorkflow),
+                 "deliver_digest",
+                 Enum.join([parent.run_id, "check_gateway", child_key], "|")
+               )
+
+      assert {:ok, %Snapshot{run_id: ^child_run_id}} =
+               SquidMesh.start_run(
+                 ChildDigestWorkflow,
+                 %{subscription_id: "sub_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 run_id: child_run_id,
+                 now: @read_model_visible_at
+               )
+
+      assert {:error, :conflict} =
+               SquidMesh.start_child_run(
+                 step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key),
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: child_key,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+    end
+
+    test "start_child_run/4 returns conflict when parent link repair keeps conflicting" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_child_link_conflict_retry"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+      child_key = "digest_subscription_1"
+
+      assert {:ok, child_run_id} =
+               SquidMesh.Runtime.ScheduleIdentity.run_id(
+                 Atom.to_string(ChildDigestWorkflow),
+                 "deliver_digest",
+                 Enum.join([parent.run_id, "check_gateway", child_key], "|")
+               )
+
+      assert {:ok, %Snapshot{run_id: ^child_run_id}} =
+               SquidMesh.start_run_with_initial_context(
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 %{
+                   parent: %{
+                     run_id: parent.run_id,
+                     runnable_key: parent_runnable_key,
+                     step: "check_gateway",
+                     attempt: 1,
+                     child_key: child_key
+                   }
+                 },
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 run_id: child_run_id,
+                 now: @read_model_visible_at
+               )
+
+      assert {:error, :conflict} =
+               SquidMesh.start_child_run(
+                 step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key),
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: child_key,
+                 runtime: :journal,
+                 journal_storage:
+                   {FaultInjectingStorage,
+                    delegate: @read_model_storage,
+                    conflict_thread_id: "squid_mesh:run:#{parent.run_id}"},
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+    end
+
+    test "start_child_run/4 returns append errors while linking existing children" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_child_link_append_error"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+      child_key = "digest_subscription_1"
+
+      assert {:ok, child_run_id} =
+               SquidMesh.Runtime.ScheduleIdentity.run_id(
+                 Atom.to_string(ChildDigestWorkflow),
+                 "deliver_digest",
+                 Enum.join([parent.run_id, "check_gateway", child_key], "|")
+               )
+
+      assert {:ok, %Snapshot{run_id: ^child_run_id}} =
+               SquidMesh.start_run_with_initial_context(
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 %{
+                   parent: %{
+                     run_id: parent.run_id,
+                     runnable_key: parent_runnable_key,
+                     step: "check_gateway",
+                     attempt: 1,
+                     child_key: child_key
+                   }
+                 },
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 run_id: child_run_id,
+                 now: @read_model_visible_at
+               )
+
+      assert {:error, :append_failed} =
+               SquidMesh.start_child_run(
+                 step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key),
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: child_key,
+                 runtime: :journal,
+                 journal_storage:
+                   {FaultInjectingStorage,
+                    delegate: @read_model_storage,
+                    fail_append_thread_id: "squid_mesh:run:#{parent.run_id}"},
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+    end
+
+    test "start_child_run/4 rejects malformed existing child links for the same child" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_malformed_same_child_link"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+      child_key = "digest_subscription_1"
+
+      assert {:ok, child_run_id} =
+               SquidMesh.Runtime.ScheduleIdentity.run_id(
+                 Atom.to_string(ChildDigestWorkflow),
+                 "deliver_digest",
+                 Enum.join([parent.run_id, "check_gateway", child_key], "|")
+               )
+
+      malformed_link = %SquidMesh.Runtime.DispatchProtocol.Entry{
+        type: :child_run_started,
+        thread: {:run, parent.run_id},
+        data: %{child_run_id: child_run_id, child_key: child_key},
+        occurred_at: @read_model_visible_at
+      }
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [malformed_link])
+
+      assert {:error, :conflict} =
+               SquidMesh.start_child_run(
+                 step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key),
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: child_key,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+    end
+
+    test "start_child_run/4 ignores malformed origins when checking child key reuse" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_malformed_origin_child_key"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+      child_key = "digest_subscription_1"
+
+      malformed_origin_link = %SquidMesh.Runtime.DispatchProtocol.Entry{
+        type: :child_run_started,
+        thread: {:run, parent.run_id},
+        data: %{
+          run_id: parent.run_id,
+          child_run_id: Ecto.UUID.generate(),
+          child_workflow: Atom.to_string(ChildDigestWorkflow),
+          child_trigger: "deliver_digest",
+          child_key: child_key,
+          origin: "legacy-origin"
+        },
+        occurred_at: @read_model_visible_at
+      }
+
+      assert {:ok, _thread} =
+               Journal.append_entries(@read_model_storage, [malformed_origin_link])
+
+      assert {:ok, %Snapshot{} = child} =
+               SquidMesh.start_child_run(
+                 step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key),
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: child_key,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert child.parent_run.child_key == child_key
+    end
+
+    test "cancel_run/2 rejects parents with linked children that have not started" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_cancel_during_child_start"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+      child_key = "digest_subscription_1"
+
+      assert {:ok, child_run_id} =
+               SquidMesh.Runtime.ScheduleIdentity.run_id(
+                 Atom.to_string(ChildDigestWorkflow),
+                 "deliver_digest",
+                 Enum.join([parent.run_id, "check_gateway", child_key], "|")
+               )
+
+      assert {:ok, link_entry} =
+               DispatchProtocol.new_entry(:child_run_started, %{
+                 run_id: parent.run_id,
+                 child_run_id: child_run_id,
+                 child_workflow: Atom.to_string(ChildDigestWorkflow),
+                 child_trigger: "deliver_digest",
+                 child_key: child_key,
+                 origin: %{runnable_key: parent_runnable_key, step: "check_gateway", attempt: 1},
+                 occurred_at: @read_model_visible_at
+               })
+
+      assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [link_entry])
+
+      assert {:error, {:invalid_transition, :child_starting, :cancelling}} =
+               SquidMesh.cancel_run(parent.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert {:error, :not_found} = Journal.load_thread(@read_model_storage, {:run, child_run_id})
+    end
+
+    test "cancel_run/2 allows parents after linked children have started" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_cancel_after_child_started"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+
+      assert {:ok, %Snapshot{} = child} =
+               SquidMesh.start_child_run(
+                 step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key),
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_cancel_started"},
+                 child_key: "digest_subscription_cancel_started",
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, _thread} = Journal.load_thread(@read_model_storage, {:run, child.run_id})
+
+      assert {:ok, %Snapshot{terminal?: true, status: :cancelled}} =
+               SquidMesh.cancel_run(parent.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+    end
+
+    test "cancel_run/2 rejects malformed checkpoint child links without raising" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_malformed_child_checkpoint"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      child_key = "digest_subscription_1"
+
+      assert {:ok, child_run_id} =
+               SquidMesh.Runtime.ScheduleIdentity.run_id(
+                 Atom.to_string(ChildDigestWorkflow),
+                 "deliver_digest",
+                 Enum.join([parent.run_id, "check_gateway", child_key], "|")
+               )
+
+      assert {:ok, thread} = Journal.load_thread(@read_model_storage, {:run, parent.run_id})
+
+      projection =
+        thread.entries
+        |> SquidMesh.Runtime.WorkflowAgent.Projection.rebuild()
+        |> Map.put(:child_runs, [
+          %{"child_run_id" => child_run_id, "child_key" => child_key}
+        ])
+
+      assert :ok =
+               Journal.put_checkpoint(
+                 @read_model_storage,
+                 {:run, parent.run_id},
+                 projection,
+                 thread.rev,
+                 updated_at: @read_model_visible_at
+               )
+
+      assert {:error, {:invalid_transition, :child_starting, :cancelling}} =
+               SquidMesh.cancel_run(parent.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+    end
+
+    test "cancel_run/2 rejects checkpoint child links without child run ids" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_missing_child_id_checkpoint"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, thread} = Journal.load_thread(@read_model_storage, {:run, parent.run_id})
+
+      projection =
+        thread.entries
+        |> SquidMesh.Runtime.WorkflowAgent.Projection.rebuild()
+        |> Map.put(:child_runs, [%{child_key: "digest_subscription_1"}])
+
+      assert :ok =
+               Journal.put_checkpoint(
+                 @read_model_storage,
+                 {:run, parent.run_id},
+                 projection,
+                 thread.rev,
+                 updated_at: @read_model_visible_at
+               )
+
+      assert {:error, {:invalid_transition, :child_starting, :cancelling}} =
+               SquidMesh.cancel_run(parent.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+    end
+
+    test "cancel_run/2 returns storage errors while checking linked children" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_child_load_error_checkpoint"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      child_run_id = Ecto.UUID.generate()
+
+      assert {:ok, thread} = Journal.load_thread(@read_model_storage, {:run, parent.run_id})
+
+      projection =
+        thread.entries
+        |> SquidMesh.Runtime.WorkflowAgent.Projection.rebuild()
+        |> Map.put(:child_runs, [
+          %{child_run_id: child_run_id, child_key: "digest_subscription_1"}
+        ])
+
+      assert :ok =
+               Journal.put_checkpoint(
+                 @read_model_storage,
+                 {:run, parent.run_id},
+                 projection,
+                 thread.rev,
+                 updated_at: @read_model_visible_at
+               )
+
+      assert {:error, :load_failed} =
+               SquidMesh.cancel_run(parent.run_id,
+                 runtime: :journal,
+                 journal_storage:
+                   {FaultInjectingStorage,
+                    delegate: @read_model_storage,
+                    fail_load_thread_id: "squid_mesh:run:#{child_run_id}"},
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+    end
+
+    test "start_run_with_initial_context/5 rejects unsafe parent context" do
+      assert {:error, reason} =
+               SquidMesh.start_run_with_initial_context(
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 %{
+                   parent: %{
+                     token: "super-secret-token",
+                     unsafe: {:tuple, "super-secret-token"}
+                   }
+                 },
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert reason == {:invalid_initial_context, {:parent, :invalid}}
+      refute inspect(reason) =~ "super-secret-token"
+    end
+
+    test "start_run_with_initial_context/5 validates malformed parent context shapes" do
+      parent_run_id = Ecto.UUID.generate()
+
+      assert {:error, {:invalid_initial_context, {:parent, :invalid}}} =
+               SquidMesh.start_run_with_initial_context(
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 %{parent: "invalid"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:error, {:invalid_initial_context, {:parent, :invalid}}} =
+               SquidMesh.start_run_with_initial_context(
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 %{
+                   parent: %{
+                     run_id: parent_run_id,
+                     runnable_key: "#{parent_run_id}:check_gateway:1",
+                     step: "check_gateway",
+                     attempt: 1,
+                     child_key: "digest_subscription_1",
+                     metadata: %{unsafe: {:tuple, "invalid"}}
+                   }
+                 },
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:error, {:invalid_initial_context, {:parent, :invalid}}} =
+               SquidMesh.start_run_with_initial_context(
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 %{
+                   parent: %{
+                     run_id: nil,
+                     runnable_key: "#{parent_run_id}:check_gateway:1",
+                     step: "check_gateway",
+                     attempt: 1,
+                     child_key: "digest_subscription_1"
+                   }
+                 },
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:error, {:invalid_initial_context, {:parent, :invalid}}} =
+               SquidMesh.start_run_with_initial_context(
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 %{
+                   parent: %{
+                     run_id: parent_run_id,
+                     runnable_key: "#{parent_run_id}:check_gateway:1",
+                     step: "check_gateway",
+                     attempt: 1,
+                     child_key: "digest_subscription_1",
+                     metadata: "invalid"
+                   }
+                 },
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:error, {:invalid_initial_context, {:parent, :invalid}}} =
+               SquidMesh.start_run_with_initial_context(
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 %{
+                   parent: %{
+                     run_id: parent_run_id,
+                     runnable_key: "#{parent_run_id}:check_gateway:1",
+                     step: "check_gateway",
+                     attempt: 1,
+                     child_key: "digest_subscription_1",
+                     metadata: %{[] => "invalid"}
+                   }
+                 },
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+    end
+
+    test "journal starter ignores non-map initial context at the internal boundary" do
+      assert {:ok, %Snapshot{} = child} =
+               SquidMesh.Runtime.Journal.Starter.start_run(
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_non_map_context"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 initial_context: :invalid,
+                 now: @read_model_visible_at
+               )
+
+      assert child.parent_run == nil
+    end
+
+    test "start_run_with_initial_context/5 canonicalizes parent context" do
+      parent_run_id = Ecto.UUID.generate()
+
+      assert {:ok, %Snapshot{} = child} =
+               SquidMesh.start_run_with_initial_context(
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 %{
+                   "parent" => %{
+                     "run_id" => parent_run_id,
+                     "runnable_key" => "#{parent_run_id}:check_gateway:1",
+                     "step" => "check_gateway",
+                     "attempt" => 1,
+                     "child_key" => "digest_subscription_1"
+                   }
+                 },
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert child.parent_run == %{
+               run_id: parent_run_id,
+               runnable_key: "#{parent_run_id}:check_gateway:1",
+               step: "check_gateway",
+               attempt: 1,
+               child_key: "digest_subscription_1",
+               metadata: %{}
+             }
+
+      assert {:ok, %Snapshot{} = child_with_metadata} =
+               SquidMesh.start_run_with_initial_context(
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_456"},
+                 %{
+                   parent: %{
+                     run_id: parent_run_id,
+                     runnable_key: "#{parent_run_id}:check_gateway:2",
+                     step: "check_gateway",
+                     attempt: 2,
+                     child_key: "digest_subscription_2",
+                     metadata: %{optional: nil, tags: ["digest", nil]}
+                   }
+                 },
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert child_with_metadata.parent_run.metadata == %{optional: nil, tags: ["digest", nil]}
+    end
+
+    test "start_child_run/4 rejects conflicting existing children before linking parent" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_conflicting_child"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+      child_key = "digest_subscription_1"
+
+      assert {:ok, child_run_id} =
+               SquidMesh.Runtime.ScheduleIdentity.run_id(
+                 Atom.to_string(ChildDigestWorkflow),
+                 "deliver_digest",
+                 Enum.join([parent.run_id, "check_gateway", child_key], "|")
+               )
+
+      assert {:ok, %Snapshot{run_id: ^child_run_id}} =
+               SquidMesh.start_run(
+                 ChildDigestWorkflow,
+                 %{subscription_id: "conflicting_sub"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 run_id: child_run_id,
+                 now: @read_model_visible_at
+               )
+
+      assert {:error, :conflict} =
+               SquidMesh.start_child_run(
+                 step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key),
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: child_key,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert {:ok, parent_entries} =
+               Journal.load_entries(@read_model_storage, {:run, parent.run_id})
+
+      refute Enum.any?(parent_entries, &(&1.type == :child_run_started))
+    end
+
+    test "replay_run/2 does not copy source child links" do
+      assert {:ok, %Snapshot{} = parent} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_replay_child_parent"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert [%{runnable_key: parent_runnable_key}] = parent.visible_attempts
+
+      assert {:ok, %Snapshot{} = child} =
+               SquidMesh.start_child_run(
+                 step_context(parent, step: :check_gateway, runnable_key: parent_runnable_key),
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: "digest_subscription_1",
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_visible_at
+               )
+
+      assert {:ok, %Snapshot{child_runs: [%{child_run_id: child_run_id}]}} =
+               SquidMesh.inspect_run(parent.run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert child_run_id == child.run_id
+
+      assert {:ok, %Snapshot{} = replay} =
+               SquidMesh.replay_run(parent.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 2, :second)
+               )
+
+      assert replay.run_id != parent.run_id
+      assert replay.replayed_from_run_id == parent.run_id
+      assert replay.child_runs == []
+      assert replay.parent_run == nil
+    end
+
+    test "start_child_run/4 keeps child identity stable across parent retry runnable keys" do
+      parent_run_id = Ecto.UUID.generate()
+      first_runnable_key = "#{parent_run_id}:check_gateway:1"
+      retry_runnable_key = "#{parent_run_id}:check_gateway:2"
+      child_key = "digest_subscription_1"
+
+      assert {:ok, run_started} =
+               DispatchProtocol.new_entry(:run_started, %{
+                 run_id: parent_run_id,
+                 workflow: Atom.to_string(PaymentRecoveryWorkflow),
+                 occurred_at: @read_model_started_at
+               })
+
+      assert {:ok, runnables_planned} =
+               DispatchProtocol.new_entry(:runnables_planned, %{
+                 run_id: parent_run_id,
+                 runnables: [
+                   journal_start_runnable(parent_run_id),
+                   %{
+                     journal_start_runnable(parent_run_id)
+                     | runnable_key: retry_runnable_key,
+                       idempotency_key: retry_runnable_key,
+                       attempt_number: 2
+                   }
+                 ],
+                 occurred_at: @read_model_started_at
+               })
+
+      assert {:ok, _thread} =
+               Journal.append_entries(@read_model_storage, [run_started, runnables_planned])
+
+      first_context =
+        %SquidMesh.Step.Context{
+          run_id: parent_run_id,
+          workflow: PaymentRecoveryWorkflow,
+          step: :check_gateway,
+          attempt: 1,
+          runnable_key: first_runnable_key,
+          state: %{}
+        }
+
+      retry_context =
+        %SquidMesh.Step.Context{
+          first_context
+          | attempt: 2,
+            runnable_key: retry_runnable_key
+        }
+
+      child_opts = [
+        child_key: child_key,
+        runtime: :journal,
+        journal_storage: @read_model_storage,
+        queue: @read_model_queue,
+        now: @read_model_visible_at
+      ]
+
+      assert {:ok, %Snapshot{} = first_child} =
+               SquidMesh.start_child_run(
+                 first_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_opts
+               )
+
+      assert {:ok, %Snapshot{} = retry_child} =
+               SquidMesh.start_child_run(
+                 retry_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_opts
+               )
+
+      assert retry_child.run_id == first_child.run_id
+
+      assert {:ok, %Snapshot{} = inspected_parent} =
+               SquidMesh.inspect_run(parent_run_id,
+                 read_model: :read_model,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert [%{child_run_id: child_run_id}] = inspected_parent.child_runs
+      assert child_run_id == first_child.run_id
+    end
+
+    test "start_child_run/4 uses the persisted parent link for retry after linked crash" do
+      parent_run_id = Ecto.UUID.generate()
+      first_runnable_key = "#{parent_run_id}:check_gateway:1"
+      retry_runnable_key = "#{parent_run_id}:check_gateway:2"
+      child_key = "digest_subscription_1"
+
+      assert {:ok, run_started} =
+               DispatchProtocol.new_entry(:run_started, %{
+                 run_id: parent_run_id,
+                 workflow: Atom.to_string(PaymentRecoveryWorkflow),
+                 occurred_at: @read_model_started_at
+               })
+
+      assert {:ok, runnables_planned} =
+               DispatchProtocol.new_entry(:runnables_planned, %{
+                 run_id: parent_run_id,
+                 runnables: [
+                   journal_start_runnable(parent_run_id),
+                   %{
+                     journal_start_runnable(parent_run_id)
+                     | runnable_key: retry_runnable_key,
+                       idempotency_key: retry_runnable_key,
+                       attempt_number: 2
+                   }
+                 ],
+                 occurred_at: @read_model_started_at
+               })
+
+      assert {:ok, child_run_id} =
+               SquidMesh.Runtime.ScheduleIdentity.run_id(
+                 Atom.to_string(ChildDigestWorkflow),
+                 "deliver_digest",
+                 Enum.join([parent_run_id, "check_gateway", child_key], "|")
+               )
+
+      assert {:ok, link_entry} =
+               DispatchProtocol.new_entry(:child_run_started, %{
+                 run_id: parent_run_id,
+                 child_run_id: child_run_id,
+                 child_workflow: Atom.to_string(ChildDigestWorkflow),
+                 child_trigger: "deliver_digest",
+                 child_key: child_key,
+                 origin: %{runnable_key: first_runnable_key, step: "check_gateway", attempt: 1},
+                 metadata: %{subscription_id: "sub_123"},
+                 occurred_at: @read_model_visible_at
+               })
+
+      assert {:ok, _thread} =
+               Journal.append_entries(@read_model_storage, [
+                 run_started,
+                 runnables_planned,
+                 link_entry
+               ])
+
+      retry_context = %SquidMesh.Step.Context{
+        run_id: parent_run_id,
+        workflow: PaymentRecoveryWorkflow,
+        step: :check_gateway,
+        attempt: 2,
+        runnable_key: retry_runnable_key,
+        state: %{}
+      }
+
+      assert {:ok, %Snapshot{} = child} =
+               SquidMesh.start_child_run(
+                 retry_context,
+                 ChildDigestWorkflow,
+                 :deliver_digest,
+                 %{subscription_id: "sub_123"},
+                 child_key: child_key,
+                 metadata: %{subscription_id: "sub_123"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: DateTime.add(@read_model_visible_at, 1, :second)
+               )
+
+      assert child.parent_run.runnable_key == first_runnable_key
+      assert child.parent_run.attempt == 1
     end
 
     test "list_runs/2 lists journal runs for one workflow newest first" do
@@ -7260,6 +9127,17 @@ defmodule SquidMeshTest do
 
   defp append_read_model_dispatch_entries(entries) do
     assert {:ok, _thread} = Journal.append_entries(@read_model_storage, entries)
+  end
+
+  defp step_context(%Snapshot{} = snapshot, opts) do
+    %SquidMesh.Step.Context{
+      run_id: snapshot.run_id,
+      workflow: PaymentRecoveryWorkflow,
+      step: Keyword.fetch!(opts, :step),
+      attempt: Keyword.get(opts, :attempt, 1),
+      runnable_key: Keyword.fetch!(opts, :runnable_key),
+      state: Keyword.get(opts, :state, %{})
+    }
   end
 
   defp warm_read_model_storage do
