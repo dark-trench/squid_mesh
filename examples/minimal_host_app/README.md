@@ -65,6 +65,8 @@ The smoke task:
   and previews the draft graph
 - starts a manual payment recovery workflow through
   `MinimalHostApp.WorkflowRuns.start_payment_recovery/1`
+- verifies the payment recovery graph selected the `greater_than` gateway
+  status condition persisted in the run history
 - starts the dependency-based recovery workflow through
   `MinimalHostApp.WorkflowRuns.start_dependency_recovery/1`
 - starts a manual approval workflow through
@@ -139,6 +141,19 @@ step(:notify_customer, MinimalHostApp.Steps.NotifyCustomer, compensatable: false
 That marker makes replay require explicit operator approval after the
 notification has completed, instead of silently treating the side effect as
 reversible.
+
+It also uses a numeric conditional transition to route successful gateway
+responses through the customer notification path, with a fallback credit path
+for non-matching success payloads:
+
+```elixir
+transition :check_gateway_status,
+  on: :ok,
+  to: :notify_customer,
+  condition: [path: [:gateway_check, :status_code], greater_than: 199]
+
+transition :check_gateway_status, on: :ok, to: :issue_gateway_credit
+```
 
 The saga checkout workflow demonstrates reversible side effects:
 

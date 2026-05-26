@@ -4,6 +4,29 @@ defmodule SquidMesh.Runs.GraphInspectionTest do
   alias SquidMesh.ReadModel.Inspection.Snapshot
   alias SquidMesh.Runs.GraphInspection
 
+  defmodule ConditionalScoreWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+      end
+
+      step :score_invoice, __MODULE__.ScoreInvoice
+      step :escalate_review, __MODULE__.EscalateReview
+      step :auto_approve, __MODULE__.AutoApprove
+
+      transition :score_invoice,
+        on: :ok,
+        to: :escalate_review,
+        condition: [path: [:risk, :score], greater_than: 70]
+
+      transition :score_invoice, on: :ok, to: :auto_approve
+      transition :escalate_review, on: :ok, to: :complete
+      transition :auto_approve, on: :ok, to: :complete
+    end
+  end
+
   @run_id "run_123"
   @child_run %{
     child_run_id: "child_run_123",
@@ -60,5 +83,62 @@ defmodule SquidMesh.Runs.GraphInspectionTest do
 
     assert %{nodes: [%{id: "load_invoice", action: "billing.load_invoice"}]} =
              GraphInspection.to_map(graph)
+  end
+
+  test "marks greater-than conditional transition edges from persisted route evidence" do
+    snapshot = %Snapshot{
+      run_id: @run_id,
+      workflow: Atom.to_string(ConditionalScoreWorkflow),
+      queue: "default",
+      status: :running,
+      reason: :planned_dispatch_pending_schedule,
+      terminal?: false,
+      terminal_status: nil,
+      thread_revisions: %{run: 2, dispatch: 0},
+      attempts: [
+        %{
+          runnable_key: "run_123:score_invoice:1",
+          status: :completed,
+          attempt_number: 1,
+          step: "score_invoice",
+          input: %{},
+          visible_at: ~U[2026-05-26 00:00:00Z],
+          idempotency_key: "run_123:score_invoice:1",
+          result: %{"risk" => %{"score" => 71}},
+          transition: %{
+            "from" => "score_invoice",
+            "on" => "ok",
+            "to" => "escalate_review",
+            "condition" => %{"path" => ["risk", "score"], "greater_than" => 70}
+          },
+          wakeup_emitted?: false,
+          applied?: true
+        }
+      ],
+      planned_runnables: [
+        %{
+          step: "escalate_review",
+          metadata: %{action: "billing.escalate_review"}
+        }
+      ]
+    }
+
+    graph = GraphInspection.from_snapshot(snapshot, source: :read_model)
+
+    assert [
+             %{
+               id: "score_invoice:ok:escalate_review:condition:0",
+               condition: %{path: [:risk, :score], greater_than: 70},
+               status: :selected,
+               selected?: true
+             },
+             %{
+               id: "score_invoice:ok:auto_approve",
+               condition: nil,
+               status: :skipped,
+               skipped?: true
+             }
+             | _remaining
+           ] = GraphInspection.to_map(graph).edges
   end
 end

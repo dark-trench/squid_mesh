@@ -42,7 +42,8 @@ defmodule MinimalHostApp.Smoke do
     with {:ok, run} <- WorkflowRuns.start_payment_recovery(attrs),
          :ok <- RuntimeHarness.wait_for_execution(),
          {:ok, inspected_run} <-
-           RuntimeHarness.await_terminal_run(run.run_id, attempts: @poll_attempts) do
+           RuntimeHarness.await_terminal_run(run.run_id, attempts: @poll_attempts),
+         {:ok, graph} <- SquidMesh.inspect_run_graph(run.run_id) do
       IO.puts("started run #{run.run_id} for #{inspect(run.workflow)}")
       RuntimeHarness.stop_gateway_server(server_pid)
 
@@ -50,11 +51,34 @@ defmodule MinimalHostApp.Smoke do
         raise "unexpected smoke result"
       end
 
+      unless selected_gateway_success_route?(graph) do
+        raise "unexpected payment recovery conditional route"
+      end
+
       inspected_run
     else
       {:error, reason} ->
         raise "smoke test failed: #{inspect(reason)}"
     end
+  end
+
+  defp selected_gateway_success_route?(graph) do
+    graph
+    |> SquidMesh.Runs.GraphInspection.to_map()
+    |> Map.fetch!(:edges)
+    |> Enum.any?(fn
+      %{
+        from: "check_gateway_status",
+        to: "notify_customer",
+        outcome: :ok,
+        selected?: true,
+        condition: %{path: [:gateway_check, :status_code], greater_than: 199}
+      } ->
+        true
+
+      _edge ->
+        false
+    end)
   end
 
   @spec run_all!() :: %{

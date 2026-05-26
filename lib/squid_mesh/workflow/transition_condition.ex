@@ -8,17 +8,23 @@ defmodule SquidMesh.Workflow.TransitionCondition do
           | String.t()
           | [json_value()]
           | %{optional(String.t()) => json_value()}
-  @type t :: %{required(:path) => [atom()], required(:equals) => json_value()}
+  @type operator :: :equals | :greater_than
+  @type t ::
+          %{required(:path) => [atom()], required(:equals) => json_value()}
+          | %{required(:path) => [atom()], required(:greater_than) => number()}
   @type error :: :invalid_condition
+
+  @operators [:equals, :greater_than]
 
   @doc false
   @spec normalize(term()) :: {:ok, t()} | {:error, error()}
   def normalize(condition) when is_list(condition) or is_map(condition) do
     with {:ok, condition} <- condition_map(condition),
-         {:ok, expected} <- fetch_condition_value(condition),
-         true <- json_value?(expected),
+         true <- condition_keys_valid?(condition),
+         {:ok, operator, expected} <- fetch_condition_operator(condition),
+         true <- valid_operator_value?(operator, expected),
          {:ok, normalized_path} <- normalize_path(condition_path(condition)) do
-      {:ok, %{path: normalized_path, equals: expected}}
+      {:ok, Map.put(%{path: normalized_path}, operator, expected)}
     else
       _invalid -> {:error, :invalid_condition}
     end
@@ -40,11 +46,13 @@ defmodule SquidMesh.Workflow.TransitionCondition do
   def matches?(context, condition) when is_map(context) do
     case normalize(condition) do
       {:ok, %{path: path, equals: expected}} ->
-        case fetch_path(context, path) do
-          {:ok, ^expected} -> true
-          {:ok, _other} -> false
-          :error -> false
-        end
+        match_fetched_value?(context, path, &(&1 == expected))
+
+      {:ok, %{path: path, greater_than: expected}} ->
+        match_fetched_value?(context, path, fn
+          value when is_number(value) -> value > expected
+          _value -> false
+        end)
 
       {:error, :invalid_condition} ->
         false
@@ -62,6 +70,9 @@ defmodule SquidMesh.Workflow.TransitionCondition do
       {:ok, %{path: path, equals: expected}} ->
         %{"path" => Enum.map(path, &Atom.to_string/1), "equals" => expected}
 
+      {:ok, %{path: path, greater_than: expected}} ->
+        %{"path" => Enum.map(path, &Atom.to_string/1), "greater_than" => expected}
+
       {:error, :invalid_condition} ->
         nil
     end
@@ -76,11 +87,8 @@ defmodule SquidMesh.Workflow.TransitionCondition do
 
     with true <- is_list(path),
          {:ok, normalized_path} <- deserialize_path(path),
-         {:ok, normalized} <-
-           normalize(%{
-             path: normalized_path,
-             equals: Map.get(condition, :equals, Map.get(condition, "equals"))
-           }) do
+         {:ok, condition} <- put_deserialized_path(condition, normalized_path),
+         {:ok, normalized} <- normalize(condition) do
       normalized
     else
       _invalid -> nil
@@ -88,6 +96,13 @@ defmodule SquidMesh.Workflow.TransitionCondition do
   end
 
   def deserialize(_condition), do: nil
+
+  defp match_fetched_value?(context, path, predicate) when is_function(predicate, 1) do
+    case fetch_path(context, path) do
+      {:ok, value} -> predicate.(value)
+      :error -> false
+    end
+  end
 
   defp fetch_path(context, path) do
     Enum.reduce_while(path, {:ok, context}, fn segment, {:ok, current} ->
@@ -117,10 +132,52 @@ defmodule SquidMesh.Workflow.TransitionCondition do
 
   defp condition_path(condition), do: Map.get(condition, :path) || Map.get(condition, "path")
 
-  defp fetch_condition_value(condition) do
+  defp condition_keys_valid?(condition) do
+    path_key_count(condition) == 1 and Enum.all?(Map.keys(condition), &condition_key?/1)
+  end
+
+  defp path_key_count(condition) do
+    Enum.count([:path, "path"], &Map.has_key?(condition, &1))
+  end
+
+  defp condition_key?(:path), do: true
+  defp condition_key?("path"), do: true
+  defp condition_key?(operator) when operator in @operators, do: true
+  defp condition_key?("equals"), do: true
+  defp condition_key?("greater_than"), do: true
+  defp condition_key?(_key), do: false
+
+  defp fetch_condition_operator(condition) do
+    case condition_operators(condition) do
+      [{operator, expected}] -> {:ok, operator, expected}
+      _other -> {:error, :invalid_condition}
+    end
+  end
+
+  defp condition_operators(condition) do
+    Enum.flat_map(@operators, fn operator ->
+      Enum.map(operator_values(operator, condition), &{operator, &1})
+    end)
+  end
+
+  defp operator_values(operator, condition) do
+    string_operator = Atom.to_string(operator)
+
+    [operator, string_operator]
+    |> Enum.filter(&Map.has_key?(condition, &1))
+    |> Enum.map(&Map.fetch!(condition, &1))
+  end
+
+  defp valid_operator_value?(:equals, expected), do: json_value?(expected)
+
+  defp valid_operator_value?(:greater_than, expected) do
+    is_number(expected) and json_value?(expected)
+  end
+
+  defp put_deserialized_path(condition, normalized_path) do
     cond do
-      Map.has_key?(condition, :equals) -> {:ok, Map.get(condition, :equals)}
-      Map.has_key?(condition, "equals") -> {:ok, Map.get(condition, "equals")}
+      Map.has_key?(condition, :path) -> {:ok, %{condition | path: normalized_path}}
+      Map.has_key?(condition, "path") -> {:ok, Map.put(condition, "path", normalized_path)}
       true -> {:error, :invalid_condition}
     end
   end
