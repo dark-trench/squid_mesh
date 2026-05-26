@@ -166,7 +166,14 @@ defmodule SquidMesh.Workflow.EditorSpecTest do
                    "from" => "extract",
                    "to" => "transform",
                    "type" => "dependency",
-                   "status" => "pending"
+                   "status" => "pending",
+                   "selected?" => false,
+                   "skipped?" => false,
+                   "pending?" => true,
+                   "blocked?" => false,
+                   "outcome" => nil,
+                   "condition" => nil,
+                   "recovery" => nil
                  },
                  %{
                    "id" => "extract:dependency:load",
@@ -187,6 +194,51 @@ defmodule SquidMesh.Workflow.EditorSpecTest do
 
       assert action =~ "LoadInvoice"
       refute Map.has_key?(editor_map, "123")
+    end
+
+    test "keeps conditional transition edge ids unique with stable preview edge keys" do
+      assert {:ok, spec} = SquidMesh.Workflow.to_spec(PaymentRecovery)
+
+      editor_map =
+        spec
+        |> EditorSpec.to_map()
+        |> Map.put("transitions", [
+          %{
+            "from" => "send_reminder",
+            "on" => "ok",
+            "to" => "complete",
+            "condition" => %{"field" => "invoice.status", "equals" => "paid"}
+          },
+          %{
+            "from" => "send_reminder",
+            "on" => "ok",
+            "to" => "complete",
+            "condition" => %{"field" => "invoice.status", "equals" => "past_due"}
+          }
+        ])
+
+      assert :ok = EditorSpec.validate_map(editor_map)
+      assert {:ok, graph} = EditorSpec.preview_graph(editor_map)
+
+      edge_ids = Enum.map(graph["edges"], & &1["id"])
+
+      assert edge_ids == Enum.uniq(edge_ids)
+
+      assert Enum.all?(graph["edges"], fn edge ->
+               match?(
+                 %{
+                   "selected?" => false,
+                   "skipped?" => false,
+                   "pending?" => true,
+                   "blocked?" => false,
+                   "outcome" => "ok",
+                   "recovery" => nil
+                 },
+                 edge
+               )
+             end)
+
+      assert Enum.all?(graph["edges"], &Map.has_key?(&1, "condition"))
     end
 
     test "rejects runtime-owned fields before previewing editor data" do

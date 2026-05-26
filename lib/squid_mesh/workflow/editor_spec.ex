@@ -331,25 +331,36 @@ defmodule SquidMesh.Workflow.EditorSpec do
     if transitions == [] do
       dependency_edges(map)
     else
-      Enum.map(transitions, &transition_edge/1)
+      transitions
+      |> Enum.with_index()
+      |> Enum.map(fn {transition, index} -> transition_edge(transition, index) end)
     end
   end
 
-  defp transition_edge(transition) do
+  defp transition_edge(transition, index) do
     from = field(transition, "from")
     outcome = field(transition, "on")
     to = field(transition, "to")
+    condition = field(transition, "condition")
 
-    compact(%{
-      "id" => Enum.join([from, outcome, to], ":"),
-      "from" => from,
-      "to" => to,
-      "type" => "transition",
-      "status" => "pending",
-      "outcome" => outcome,
-      "condition" => field(transition, "condition"),
-      "recovery" => field(transition, "recovery")
-    })
+    put_conditional_edge_id(
+      %{
+        "id" => Enum.join([from, outcome, to], ":"),
+        "from" => from,
+        "to" => to,
+        "type" => "transition",
+        "status" => "pending",
+        "selected?" => false,
+        "skipped?" => false,
+        "pending?" => true,
+        "blocked?" => false,
+        "outcome" => outcome,
+        "condition" => condition,
+        "recovery" => field(transition, "recovery")
+      },
+      condition,
+      index
+    )
   end
 
   defp dependency_edges(map) do
@@ -374,8 +385,21 @@ defmodule SquidMesh.Workflow.EditorSpec do
       "from" => dependency,
       "to" => field(step, "name"),
       "type" => "dependency",
-      "status" => "pending"
+      "status" => "pending",
+      "selected?" => false,
+      "skipped?" => false,
+      "pending?" => true,
+      "blocked?" => false,
+      "outcome" => nil,
+      "condition" => nil,
+      "recovery" => nil
     }
+  end
+
+  defp put_conditional_edge_id(edge, nil, _index), do: edge
+
+  defp put_conditional_edge_id(edge, _condition, index) do
+    %{edge | "id" => edge["id"] <> ":condition:" <> Integer.to_string(index)}
   end
 
   defp json_value(nil), do: nil

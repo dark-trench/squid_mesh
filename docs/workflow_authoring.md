@@ -144,6 +144,28 @@ editor_map =
 {:ok, graph} = SquidMesh.Workflow.EditorSpec.preview_graph(editor_map)
 ```
 
+The round-trip boundary is intentionally data-only:
+
+```mermaid
+sequenceDiagram
+  participant Editor as Visual Editor
+  participant ToMap as SquidMesh.Workflow.EditorSpec.to_map
+  participant JSON as JSON encode/decode
+  participant Validate as SquidMesh.Workflow.EditorSpec.validate_map
+  participant Preview as SquidMesh.Workflow.EditorSpec.preview_graph
+  Editor->>ToMap: Spec struct or map
+  ToMap->>ToMap: stringify keys, jsonify values, filter editor-owned fields
+  ToMap-->>Editor: editor-safe map
+  Editor->>JSON: JSON encode/decode
+  JSON-->>Editor: decoded map
+  Editor->>Validate: submit decoded map
+  Validate->>Validate: reject runtime-owned fields, validate steps/transitions/entry metadata
+  Validate-->>Editor: :ok or {:error, {:invalid_workflow_editor_spec, errors}}
+  Editor->>Preview: validated map
+  Preview->>Preview: generate nodes and edges (explicit or inferred)
+  Preview-->>Editor: draft graph {nodes, edges}
+```
+
 The editor map uses string keys and JSON-safe values. Editors own declarative
 workflow fields: `workflow`, `definition_version`, `triggers`, `payload`,
 `steps`, `transitions`, `retries`, `entry_steps`, `initial_step`, and
@@ -170,7 +192,13 @@ is still draft data:
       "to" => "send_reminder",
       "type" => "transition",
       "status" => "pending",
-      "outcome" => "ok"
+      "selected?" => false,
+      "skipped?" => false,
+      "pending?" => true,
+      "blocked?" => false,
+      "outcome" => "ok",
+      "condition" => nil,
+      "recovery" => nil
     }
   ]
 }

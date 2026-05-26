@@ -195,12 +195,13 @@ claims, retries, approvals, pause/resume controls, replay, cancellation,
 projection-backed inspection, and UI-friendly graph output.
 
 Planned rows describe accepted direction, not runtime guarantees. The most
-important planned work is about making Squid Mesh easier to embed in
-UI-authored or DB-authored workflow systems: runtime-authored workflow
-activation ([#254](https://github.com/dark-trench/squid_mesh/issues/254)) and
-workflow spec round-trip contracts for visual editors
-([#257](https://github.com/dark-trench/squid_mesh/issues/257)). The safe action
-registry is available as the allowlist boundary those features build on.
+important planned work is runtime-authored workflow activation
+([#254](https://github.com/dark-trench/squid_mesh/issues/254)) for
+UI-authored or DB-authored workflow systems. The safe action registry is
+available as the allowlist boundary that activation work builds on. Visual
+editor spec round trips are available today through
+`SquidMesh.Workflow.EditorSpec`, and inspected run graph serialization is
+available through `SquidMesh.Runs.GraphInspection.to_map/1`.
 
 Treat the durable dispatch protocol as the architectural foundation under those
 features. It defines the vocabulary for runnable intent, claim fencing, leases,

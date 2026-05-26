@@ -873,6 +873,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              journal_replay: journal_replay,
              journal_cron_digest: journal_cron_digest,
              action_registry: action_registry,
+             editor_spec_graph: editor_spec_graph,
              daily_digest: daily_digest
            } =
              Smoke.run_all!()
@@ -924,6 +925,15 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              {:load_invoice, "payment.load_invoice"},
              {:notify_customer, "payment.notify_customer"}
            ]
+
+    assert Enum.map(editor_spec_graph["nodes"], & &1["id"]) == [
+             "load_invoice",
+             "check_gateway_status",
+             "issue_gateway_credit",
+             "notify_customer"
+           ]
+
+    assert Enum.any?(editor_spec_graph["edges"], &(&1["recovery"] == "compensation"))
 
     assert daily_digest.status == :completed
     assert daily_digest.trigger == "daily_digest"
