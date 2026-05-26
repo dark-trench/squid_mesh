@@ -78,6 +78,7 @@ defmodule SquidMesh.Workflow.EditorSpecTest do
              ] = round_tripped["payload"]
 
       assert {:ok, graph} = EditorSpec.preview_graph(round_tripped)
+      assert {:ok, direct_graph} = EditorSpec.preview_graph(spec)
 
       assert %{
                "source" => "workflow_spec",
@@ -118,6 +119,74 @@ defmodule SquidMesh.Workflow.EditorSpecTest do
              } = graph
 
       assert workflow =~ "PaymentRecovery"
+      assert direct_graph["edges"] == graph["edges"]
+    end
+
+    test "previews dependency graphs from JSON-safe maps without explicit transitions" do
+      editor_map =
+        EditorSpec.to_map(%{
+          123 => :ignored,
+          workflow: :demo_workflow,
+          definition_version: "draft",
+          triggers: [],
+          payload: [],
+          retries: [],
+          entry_steps: [:extract],
+          initial_step: :extract,
+          entry_step: :extract,
+          steps: [
+            %{name: :extract, action: LoadInvoice, opts: []},
+            %{
+              name: :transform,
+              metadata: %{action: :transform_invoice},
+              opts: [after: [:extract]]
+            },
+            %{name: :load, opts: [after: [:extract, :transform]]},
+            %{name: :archive, opts: [after: :load]}
+          ],
+          transitions: []
+        })
+
+      assert :ok = EditorSpec.validate_map(editor_map)
+
+      assert {:ok, graph} = EditorSpec.preview_graph(editor_map)
+
+      assert %{
+               "workflow" => "demo_workflow",
+               "definition_version" => "draft",
+               "nodes" => [
+                 %{"id" => "extract", "action" => action},
+                 %{"id" => "transform", "action" => "transform_invoice"},
+                 %{"id" => "load"},
+                 %{"id" => "archive"}
+               ],
+               "edges" => [
+                 %{
+                   "id" => "extract:dependency:transform",
+                   "from" => "extract",
+                   "to" => "transform",
+                   "type" => "dependency",
+                   "status" => "pending"
+                 },
+                 %{
+                   "id" => "extract:dependency:load",
+                   "from" => "extract",
+                   "to" => "load",
+                   "type" => "dependency",
+                   "status" => "pending"
+                 },
+                 %{
+                   "id" => "transform:dependency:load",
+                   "from" => "transform",
+                   "to" => "load",
+                   "type" => "dependency",
+                   "status" => "pending"
+                 }
+               ]
+             } = graph
+
+      assert action =~ "LoadInvoice"
+      refute Map.has_key?(editor_map, "123")
     end
 
     test "rejects runtime-owned fields before previewing editor data" do
@@ -162,5 +231,82 @@ defmodule SquidMesh.Workflow.EditorSpecTest do
                details: %{to: "missing_step"}
              } in errors
     end
+
+    test "rejects non-map editor input before validation or preview" do
+      assert {:error, {:invalid_workflow_editor_spec, errors}} =
+               EditorSpec.validate_map("not a spec")
+
+      assert_error(errors, [], :invalid_editor_spec)
+
+      assert {:error, {:invalid_workflow_editor_spec, errors}} =
+               EditorSpec.preview_graph(["not", "a", "map"])
+
+      assert_error(errors, [], :invalid_editor_spec)
+    end
+
+    test "reports stable validation errors for malformed editor maps" do
+      editor_map =
+        %{
+          "workflow" => "Demo",
+          "definition_version" => "draft",
+          "triggers" => :invalid,
+          "payload" => :invalid,
+          "steps" => [%{"name" => ""}, :not_a_step],
+          "transitions" => [%{"from" => "missing_source", "on" => "retry", "to" => 123}],
+          "retries" => :invalid,
+          "entry_steps" => ["missing_entry", 123],
+          "initial_step" => "missing_initial",
+          "entry_step" => "missing_entry",
+          run_id: "run_123",
+          status: "running",
+          terminal_status: "failed",
+          current_node_id: "load_invoice",
+          current_node_ids: ["load_invoice"],
+          fingerprint: "sha256:runtime",
+          spec_fingerprint: "sha256:spec",
+          journal: [],
+          audit_history: [],
+          attempts: [],
+          dispatches: [],
+          history: []
+        }
+
+      assert {:error, {:invalid_workflow_editor_spec, errors}} =
+               EditorSpec.validate_map(editor_map)
+
+      for field <- [
+            :run_id,
+            :status,
+            :terminal_status,
+            :current_node_id,
+            :current_node_ids,
+            :fingerprint,
+            :spec_fingerprint,
+            :journal,
+            :audit_history,
+            :attempts,
+            :dispatches,
+            :history
+          ] do
+        assert_error(errors, [field], :runtime_owned_field)
+      end
+
+      assert_error(errors, [:triggers], :invalid_collection)
+      assert_error(errors, [:payload], :invalid_collection)
+      assert_error(errors, [:retries], :invalid_collection)
+      assert_error(errors, [:steps, 0, :name], :invalid_step_name)
+      assert_error(errors, [:steps, 1, :name], :invalid_step_name)
+      assert_error(errors, [:transitions, 0, :from], :unknown_transition_source)
+      assert_error(errors, [:transitions, 0, :to], :unknown_transition_target)
+      assert_error(errors, [:transitions, 0, :on], :invalid_transition_outcome)
+      assert_error(errors, [:entry_steps, 0], :unknown_entry_step)
+      assert_error(errors, [:entry_steps, 1], :unknown_entry_step)
+      assert_error(errors, [:initial_step], :unknown_step_reference)
+      assert_error(errors, [:entry_step], :unknown_step_reference)
+    end
+  end
+
+  defp assert_error(errors, path, code) do
+    assert Enum.any?(errors, &match?(%{path: ^path, code: ^code}, &1))
   end
 end
