@@ -67,7 +67,7 @@ boundary options when a host needs a non-default journal setup.
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| Workflow DSL and normalized spec | Supported, evolving | Workflow definitions cover triggers, payload contracts, steps, transitions, retries, dependency edges, and formatter support. Step entities are Spark-backed today; full DSL ownership by Spark is tracked in [#252](https://github.com/dark-trench/squid_mesh/issues/252). |
+| Workflow DSL and normalized spec | Supported, evolving | Workflow definitions cover triggers, payload contracts, steps, transitions, retries, dependency edges, and formatter support. Trigger, payload, step, and transition declarations are Spark-backed metadata. |
 | Native step contract | Supported | `SquidMesh.Step` is the preferred authoring path. Raw `Jido.Action` modules remain an explicit interop path. |
 | Durable run history | Supported | Run, dispatch, attempt, terminal, manual-control, replay, and catalog facts are persisted in the configured Jido journal storage. |
 | Cron payload boundary | Supported | Host schedulers may enqueue `SquidMesh.Executor.Payload.cron/3` maps and deliver them to `SquidMesh.Runtime.Runner.perform/2`; step execution is claimed through `SquidMesh.execute_next/1`. |

@@ -4,7 +4,8 @@ defmodule SquidMesh.Workflow.Dsl do
 
   This module installs the Squid Mesh Spark extension used by `use
   SquidMesh.Workflow`. Keeping the wrapper small lets the public workflow module
-  own compatibility macros while Spark owns the stable step specification.
+  focus on compiling validated definitions while Spark owns the declaration
+  metadata.
   """
 
   use Spark.Dsl,
