@@ -751,6 +751,8 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   defp storage_safe_parent_metadata?(metadata) when is_map(metadata),
     do: storage_safe_value?(metadata)
 
+  defp storage_safe_parent_metadata?(nil), do: true
+
   defp storage_safe_parent_metadata?(_metadata), do: false
 
   defp storage_safe_value?(value) when is_binary(value) or is_number(value) or is_boolean(value),
@@ -808,16 +810,33 @@ defmodule SquidMesh.Runtime.Journal.Starter do
 
   defp normalize_parent_context(context, source) do
     case Map.fetch(source, :parent) do
-      {:ok, parent} when is_map(parent) -> Map.put(context, :parent, parent)
-      _missing -> normalize_string_parent_context(context, source)
+      {:ok, parent} when is_map(parent) ->
+        Map.put(context, :parent, normalize_reserved_parent_context(parent))
+
+      _missing ->
+        normalize_string_parent_context(context, source)
     end
   end
 
   defp normalize_string_parent_context(context, source) do
     case Map.fetch(source, "parent") do
-      {:ok, parent} when is_map(parent) -> Map.put(context, :parent, parent)
-      _missing -> context
+      {:ok, parent} when is_map(parent) ->
+        Map.put(context, :parent, normalize_reserved_parent_context(parent))
+
+      _missing ->
+        context
     end
+  end
+
+  defp normalize_reserved_parent_context(parent) do
+    %{
+      run_id: parent_value(parent, :run_id),
+      runnable_key: parent_value(parent, :runnable_key),
+      step: parent_value(parent, :step),
+      attempt: parent_value(parent, :attempt),
+      child_key: parent_value(parent, :child_key),
+      metadata: parent_value(parent, :metadata) || %{}
+    }
   end
 
   defp replayed_from_run_id(opts) do

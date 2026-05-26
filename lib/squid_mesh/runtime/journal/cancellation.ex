@@ -93,18 +93,37 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
     projection
     |> Projection.child_runs()
     |> Enum.reduce_while(:ok, fn child_run, :ok ->
-      case Journal.load_thread(storage, {:run, Map.fetch!(child_run, :child_run_id)}) do
-        {:ok, _thread} ->
-          {:cont, :ok}
-
-        {:error, :not_found} ->
-          {:halt, {:error, {:invalid_transition, :child_starting, :cancelling}}}
-
-        {:error, _reason} = error ->
-          {:halt, error}
+      case child_started?(storage, child_run) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
+
+  defp child_started?(storage, child_run) do
+    case child_run_id(child_run) do
+      run_id when is_binary(run_id) -> load_child_thread(storage, run_id)
+      _missing_or_invalid -> child_starting_error()
+    end
+  end
+
+  defp load_child_thread(storage, run_id) do
+    case Journal.load_thread(storage, {:run, run_id}) do
+      {:ok, _thread} -> :ok
+      {:error, :not_found} -> child_starting_error()
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp child_starting_error do
+    {:error, {:invalid_transition, :child_starting, :cancelling}}
+  end
+
+  defp child_run_id(child_run) when is_map(child_run) do
+    Map.get(child_run, :child_run_id) || Map.get(child_run, "child_run_id")
+  end
+
+  defp child_run_id(_child_run), do: nil
 
   defp rebuild_workflow_agent(storage, run_id) do
     case WorkflowAgent.rebuild(storage, run_id) do

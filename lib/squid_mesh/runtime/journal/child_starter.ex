@@ -159,13 +159,18 @@ defmodule SquidMesh.Runtime.Journal.ChildStarter do
   defp parent_run_id(%Context{}), do: {:error, {:invalid_parent_context, :run_id}}
 
   defp origin(%Context{runnable_key: runnable_key, step: step, attempt: attempt})
-       when is_binary(runnable_key) and is_atom(step) do
+       when is_binary(runnable_key) and is_atom(step) and is_integer(attempt) do
     {:ok,
      %{
        runnable_key: runnable_key,
        step: Definition.serialize_step(step),
        attempt: attempt
      }}
+  end
+
+  defp origin(%Context{runnable_key: runnable_key, step: step})
+       when is_binary(runnable_key) and is_atom(step) do
+    {:error, {:invalid_parent_context, :attempt}}
   end
 
   defp origin(%Context{}), do: {:error, {:invalid_parent_context, :origin}}
@@ -299,6 +304,9 @@ defmodule SquidMesh.Runtime.Journal.ChildStarter do
       {:linked, linked_parent} ->
         {:ok, linked_parent}
 
+      :conflict ->
+        {:error, :conflict}
+
       :missing ->
         append_parent_child_link(
           storage,
@@ -324,7 +332,7 @@ defmodule SquidMesh.Runtime.Journal.ChildStarter do
     with {:ok, entry} <- child_link_entry(parent_run_id, child, now) do
       case Journal.append_entries(storage, [entry], expected_rev: rev) do
         {:ok, _thread} ->
-          {:ok, parent_from_child_link(entry)}
+          parent_from_child_link(entry)
 
         {:error, :conflict} ->
           ensure_parent_linked(
@@ -401,29 +409,57 @@ defmodule SquidMesh.Runtime.Journal.ChildStarter do
   end
 
   defp child_link_state(entries, child) do
-    entries
-    |> Enum.filter(&(&1.type == :child_run_started))
-    |> Enum.find(fn entry ->
-      entry.data.child_run_id == child.child_run_id and entry.data.child_key == child.child_key
-    end)
-    |> case do
-      nil -> :missing
-      entry -> {:linked, parent_from_child_link(entry)}
+    child_links = Enum.filter(entries, &(&1.type == :child_run_started))
+
+    case Enum.find(child_links, &same_child_link?(&1, child)) do
+      nil ->
+        if Enum.any?(child_links, &same_child_key?(&1, child)) do
+          :conflict
+        else
+          :missing
+        end
+
+      entry ->
+        case parent_from_child_link(entry) do
+          {:ok, parent} -> {:linked, parent}
+          {:error, :conflict} -> :conflict
+        end
     end
   end
 
-  defp parent_from_child_link(entry) do
-    data = entry.data
-    origin = Map.fetch!(data, :origin)
+  defp same_child_link?(entry, child) do
+    entry_value(entry, :child_run_id) == child.child_run_id and
+      entry_value(entry, :child_key) == child.child_key
+  end
 
-    %{
-      run_id: Map.fetch!(data, :run_id),
-      runnable_key: origin_value(origin, :runnable_key),
-      step: origin_value(origin, :step),
-      attempt: origin_value(origin, :attempt),
-      child_key: Map.fetch!(data, :child_key),
-      metadata: Map.get(data, :metadata, %{})
-    }
+  defp same_child_key?(entry, child) do
+    entry_value(entry, :child_key) == child.child_key
+  end
+
+  defp entry_value(entry, key) do
+    Map.get(entry.data, key) || Map.get(entry.data, Atom.to_string(key))
+  end
+
+  defp parent_from_child_link(entry) do
+    with run_id when is_binary(run_id) <- entry_value(entry, :run_id),
+         %{} = origin <- entry_value(entry, :origin),
+         runnable_key when is_binary(runnable_key) <- origin_value(origin, :runnable_key),
+         step when is_binary(step) <- origin_value(origin, :step),
+         attempt when is_integer(attempt) <- origin_value(origin, :attempt),
+         child_key when is_binary(child_key) <- entry_value(entry, :child_key),
+         metadata when is_map(metadata) <- entry_value(entry, :metadata) || %{} do
+      {:ok,
+       %{
+         run_id: run_id,
+         runnable_key: runnable_key,
+         step: step,
+         attempt: attempt,
+         child_key: child_key,
+         metadata: metadata
+       }}
+    else
+      _invalid -> {:error, :conflict}
+    end
   end
 
   defp origin_value(origin, key) when is_map(origin) do

@@ -220,6 +220,7 @@ defmodule SquidMesh do
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error, Config.config_error()}
           | {:error, {:invalid_option, atom() | term()}}
+          | {:error, {:invalid_trigger, :expected_atom}}
           | {:error, ChildStarter.start_error()}
   def start_child_run(parent_context, child_workflow, child_trigger, payload, overrides)
       when is_atom(child_trigger) and is_map(payload) and is_list(overrides) do
@@ -233,6 +234,11 @@ defmodule SquidMesh do
         journal_child_start_options(overrides)
       )
     end
+  end
+
+  def start_child_run(_parent_context, _child_workflow, child_trigger, payload, overrides)
+      when not is_atom(child_trigger) and is_map(payload) and is_list(overrides) do
+    {:error, {:invalid_trigger, :expected_atom}}
   end
 
   def start_child_run(_parent_context, _child_workflow, _child_trigger, _payload, overrides)

@@ -239,7 +239,15 @@ defmodule SquidMesh.ReadModel.ExplanationTest do
     assert explanation.details.runnable_keys == [@runnable_key]
     assert explanation.evidence.attempt_counts.available == 1
     assert explanation.evidence.child_runs == [child_run]
-    assert explanation.evidence.parent_run.run_id == "parent_run_123"
+
+    assert explanation.evidence.parent_run == %{
+             run_id: "parent_run_123",
+             runnable_key: "parent_run_123:fanout:1",
+             step: "fanout",
+             attempt: 1,
+             child_key: "digest_subscription_1",
+             metadata: %{}
+           }
   end
 
   test "returns projected inspection errors unchanged" do

@@ -406,7 +406,7 @@ defmodule SquidMesh.ReadModel.InspectionTest do
     })
   end
 
-  defp child_run_started do
+  defp child_run_started(metadata \\ %{subscription_id: "sub_123"}) do
     entry!(:child_run_started, %{
       run_id: @run_id,
       child_run_id: "child_run_123",
@@ -418,7 +418,7 @@ defmodule SquidMesh.ReadModel.InspectionTest do
         step: "charge_card",
         attempt: 1
       },
-      metadata: %{subscription_id: "sub_123"},
+      metadata: metadata,
       occurred_at: @visible_at
     })
   end
