@@ -2744,6 +2744,21 @@ defmodule SquidMesh.WorkflowTest do
     end
   end
 
+  test "rejects duplicate condition keys across atom and string list forms" do
+    duplicate_conditions = [
+      [{:path, ["load_invoice"]}, {"path", ["send_email"]}, {:equals, "daily"}],
+      [{:path, ["load_invoice"]}, {:equals, "daily"}, {"equals", "weekly"}],
+      [{:path, ["load_invoice"]}, {:greater_than, 10}, {"greater_than", 20}],
+      [{:path, ["load_invoice"]}, {:less_than, 10}, {"less_than", 20}],
+      [{:path, ["load_invoice"]}, {:equals, "daily"}, {:unknown, true}]
+    ]
+
+    for condition <- duplicate_conditions do
+      assert {:error, :invalid_condition} =
+               SquidMesh.Workflow.TransitionCondition.normalize(condition)
+    end
+  end
+
   test "returns structured errors for malformed list conditions in workflow specs" do
     assert {:ok, spec} = SquidMesh.Workflow.to_spec(InvoiceReminder)
 
