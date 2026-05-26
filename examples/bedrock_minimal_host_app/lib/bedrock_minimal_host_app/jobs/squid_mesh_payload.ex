@@ -38,7 +38,7 @@ defmodule BedrockMinimalHostApp.Jobs.SquidMeshPayload do
     if count >= max_journal_attempts() do
       {:error, :journal_drain_limit_exceeded}
     else
-      case SquidMesh.execute_next(owner_id: "bedrock-minimal-host-app", queue: queue) do
+      case execute_next(queue) do
         {:ok, :none} -> :ok
         {:ok, %Snapshot{}} -> drain_journal_attempts(count + 1, queue)
         {:error, _reason} = error -> error
@@ -46,8 +46,14 @@ defmodule BedrockMinimalHostApp.Jobs.SquidMeshPayload do
     end
   end
 
+  defp execute_next(nil), do: SquidMesh.execute_next(owner_id: "bedrock-minimal-host-app")
+
+  defp execute_next(queue) when is_binary(queue) do
+    SquidMesh.execute_next(owner_id: "bedrock-minimal-host-app", queue: queue)
+  end
+
   defp journal_queue(%{"queue" => queue}) when is_binary(queue), do: queue
-  defp journal_queue(_args), do: "default"
+  defp journal_queue(_args), do: nil
 
   defp max_journal_attempts do
     :bedrock_minimal_host_app

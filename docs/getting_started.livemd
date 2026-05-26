@@ -10,7 +10,11 @@ integration guide.
 ## Install
 
 ```elixir
-squid_mesh_ref = System.get_env("SQUID_MESH_DOCS_REF", "main")
+squid_mesh_ref =
+  System.get_env(
+    "SQUID_MESH_DOCS_REF",
+    "d6f21be53c655246d18c01c94bd51a3405ff9086"
+  )
 
 Mix.install([
   {:squid_mesh, git: "https://github.com/dark-trench/squid_mesh.git", ref: squid_mesh_ref}
@@ -315,36 +319,41 @@ defmodule SquidMeshLivebook.StartInviteChild do
       ) do
     child_key = "invite_#{guest_id}"
 
-    {:ok, child_run} =
-      SquidMesh.start_child_run(
-        context,
-        SquidMeshLivebook.InviteDeliveryWorkflow,
-        %{
-          party_id: party_id,
-          guest_id: guest_id,
-          fail_child_once: Map.get(input, :fail_child_once, false)
-        },
-        child_key: child_key,
-        metadata: %{guest_id: guest_id},
-        queue: child_queue
-      )
-
-    if Map.get(input, :fail_after_child_start, false) and attempt == 1 do
-      {:retry, %{message: "retry after child start"}}
+    with {:ok, child_run} <-
+           SquidMesh.start_child_run(
+             context,
+             SquidMeshLivebook.InviteDeliveryWorkflow,
+             %{
+               party_id: party_id,
+               guest_id: guest_id,
+               fail_child_once: Map.get(input, :fail_child_once, false)
+             },
+             child_key: child_key,
+             metadata: %{guest_id: guest_id},
+             queue: child_queue
+           ) do
+      if Map.get(input, :fail_after_child_start, false) and attempt == 1 do
+        {:retry, %{message: "retry after child start"}}
+      else
+        {:ok,
+         %{
+           invite_child: %{
+             run_id: child_run.run_id,
+             child_key: child_key,
+             queue: child_queue,
+             reused_after_retry?: attempt > 1
+           }
+         }}
+      end
     else
-      {:ok,
-       %{
-         invite_child: %{
-           run_id: child_run.run_id,
-           child_key: child_key,
-           queue: child_queue,
-           reused_after_retry?: attempt > 1
-         }
-       }}
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 end
+```
 
+```elixir
 defmodule SquidMeshLivebook.NestedInviteWorkflow do
   use SquidMesh.Workflow
 

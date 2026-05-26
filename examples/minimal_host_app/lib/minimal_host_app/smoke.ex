@@ -538,10 +538,13 @@ defmodule MinimalHostApp.Smoke do
 
     with {:ok, run} <- WorkflowRuns.start_nested_invite_delivery(attrs),
          {:ok, retried_parent} <-
-           SquidMesh.execute_next(owner_id: "minimal-host-app-nested-smoke-parent"),
+           SquidMesh.execute_next(
+             owner_id: "minimal-host-app-nested-smoke-parent",
+             queue: run.queue
+           ),
          {:ok, child_run_id} <-
            ensure_nested_child_link(retried_parent, "invite_guest_smoke", child_queue),
-         :ok <- delete_available_journal_checkpoints(retried_parent.run_id, "default"),
+         :ok <- delete_available_journal_checkpoints(retried_parent.run_id, retried_parent.queue),
          :ok <- delete_available_journal_checkpoints(child_run_id, child_queue),
          :ok <-
            ensure_reconstructed_nested_runs(
@@ -551,7 +554,10 @@ defmodule MinimalHostApp.Smoke do
              child_queue
            ),
          {:ok, completed_parent} <-
-           SquidMesh.execute_next(owner_id: "minimal-host-app-nested-smoke-parent"),
+           SquidMesh.execute_next(
+             owner_id: "minimal-host-app-nested-smoke-parent",
+             queue: retried_parent.queue
+           ),
          {:ok, child_retrying} <-
            SquidMesh.execute_next(
              owner_id: "minimal-host-app-nested-smoke-child",
