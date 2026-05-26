@@ -702,7 +702,11 @@ end
 
 The child is a normal journal run with its own inspection, retry, replay, and
 cancellation boundary. Repeating the same parent step and `child_key` returns
-the existing child run instead of appending duplicate lineage.
+the existing child run instead of appending duplicate lineage. Terminal parent
+runs reject new child starts, and stale parent step contexts are rejected before
+new lineage is appended. Keep child workflows backend-neutral; delivery systems
+such as Bedrock or Oban belong behind host adapter boundaries, not inside the
+workflow module.
 
 For approval or manual-review gates, use `approval_step/2` in
 transition-oriented workflows and resume execution through the explicit
