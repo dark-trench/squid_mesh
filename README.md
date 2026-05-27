@@ -306,12 +306,17 @@ Start a run through the public API:
 
 ```elixir
 {:ok, run} =
-  SquidMesh.start_run(
+  SquidMesh.start(
     MiddleEarth.Workflows.RingErrand,
     :leave_shire,
     %{ring_id: "one-ring"}
   )
 ```
+
+The longer `start_run/2`, `start_run/3`, and `start_run/4` names remain
+supported for existing code. Inspection APIs keep explicit names such as
+`inspect_run/2`, `inspect_run_graph/2`, and `explain_run/2` to avoid confusion
+with Elixir's `inspect/2`.
 
 Inspect a run with its full step history, audit events, and approval history:
 
@@ -344,15 +349,18 @@ explanation.evidence.command_counts
 Approval steps and pause steps block forward progression until explicitly resolved. For generic pause steps:
 
 ```elixir
-SquidMesh.unblock_run(run.run_id, %{actor: "strider", reason: "pipeweed restocked"})
+SquidMesh.resume(run.run_id, %{actor: "strider", reason: "pipeweed restocked"})
 ```
 
 For formal approval gates:
 
 ```elixir
-SquidMesh.approve_run(run.run_id, %{actor: "elrond", note: "approved by council"})
-SquidMesh.reject_run(run.run_id, %{actor: "elrond", note: "too much singing"})
+SquidMesh.approve(run.run_id, %{actor: "elrond", note: "approved by council"})
+SquidMesh.reject(run.run_id, %{actor: "elrond", note: "too much singing"})
 ```
+
+The longer `unblock_run/3`, `approve_run/3`, and `reject_run/3` names remain
+available when that style is clearer at a host boundary.
 
 Host apps that already normalize operator commands at their own boundary can
 build explicit runtime signals and apply them through the same journal
@@ -430,12 +438,14 @@ Each child is a normal journal run with its own inspection, retry, replay, and c
 
 ```elixir
 {:ok, running_runs} = SquidMesh.list_runs(status: :running)
-{:ok, _} = SquidMesh.cancel_run(run.run_id)
-{:ok, _} = SquidMesh.replay_run(run.run_id)
+{:ok, _} = SquidMesh.cancel(run.run_id)
+{:ok, _} = SquidMesh.replay(run.run_id)
 
 # Replay past irreversible steps requires an explicit override
-{:ok, _} = SquidMesh.replay_run(run.run_id, allow_irreversible: true)
+{:ok, _} = SquidMesh.replay(run.run_id, allow_irreversible: true)
 ```
+
+The longer `cancel_run/2` and `replay_run/2` names remain supported.
 
 ## Graph Inspection
 

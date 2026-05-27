@@ -99,12 +99,16 @@ Manual triggers start through the public API:
 
 ```elixir
 {:ok, run} =
-  SquidMesh.start_run(
+  SquidMesh.start(
     MiddleEarth.Workflows.RingErrand,
     :leave_shire,
     %{ring_id: "one-ring"}
   )
 ```
+
+The longer `start_run/*` names remain supported. Inspection keeps explicit
+names such as `inspect_run/2` and `inspect_run_graph/2` rather than adding an
+`inspect/2` alias.
 
 Workers drain visible journal attempts by calling:
 
@@ -228,8 +232,8 @@ transition :wait_for_council, on: :error, to: :walk_home_awkwardly
 Operators resolve them through public APIs:
 
 ```elixir
-SquidMesh.approve_run(run_id, %{actor: "ops_123", comment: "verified"})
-SquidMesh.reject_run(run_id, %{actor: "ops_123", comment: "fraud risk"})
+SquidMesh.approve(run_id, %{actor: "ops_123", comment: "verified"})
+SquidMesh.reject(run_id, %{actor: "ops_123", comment: "fraud risk"})
 ```
 
 Inspection history keeps pause, approval, rejection, and resume facts visible

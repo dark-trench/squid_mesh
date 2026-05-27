@@ -541,7 +541,7 @@ defmodule MinimalHostApp.Smoke do
                :dependency_recovery,
                attrs
              ),
-           {:ok, cancelled_run} <- SquidMesh.cancel_run(started_run.run_id),
+           {:ok, cancelled_run} <- SquidMesh.cancel(started_run.run_id),
            {:ok, inspected_run} <- SquidMesh.inspect_run(started_run.run_id),
            {:ok, :none} <- SquidMesh.execute_next(journal_run_execute_options()) do
         unless started_run.queue == queue and

@@ -74,6 +74,61 @@ defmodule SquidMesh do
   defdelegate config!(overrides \\ []), to: Config, as: :load!
 
   @doc """
+  Starts a new workflow run through the workflow's default trigger.
+
+  This is a concise alias for `start_run/2`.
+  """
+  @spec start(module(), map()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error, Config.config_error()}
+          | {:error, start_option_error()}
+          | {:error, Starter.start_error()}
+          | {:error, {:dispatch_failed, term()}}
+  def start(workflow, payload) when is_map(payload), do: start_run(workflow, payload)
+
+  @doc """
+  Starts a new workflow run through the workflow's default trigger with runtime
+  overrides, or through a named trigger without runtime overrides.
+
+  This is a concise alias for the two `start_run/3` forms.
+  """
+  @spec start(module(), map(), keyword()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error, Config.config_error()}
+          | {:error, {:invalid_option, atom()}}
+          | {:error, start_option_error()}
+          | {:error, Starter.start_error()}
+          | {:error, {:dispatch_failed, term()}}
+  def start(workflow, payload, overrides) when is_map(payload) and is_list(overrides),
+    do: start_run(workflow, payload, overrides)
+
+  @spec start(module(), atom(), map()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error, Config.config_error()}
+          | {:error, start_option_error()}
+          | {:error, Starter.start_error()}
+          | {:error, {:dispatch_failed, term()}}
+  def start(workflow, trigger_name, payload)
+      when is_atom(trigger_name) and is_map(payload),
+      do: start_run(workflow, trigger_name, payload)
+
+  @doc """
+  Starts a new workflow run through a named trigger with runtime overrides.
+
+  This is a concise alias for `start_run/4`.
+  """
+  @spec start(module(), atom(), map(), keyword()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error, Config.config_error()}
+          | {:error, {:invalid_option, atom()}}
+          | {:error, start_option_error()}
+          | {:error, Starter.start_error()}
+          | {:error, {:dispatch_failed, term()}}
+  def start(workflow, trigger_name, payload, overrides)
+      when is_atom(trigger_name) and is_map(payload) and is_list(overrides),
+      do: start_run(workflow, trigger_name, payload, overrides)
+
+  @doc """
   Starts a new workflow run with the given payload through the workflow's
   default trigger.
 
@@ -401,6 +456,20 @@ defmodule SquidMesh do
   end
 
   @doc """
+  Requests cancellation for an eligible workflow run.
+
+  This is a concise alias for `cancel_run/2`.
+  """
+  @spec cancel(Ecto.UUID.t(), keyword()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | Config.config_error()
+             | Cancellation.cancel_error()}
+  def cancel(run_id, overrides \\ []), do: cancel_run(run_id, overrides)
+
+  @doc """
   Applies a Squid Mesh-native runtime command signal.
 
   Host applications can use this when they already normalize control requests
@@ -493,6 +562,60 @@ defmodule SquidMesh do
   end
 
   @doc """
+  Resumes a run that is intentionally paused for manual intervention.
+
+  This is a concise alias for `unblock_run/1`.
+  """
+  @spec resume(Ecto.UUID.t()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | Config.config_error()
+             | term()}
+  def resume(run_id), do: unblock_run(run_id)
+
+  @doc """
+  Resumes a paused run with either configuration overrides or manual action
+  attributes.
+
+  This is a concise alias for `unblock_run/2`.
+  """
+  @spec resume(Ecto.UUID.t(), keyword()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | Config.config_error()
+             | term()}
+  def resume(run_id, overrides) when is_list(overrides), do: unblock_run(run_id, overrides)
+
+  @spec resume(Ecto.UUID.t(), map()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | Config.config_error()
+             | term()}
+  def resume(run_id, attrs) when is_map(attrs), do: unblock_run(run_id, attrs)
+
+  @doc """
+  Resumes a paused run with manual action attributes and configuration
+  overrides.
+
+  This is a concise alias for `unblock_run/3`.
+  """
+  @spec resume(Ecto.UUID.t(), map(), keyword()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | Config.config_error()
+             | term()}
+  def resume(run_id, attrs, overrides) when is_map(attrs) and is_list(overrides),
+    do: unblock_run(run_id, attrs, overrides)
+
+  @doc """
   Approves a paused approval step and resumes the run through its success path.
 
   By default, this resolves an inspectable journal approval boundary and
@@ -517,6 +640,21 @@ defmodule SquidMesh do
   end
 
   @doc """
+  Approves a paused approval step and resumes the run through its success path.
+
+  This is a concise alias for `approve_run/3`.
+  """
+  @spec approve(Ecto.UUID.t(), map(), keyword()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | Config.config_error()
+             | term()}
+  def approve(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides),
+    do: approve_run(run_id, attrs, overrides)
+
+  @doc """
   Rejects a paused approval step and resumes the run through its rejection path.
 
   By default, this resolves an inspectable journal approval boundary and
@@ -539,6 +677,21 @@ defmodule SquidMesh do
       {:error, _reason} = error -> error
     end
   end
+
+  @doc """
+  Rejects a paused approval step and resumes the run through its rejection path.
+
+  This is a concise alias for `reject_run/3`.
+  """
+  @spec reject(Ecto.UUID.t(), map(), keyword()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | Config.config_error()
+             | term()}
+  def reject(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides),
+    do: reject_run(run_id, attrs, overrides)
 
   @doc """
   Creates a new run from a prior run and links it to the original run.
@@ -590,6 +743,21 @@ defmodule SquidMesh do
         {:error, {:dispatch_failed, reason}}
     end
   end
+
+  @doc """
+  Creates a new run from a prior run and links it to the original run.
+
+  This is a concise alias for `replay_run/2`.
+  """
+  @spec replay(Ecto.UUID.t(), keyword()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | Config.config_error()
+             | Replay.replay_error()}
+          | {:error, {:dispatch_failed, term()}}
+  def replay(run_id, overrides \\ []), do: replay_run(run_id, overrides)
 
   defp replay_run_with_runtime(:journal, run_id, replay_opts, config_overrides) do
     Replay.replay(run_id, replay_opts, journal_control_options(config_overrides))

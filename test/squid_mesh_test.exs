@@ -1987,6 +1987,70 @@ defmodule SquidMeshTest do
              ]
     end
 
+    test "start/3 starts a default-trigger journal run" do
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_concise_default"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert snapshot.workflow == Atom.to_string(PaymentRecoveryWorkflow)
+      assert snapshot.queue == @read_model_queue
+      assert snapshot.reason == :attempt_visible
+    end
+
+    test "start/4 starts a named-trigger journal run" do
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start(
+                 PaymentRecoveryWorkflow,
+                 :gateway_recovery,
+                 %{account_id: "acct_concise_named"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert snapshot.workflow == Atom.to_string(PaymentRecoveryWorkflow)
+      assert snapshot.queue == @read_model_queue
+      assert snapshot.reason == :attempt_visible
+    end
+
+    test "concise control wrappers preserve existing public error shapes" do
+      missing_run_id = Ecto.UUID.generate()
+      malformed_run_id = "not-a-uuid"
+      attrs = %{actor: "ops_123"}
+
+      opts = [
+        runtime: :journal,
+        journal_storage: @read_model_storage,
+        queue: @read_model_queue
+      ]
+
+      assert {:error, :not_found} = SquidMesh.resume(missing_run_id, attrs, opts)
+      assert {:error, :not_found} = SquidMesh.approve(missing_run_id, attrs, opts)
+      assert {:error, :not_found} = SquidMesh.reject(missing_run_id, attrs, opts)
+      assert {:error, :not_found} = SquidMesh.cancel(missing_run_id, opts)
+      assert {:error, :not_found} = SquidMesh.replay(missing_run_id, opts)
+
+      assert {:error, :invalid_run_id} = SquidMesh.resume(malformed_run_id, attrs, opts)
+      assert {:error, :invalid_run_id} = SquidMesh.approve(malformed_run_id, attrs, opts)
+      assert {:error, :invalid_run_id} = SquidMesh.reject(malformed_run_id, attrs, opts)
+      assert {:error, :invalid_run_id} = SquidMesh.cancel(malformed_run_id, opts)
+      assert {:error, :invalid_run_id} = SquidMesh.replay(malformed_run_id, opts)
+    end
+
+    test "concise API keeps inspection names explicit" do
+      refute function_exported?(SquidMesh, :inspect, 2)
+      assert function_exported?(SquidMesh, :inspect_run, 2)
+      assert function_exported?(SquidMesh, :inspect_run_graph, 2)
+      assert function_exported?(SquidMesh, :explain_run, 2)
+    end
+
     test "start_run/3 exposes workflow definition version metadata in read models" do
       assert {:ok, %Snapshot{} = snapshot} =
                SquidMesh.start_run(

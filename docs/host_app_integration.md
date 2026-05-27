@@ -122,7 +122,7 @@ Bedrock code. The public integration boundary is:
 
 - workflow modules declare triggers, payloads, steps, transitions, retries, and
   manual controls
-- host code starts runs and exposes inspection through `SquidMesh.start_run/3`,
+- host code starts runs and exposes inspection through `SquidMesh.start/3`,
   `SquidMesh.list_runs/2`, `SquidMesh.inspect_run/2`,
   `SquidMesh.inspect_run_graph/2`, and `SquidMesh.explain_run/2`
 - host workers provide execution capacity by calling `SquidMesh.execute_next/1`
@@ -430,7 +430,7 @@ Host-facing boundary:
 ```elixir
 defmodule MyApp.WorkflowRuns do
   def start_payment_recovery(payload) do
-    SquidMesh.start_run(MyApp.Workflows.PaymentRecovery, :payment_recovery, payload)
+    SquidMesh.start(MyApp.Workflows.PaymentRecovery, :payment_recovery, payload)
   end
 
   def inspect_run(run_id) do
@@ -438,24 +438,25 @@ defmodule MyApp.WorkflowRuns do
   end
 
   def unblock_run(run_id, attrs \\ %{}) do
-    SquidMesh.unblock_run(run_id, attrs)
+    SquidMesh.resume(run_id, attrs)
   end
 
   def approve_run(run_id, attrs) do
-    SquidMesh.approve_run(run_id, attrs)
+    SquidMesh.approve(run_id, attrs)
   end
 
   def reject_run(run_id, attrs) do
-    SquidMesh.reject_run(run_id, attrs)
+    SquidMesh.reject(run_id, attrs)
   end
 end
 ```
 
 If the host app exposes pause-resume or approval workflows, keep the latest
 Squid Mesh migrations applied before deploying the feature. Paused step runs
-now persist internal resume metadata so `unblock_run/2`, `approve_run/3`, and
-`reject_run/3` can continue with stable output and transition semantics after
-restarts or code changes.
+now persist internal resume metadata so `resume/2`, `approve/3`, and
+`reject/3` can continue with stable output and transition semantics after
+restarts or code changes. The longer `unblock_run/2`, `approve_run/3`, and
+`reject_run/3` names remain supported.
 
 Operational review shape:
 
@@ -503,7 +504,7 @@ Context boundary:
 ```elixir
 defmodule MyApp.WorkflowRuns do
   def start_payment_recovery(attrs) do
-    SquidMesh.start_run(MyApp.Workflows.PaymentRecovery, :payment_recovery, attrs)
+    SquidMesh.start(MyApp.Workflows.PaymentRecovery, :payment_recovery, attrs)
   end
 
   def inspect_run(run_id) do
@@ -511,15 +512,15 @@ defmodule MyApp.WorkflowRuns do
   end
 
   def unblock_run(run_id, attrs \\ %{}) do
-    SquidMesh.unblock_run(run_id, attrs)
+    SquidMesh.resume(run_id, attrs)
   end
 
   def approve_run(run_id, attrs) do
-    SquidMesh.approve_run(run_id, attrs)
+    SquidMesh.approve(run_id, attrs)
   end
 
   def reject_run(run_id, attrs) do
-    SquidMesh.reject_run(run_id, attrs)
+    SquidMesh.reject(run_id, attrs)
   end
 end
 ```

@@ -634,8 +634,8 @@ or reject it through the public API:
 
 ```elixir
 {:ok, paused_run} = SquidMesh.inspect_run(run_id, include_history: true)
-{:ok, approved_run} = SquidMesh.approve_run(run_id, %{actor: "ops_123"})
-{:ok, rejected_run} = SquidMesh.reject_run(run_id, %{actor: "ops_456"})
+{:ok, approved_run} = SquidMesh.approve(run_id, %{actor: "ops_123"})
+{:ok, rejected_run} = SquidMesh.reject(run_id, %{actor: "ops_456"})
 ```
 
 With `include_history: true`, the inspected run also exposes `audit_events` so
@@ -650,8 +650,8 @@ Manual-review durability notes:
 
 - `approval_step/2` is only supported in transition-based workflows
 - the approval step stays `:running` while the run is `:paused`
-- `approve_run/3` completes that step and advances the declared `:ok` path
-- `reject_run/3` completes that step and advances the declared `:error` path
+- `approve/3` completes that step and advances the declared `:ok` path
+- `reject/3` completes that step and advances the declared `:error` path
 - reviewer identity, decision, timestamp, and optional review metadata are persisted in the completed step output and merged run context
 - `inspect_run(..., include_history: true)` also returns durable audit events for pause, resume, approval, and rejection actions
 - the resolved `:ok` and `:error` targets plus output-mapping metadata are persisted with the paused step so restart or deploy boundaries do not recompute review semantics from the current workflow definition
@@ -672,17 +672,19 @@ With those settings, workflow code can use the same public calls without
 threading journal options through every boundary:
 
 ```elixir
-{:ok, started} = SquidMesh.start_run(MyWorkflow, %{account_id: "acct_123"})
+{:ok, started} = SquidMesh.start(MyWorkflow, %{account_id: "acct_123"})
 {:ok, snapshot} = SquidMesh.inspect_run(started.run_id)
 {:ok, snapshot} = SquidMesh.execute_next(owner_id: "worker-1")
 {:ok, summaries} = SquidMesh.list_runs([])
 {:ok, workflow_summaries} = SquidMesh.list_runs(workflow: MyWorkflow)
 
-{:ok, replayed} = SquidMesh.replay_run(completed_run_id)
+{:ok, replayed} = SquidMesh.replay(completed_run_id)
 
-{:ok, cancellable} = SquidMesh.start_run(MyWorkflow, %{account_id: "acct_456"})
-{:ok, cancelled} = SquidMesh.cancel_run(cancellable.run_id)
+{:ok, cancellable} = SquidMesh.start(MyWorkflow, %{account_id: "acct_456"})
+{:ok, cancelled} = SquidMesh.cancel(cancellable.run_id)
 ```
+
+The longer `*_run` names remain supported for existing host code.
 
 When no `journal_storage` is configured, Squid Mesh infers
 `{SquidMesh.Runtime.Journal.Storage.Ecto, repo: MyApp.Repo}`. The storage
@@ -882,9 +884,9 @@ Both markers produce the same replay safety behavior:
   policy
 - `explain_run/2` removes `:replay_run` from terminal next actions after a
   completed marked step and reports the blocking step in `details.replay`
-- `replay_run/2` returns
+- `replay/2` returns
   `{:error, {:unsafe_replay, details}}` by default after a completed marked step
-- `replay_run(run_id, allow_irreversible: true)` is the explicit operator
+- `replay(run_id, allow_irreversible: true)` is the explicit operator
   override when re-execution has been reviewed and accepted
 
 These markers do not provide exactly-once delivery or external compensation.
@@ -1193,7 +1195,7 @@ exhausted.
 If a workflow defines a single trigger, the short path is:
 
 ```elixir
-SquidMesh.start_run(Billing.Workflows.PaymentRecovery, %{
+SquidMesh.start(Billing.Workflows.PaymentRecovery, %{
   account_id: account_id,
   invoice_id: invoice_id,
   attempt_id: attempt_id,
@@ -1204,7 +1206,7 @@ SquidMesh.start_run(Billing.Workflows.PaymentRecovery, %{
 If you want to name the trigger explicitly:
 
 ```elixir
-SquidMesh.start_run(Billing.Workflows.PaymentRecovery, :payment_recovery, %{
+SquidMesh.start(Billing.Workflows.PaymentRecovery, :payment_recovery, %{
   account_id: account_id,
   invoice_id: invoice_id,
   attempt_id: attempt_id,
