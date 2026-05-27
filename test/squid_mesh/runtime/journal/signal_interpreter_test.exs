@@ -38,4 +38,18 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreterTest do
 
     assert {:error, :invalid_signal} = ManualControl.apply_signal(%{}, [])
   end
+
+  test "manual control rejects malformed signals for supported command types" do
+    for type <- [:resume_run, :approve_run, :reject_run] do
+      signal = %Signal{
+        type: type,
+        payload: %{},
+        metadata: %{},
+        occurred_at: DateTime.utc_now()
+      }
+
+      assert {:error, {:invalid_signal, ^type}} = ManualControl.apply_signal(signal, [])
+      assert {:error, {:invalid_signal, ^type}} = SignalInterpreter.apply(signal, [])
+    end
+  end
 end
