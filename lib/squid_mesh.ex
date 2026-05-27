@@ -647,13 +647,17 @@ defmodule SquidMesh do
 
   defp control_signal(:cancel_run, run_id, overrides) do
     with {:ok, signal_opts} <- control_signal_options(overrides) do
-      Signal.cancel_run(run_id, signal_opts)
+      run_id
+      |> Signal.cancel_run(signal_opts)
+      |> normalize_control_signal_result()
     end
   end
 
   defp control_signal(type, run_id, attrs, overrides) do
     with {:ok, signal_opts} <- control_signal_options(overrides) do
-      apply(Signal, type, [run_id, attrs, signal_opts])
+      Signal
+      |> apply(type, [run_id, attrs, signal_opts])
+      |> normalize_control_signal_result()
     end
   end
 
@@ -664,6 +668,12 @@ defmodule SquidMesh do
       :error -> {:ok, []}
     end
   end
+
+  defp normalize_control_signal_result({:ok, %Signal{}} = result), do: result
+
+  defp normalize_control_signal_result({:error, {:invalid_signal, _reason}} = error), do: error
+
+  defp normalize_control_signal_result({:error, reason}), do: {:error, {:invalid_signal, reason}}
 
   defp public_signal_error({:run_id, :invalid}), do: :invalid_run_id
 
