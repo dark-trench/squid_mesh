@@ -2020,6 +2020,35 @@ defmodule SquidMeshTest do
       assert snapshot.reason == :attempt_visible
     end
 
+    test "concise convenience arities use configured runtime defaults" do
+      put_squid_mesh_config(
+        repo: Repo,
+        runtime: :journal,
+        journal_storage: @read_model_storage,
+        queue: @read_model_queue
+      )
+
+      assert {:ok, %Snapshot{} = default_trigger_snapshot} =
+               SquidMesh.start(PaymentRecoveryWorkflow, %{account_id: "acct_concise_start"})
+
+      assert {:ok, %Snapshot{} = named_trigger_snapshot} =
+               SquidMesh.start(PaymentRecoveryWorkflow, :gateway_recovery, %{
+                 account_id: "acct_concise_trigger"
+               })
+
+      assert default_trigger_snapshot.queue == @read_model_queue
+      assert named_trigger_snapshot.queue == @read_model_queue
+
+      missing_run_id = Ecto.UUID.generate()
+      attrs = %{actor: "ops_123"}
+
+      assert {:error, :not_found} = SquidMesh.resume(missing_run_id)
+      assert {:error, :not_found} = SquidMesh.resume(missing_run_id, runtime: :journal)
+      assert {:error, :not_found} = SquidMesh.resume(missing_run_id, attrs)
+      assert {:error, :not_found} = SquidMesh.approve(missing_run_id, attrs)
+      assert {:error, :not_found} = SquidMesh.reject(missing_run_id, attrs)
+    end
+
     test "concise control wrappers preserve existing public error shapes" do
       missing_run_id = Ecto.UUID.generate()
       malformed_run_id = "not-a-uuid"
