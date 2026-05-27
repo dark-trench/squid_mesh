@@ -27,6 +27,20 @@ defmodule SquidMesh.Runtime.SignalTest do
              )
   end
 
+  test "builds a start run command signal from serialized names" do
+    assert {:ok,
+            %Signal{
+              type: :start_run,
+              payload: %{
+                workflow: "Elixir.ExternalWorkflow",
+                trigger: "manual",
+                input: %{}
+              },
+              occurred_at: @occurred_at
+            }} =
+             Signal.start_run("Elixir.ExternalWorkflow", "manual", %{}, occurred_at: @occurred_at)
+  end
+
   test "builds a cron start command signal with scheduler identity" do
     input = %{
       "signal_id" => "checkout:nightly:2026-05-26T12",
@@ -148,14 +162,23 @@ defmodule SquidMesh.Runtime.SignalTest do
     assert {:error, {:invalid_signal, {:run_id, :invalid}}} =
              Signal.cancel_run("not-a-run-id", occurred_at: @occurred_at)
 
+    assert {:error, {:invalid_signal, {:run_id, :invalid}}} =
+             Signal.cancel_run(123, occurred_at: @occurred_at)
+
     assert {:error, {:invalid_signal, {:workflow, :invalid}}} =
              Signal.start_run(nil, :manual, %{}, occurred_at: @occurred_at)
+
+    assert {:error, {:invalid_signal, {:workflow, :invalid}}} =
+             Signal.start_run(true, :manual, %{}, occurred_at: @occurred_at)
 
     assert {:error, {:invalid_signal, {:trigger, :required}}} =
              Signal.start_cron(@workflow, nil, %{}, occurred_at: @occurred_at)
 
     assert {:error, {:invalid_signal, {:trigger, :invalid}}} =
              Signal.start_run(@workflow, "", %{}, occurred_at: @occurred_at)
+
+    assert {:error, {:invalid_signal, {:trigger, :invalid}}} =
+             Signal.start_run(@workflow, 123, %{}, occurred_at: @occurred_at)
   end
 
   test "rejects invalid envelope data" do
