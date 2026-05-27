@@ -354,6 +354,26 @@ SquidMesh.approve_run(run.run_id, %{actor: "elrond", note: "approved by council"
 SquidMesh.reject_run(run.run_id, %{actor: "elrond", note: "too much singing"})
 ```
 
+Host apps that already normalize operator commands at their own boundary can
+build explicit runtime signals and apply them through the same journal
+interpreter used by the public wrappers:
+
+```elixir
+alias SquidMesh.Runtime.Signal
+
+{:ok, signal} =
+  Signal.approve_run(run.run_id, %{actor: "elrond", note: "approved by council"},
+    metadata: %{source: "middle_earth.workflow_runs"}
+  )
+
+{:ok, approved_run} = SquidMesh.apply_signal(signal)
+```
+
+The same pattern applies to `Signal.resume_run/3`, `Signal.reject_run/3`, and
+`Signal.cancel_run/2`. Reusing an idempotency key makes duplicate command
+delivery return the already-applied run state without appending another command
+receipt.
+
 Approval steps persist their resolved `:ok` and `:error` targets along with output-mapping metadata, so paused review flows survive deploys and restarts without semantic drift.
 
 ## Compensation and Recovery
