@@ -14,11 +14,12 @@ defmodule SquidMesh do
   alias SquidMesh.Runtime.Journal.Cancellation
   alias SquidMesh.Runtime.Journal.ChildStarter
   alias SquidMesh.Runtime.Journal.Executor
-  alias SquidMesh.Runtime.Journal.ManualControl
   alias SquidMesh.Runtime.Journal.Options
   alias SquidMesh.Runtime.Journal.Replay
+  alias SquidMesh.Runtime.Journal.SignalInterpreter
   alias SquidMesh.Runtime.Journal.Starter
   alias SquidMesh.Runtime.ScheduleIdentity
+  alias SquidMesh.Runtime.Signal
 
   @read_models [:read_model]
   @runtimes [:journal]
@@ -460,8 +461,12 @@ defmodule SquidMesh do
              | Config.config_error()
              | term()}
   def unblock_run(run_id, attrs, overrides) when is_map(attrs) and is_list(overrides) do
-    with {:ok, :journal} <- runtime(overrides) do
-      ManualControl.resume(run_id, attrs, journal_control_options(overrides))
+    with {:ok, :journal} <- runtime(overrides),
+         {:ok, signal} <- control_signal(:resume_run, run_id, attrs, overrides) do
+      SignalInterpreter.apply(signal, journal_control_options(overrides))
+    else
+      {:error, {:invalid_signal, reason}} -> {:error, public_signal_error(reason)}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -480,8 +485,12 @@ defmodule SquidMesh do
              | Config.config_error()
              | term()}
   def approve_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
-    with {:ok, :journal} <- runtime(overrides) do
-      ManualControl.approve(run_id, attrs, journal_control_options(overrides))
+    with {:ok, :journal} <- runtime(overrides),
+         {:ok, signal} <- control_signal(:approve_run, run_id, attrs, overrides) do
+      SignalInterpreter.apply(signal, journal_control_options(overrides))
+    else
+      {:error, {:invalid_signal, reason}} -> {:error, public_signal_error(reason)}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -500,8 +509,12 @@ defmodule SquidMesh do
              | Config.config_error()
              | term()}
   def reject_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
-    with {:ok, :journal} <- runtime(overrides) do
-      ManualControl.reject(run_id, attrs, journal_control_options(overrides))
+    with {:ok, :journal} <- runtime(overrides),
+         {:ok, signal} <- control_signal(:reject_run, run_id, attrs, overrides) do
+      SignalInterpreter.apply(signal, journal_control_options(overrides))
+    else
+      {:error, {:invalid_signal, reason}} -> {:error, public_signal_error(reason)}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -598,8 +611,44 @@ defmodule SquidMesh do
   end
 
   defp cancel_run_with_runtime(:journal, run_id, overrides) do
-    Cancellation.cancel(run_id, journal_control_options(overrides))
+    case control_signal(:cancel_run, run_id, overrides) do
+      {:ok, signal} ->
+        SignalInterpreter.apply(signal, journal_control_options(overrides))
+
+      {:error, {:invalid_signal, reason}} ->
+        {:error, public_signal_error(reason)}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
+
+  defp control_signal(:cancel_run, run_id, overrides) do
+    with {:ok, signal_opts} <- control_signal_options(overrides) do
+      Signal.cancel_run(run_id, signal_opts)
+    end
+  end
+
+  defp control_signal(type, run_id, attrs, overrides) do
+    with {:ok, signal_opts} <- control_signal_options(overrides) do
+      apply(Signal, type, [run_id, attrs, signal_opts])
+    end
+  end
+
+  defp control_signal_options(overrides) do
+    case Keyword.fetch(overrides, :now) do
+      {:ok, %DateTime{} = now} -> {:ok, [occurred_at: now]}
+      {:ok, _invalid} -> {:error, {:invalid_option, {:now, :invalid}}}
+      :error -> {:ok, []}
+    end
+  end
+
+  defp public_signal_error({:run_id, :invalid}), do: :invalid_run_id
+
+  defp public_signal_error({:occurred_at, :expected_datetime}),
+    do: {:invalid_option, {:now, :invalid}}
+
+  defp public_signal_error(reason), do: {:invalid_signal, reason}
 
   defp journal_initial_context_start_options(workflow, trigger_name, initial_context, overrides) do
     opts =

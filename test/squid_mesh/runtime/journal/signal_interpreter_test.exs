@@ -1,0 +1,41 @@
+defmodule SquidMesh.Runtime.Journal.SignalInterpreterTest do
+  use ExUnit.Case, async: true
+
+  alias SquidMesh.Runtime.Journal.Cancellation
+  alias SquidMesh.Runtime.Journal.ManualControl
+  alias SquidMesh.Runtime.Journal.SignalInterpreter
+  alias SquidMesh.Runtime.Signal
+
+  @run_id "3c82d86d-31a6-4d57-9e41-4f5c95125be6"
+
+  test "rejects unsupported runtime command signals" do
+    assert {:ok, %Signal{} = signal} = Signal.replay_run(@run_id)
+
+    assert {:error, {:unsupported_signal, :replay_run}} =
+             SignalInterpreter.apply(signal, [])
+  end
+
+  test "rejects malformed interpreter inputs" do
+    assert {:ok, %Signal{} = signal} = Signal.cancel_run(@run_id)
+
+    assert {:error, {:invalid_option, {:opts, :invalid}}} =
+             SignalInterpreter.apply(signal, :bad_opts)
+
+    assert {:error, :invalid_signal} = SignalInterpreter.apply(%{}, [])
+  end
+
+  test "journal control modules reject unsupported or malformed direct signals" do
+    assert {:ok, %Signal{} = replay_signal} = Signal.replay_run(@run_id)
+    assert {:ok, %Signal{} = cancel_signal} = Signal.cancel_run(@run_id)
+
+    assert {:error, {:unsupported_signal, :replay_run}} =
+             Cancellation.apply_signal(replay_signal, [])
+
+    assert {:error, :invalid_signal} = Cancellation.apply_signal(%{}, [])
+
+    assert {:error, {:unsupported_signal, :cancel_run}} =
+             ManualControl.apply_signal(cancel_signal, [])
+
+    assert {:error, :invalid_signal} = ManualControl.apply_signal(%{}, [])
+  end
+end

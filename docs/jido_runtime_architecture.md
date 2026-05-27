@@ -154,6 +154,11 @@ All command signals carry `metadata`, `occurred_at`, and an optional
 `idempotency_key`. Runtime code should adapt these product-level signals at the
 Jido boundary instead of leaking backend signal shapes into public APIs.
 
+Public workflow-control functions normalize caller input into these signals and
+then hand them to the journal signal interpreter. That keeps public callers on
+Squid Mesh concepts while cancellation and manual decisions share one internal
+command path with any future signal-delivery adapter.
+
 When a command reaches the journal runtime, Squid Mesh records a
 `:run_signal_received` fact in the run thread before the command's lifecycle
 facts. Starts, cron starts, manual approvals, rejections, resumes,

@@ -11,7 +11,9 @@ defmodule SquidMeshTest do
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.Journal.Executor
+  alias SquidMesh.Runtime.Journal.SignalInterpreter
   alias SquidMesh.Runtime.Runner
+  alias SquidMesh.Runtime.Signal
   alias SquidMesh.Workflow.Definition
 
   defp execute_journal_next(opts), do: Executor.execute_next(opts)
@@ -4093,6 +4095,58 @@ defmodule SquidMeshTest do
                )
     end
 
+    test "signal interpreter cancels journal runs through a durable signal receipt" do
+      cancelled_at = DateTime.add(@read_model_visible_at, 1, :second)
+
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_signal_cancel"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      run_id = started.run_id
+
+      assert {:ok, %Signal{} = signal} =
+               Signal.cancel_run(run_id,
+                 metadata: %{source: "ops_console"},
+                 idempotency_key: "cancel-signal-1",
+                 occurred_at: cancelled_at
+               )
+
+      assert {:ok, %Snapshot{} = cancelled} =
+               SignalInterpreter.apply(signal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert cancelled.status == :cancelled
+
+      assert [
+               %{signal_type: "start_run"},
+               %{
+                 signal_type: "cancel_run",
+                 payload: %{run_id: ^run_id},
+                 metadata: %{source: "ops_console"},
+                 idempotency_key: "cancel-signal-1",
+                 occurred_at: ^cancelled_at
+               }
+             ] = cancelled.command_history
+
+      run_entries = raw_run_entries(run_id, @read_model_storage)
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_signal_received,
+               :run_started,
+               :runnables_planned,
+               :run_signal_received,
+               :run_terminal
+             ]
+    end
+
     test "cancel_run/2 rejects stale claim completions after journal cancellation" do
       assert {:ok, %Snapshot{} = started} =
                SquidMesh.start_run(
@@ -4680,6 +4734,13 @@ defmodule SquidMeshTest do
                SquidMesh.cancel_run("not-a-uuid",
                  runtime: :journal,
                  journal_storage: @read_model_storage
+               )
+
+      assert {:error, {:invalid_option, {:now, :invalid}}} =
+               SquidMesh.cancel_run(Ecto.UUID.generate(),
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 now: :not_a_datetime
                )
     end
 
@@ -5482,6 +5543,81 @@ defmodule SquidMeshTest do
                  }
                }
              } = Enum.at(run_entries, 4)
+    end
+
+    test "signal interpreter approves manual steps through a durable signal receipt" do
+      run_id = Ecto.UUID.generate()
+      approved_at = DateTime.add(@read_model_visible_at, 1, :second)
+
+      assert {:ok, %Snapshot{}} =
+               SquidMesh.start_run(
+                 ApprovalWorkflow,
+                 %{account_id: "acct_signal_approval"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at,
+                 run_id: run_id
+               )
+
+      assert {:ok, %Snapshot{status: :paused}} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 owner_id: "journal-signal-approval-test",
+                 claim_id: "claim_signal_approval",
+                 claim_token: "token_signal_approval",
+                 now: @read_model_visible_at,
+                 finished_at: @read_model_visible_at
+               )
+
+      assert {:ok, %Signal{} = signal} =
+               Signal.approve_run(
+                 run_id,
+                 %{actor: "ops_123", comment: "approved by signal"},
+                 metadata: %{source: "ops_console"},
+                 idempotency_key: "approve-signal-1",
+                 occurred_at: approved_at
+               )
+
+      assert {:ok, %Snapshot{} = approved_snapshot} =
+               SignalInterpreter.apply(signal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert approved_snapshot.status == :running
+      assert [%{step: "record_approval"}] = approved_snapshot.visible_attempts
+
+      assert Enum.any?(approved_snapshot.command_history, fn
+               %{
+                 signal_type: "approve_run",
+                 actor: "ops_123",
+                 comment: "approved by signal",
+                 payload: %{run_id: ^run_id},
+                 metadata: %{source: "ops_console"},
+                 idempotency_key: "approve-signal-1",
+                 occurred_at: ^approved_at
+               } ->
+                 true
+
+               _command ->
+                 false
+             end)
+
+      run_entries = raw_run_entries(run_id, @read_model_storage)
+
+      assert Enum.map(run_entries, & &1.type) == [
+               :run_signal_received,
+               :run_started,
+               :runnables_planned,
+               :runnable_applied,
+               :manual_step_paused,
+               :run_signal_received,
+               :manual_step_resolved,
+               :runnables_planned
+             ]
     end
 
     test "journal runtime approves runs with string-keyed persisted definition metadata" do
