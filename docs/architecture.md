@@ -123,7 +123,7 @@ Postgres owns:
 
 ```mermaid
 flowchart TB
-    api["Public API<br/>start_run / inspect_run / explain_run"]
+    api["Public API<br/>start / inspect_run / explain_run"]
     runtime["Squid Mesh runtime<br/>plans work, applies results, retries, pauses, cancels, completes"]
     journals["Jido journals<br/>runs, attempts, claims, heartbeats, completions, failures, terminal state"]
     worker["Host workers<br/>SquidMesh.execute_next/1"]

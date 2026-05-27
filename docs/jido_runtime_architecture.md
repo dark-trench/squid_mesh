@@ -154,12 +154,13 @@ All command signals carry `metadata`, `occurred_at`, and an optional
 `idempotency_key`. Runtime code should adapt these product-level signals at the
 Jido boundary instead of leaking backend signal shapes into public APIs.
 
-Public workflow-control functions normalize caller input into these signals and
-then hand them to the journal signal interpreter. That keeps public callers on
-Squid Mesh concepts while cancellation and manual decisions share one internal
-command path with any future signal-delivery adapter. Host apps that already
-normalize commands at their own boundary can call `SquidMesh.apply_signal/2`
-with a `SquidMesh.Runtime.Signal` instead of calling each control function
+Public start, replay, and workflow-control functions normalize caller input
+into these signals and then hand them to the journal signal interpreter. That
+keeps public callers on Squid Mesh concepts while start, cron start, replay,
+cancellation, and manual decisions share one internal command path with any
+future signal-delivery adapter. Host apps that already normalize commands at
+their own boundary can call `SquidMesh.apply_signal/2` with a
+`SquidMesh.Runtime.Signal` instead of calling each public command function
 directly.
 
 When a command reaches the journal runtime, Squid Mesh records a
