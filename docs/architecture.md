@@ -38,6 +38,13 @@ inside a host application's supervision tree and infrastructure.
   `Jido.Storage`, preserving Jido thread revision pointers for rebuildable
   runtime projections
 
+`SquidMesh.Runtime.Journal.Storage`
+
+- normalizes the trusted host-configured storage adapter for journal threads
+  and checkpoints; the built-in production relational path is the
+  Postgres-compatible Ecto adapter, while other adapters must provide the same
+  ordering, conflict-detection, checkpoint, and rebuild guarantees
+
 `SquidMesh.Runtime.RunIndexProjection`
 
 - rebuilds workflow-scoped run lookup state from run-index journal entries,
@@ -174,6 +181,7 @@ Current non-goals:
 - [Positioning](positioning.md)
 - [Workflow authoring guide](workflow_authoring.md)
 - [Jido runtime architecture](jido_runtime_architecture.md)
+- [Storage strategy](storage_strategy.md)
 - [Durable dispatch protocol](durable_dispatch_protocol.md)
 - [Host app integration](host_app_integration.md)
 - [Tool adapters](tool_adapters.md)

@@ -98,6 +98,8 @@ journal storage in the same transactional database boundary as the host app. The
 boundary remains adapter-shaped, so other Jido-compatible stores can be used
 later, but production stores must still provide ordered per-thread appends,
 durable checkpoint reads, and conflict detection for `:expected_rev`.
+See [Storage strategy](storage_strategy.md) for the full adapter contract and
+compatibility expectations.
 
 The current journal default covers start, cron start, cancellation, replay,
 global and workflow-filtered `list_runs/2`, inspect, explain, graph inspection,

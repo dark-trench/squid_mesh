@@ -95,7 +95,8 @@ The current recovery smoke proves replay from persisted entries after checkpoint
 loss. A literal mid-run VM or OS-process restart remains a stronger follow-up
 for the switchover, especially once the journal runtime becomes the default.
 
-For production adapters, the required storage properties are:
+For production adapters, the required storage properties are summarized here and
+defined in full in [Storage strategy](storage_strategy.md):
 
 - ordered thread append with stable per-thread sequence numbers
 - optimistic append conflict detection through `:expected_rev`
@@ -108,12 +109,13 @@ That makes the desired shape adapter-based, not tied to one database. It does
 not mean every database is an equally good fit. A backend that cannot provide
 atomic per-thread append, deterministic ordering, conflict detection, and
 durable checkpoint reads would need extra coordination or should not be used as
-a production journal backend. The recommended Postgres path is
+a production journal backend. The recommended Postgres-compatible path is
 `SquidMesh.Runtime.Journal.Storage.Ecto`, which satisfies the Jido storage
-callbacks through the host repo and Squid Mesh journal tables. The Bedrock path
-should use a Jido-compatible adapter where Bedrock is available. Squid Mesh
-should not introduce a second persistence contract for those stores; adapters
-only need to satisfy the journal storage boundary.
+callbacks through the host repo and Squid Mesh journal tables. A future
+Bedrock-backed storage path should implement the same journal storage contract
+where Bedrock is available. Squid Mesh should not introduce a second
+persistence contract for those stores; adapters only need to satisfy the
+journal storage boundary.
 
 ## Commit Order
 

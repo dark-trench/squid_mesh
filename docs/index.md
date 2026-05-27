@@ -52,6 +52,9 @@ Use these as stable contracts when implementing host integrations or tooling.
 
 - [Graph inspection contract](graph_inspection.md) - node and edge map shapes
   for dashboards and visual workflow tools.
+- [Storage strategy](storage_strategy.md) - journal storage adapter guarantees,
+  the current Postgres-compatible Ecto path, and future backend storage
+  expectations.
 - [Reference workflows](reference_workflows.md) - executable product examples
   backed by the minimal host app.
 - [Tool adapters](tool_adapters.md) - normalized result and error shape for
@@ -83,6 +86,8 @@ to reason about runtime durability.
 - [Jido runtime architecture](jido_runtime_architecture.md) - journal runtime,
   agents, projections, dispatch, leases, failure handling, and roadmap
   alignment.
+- [Storage strategy](storage_strategy.md) - storage-adapter boundary,
+  production guarantees, and Bedrock storage direction.
 - [Durable dispatch protocol](durable_dispatch_protocol.md) - journal threads,
   commit order, claims, leases, heartbeats, retries, manual boundaries, and
   terminal fencing.

@@ -29,6 +29,15 @@ Supported host apps are expected to provide:
 - a scheduler that can deliver cron payloads to `SquidMesh.Runtime.Runner.perform/2`, if the app uses cron triggers
 - step modules that conform to the current Squid Mesh action contract
 
+## Storage Compatibility
+
+The currently supported bundled production relational storage path is
+`SquidMesh.Runtime.Journal.Storage.Ecto` with a Postgres-compatible Ecto repo.
+Other durable stores may be valid when they are exposed through a journal
+storage adapter that provides the same ordered append, optimistic conflict,
+checkpoint, rebuild, and error-shape guarantees. See [Storage
+strategy](storage_strategy.md).
+
 ## Version Evaluation Policy
 
 Before a new version is called supported, the team should:
