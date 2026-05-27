@@ -109,7 +109,14 @@ the inspection snapshot into:
   resolving a manual step, recovering an expired claim, or inspecting a
   terminal run.
 - `evidence` - thread revisions, attempt counts, planned/applied runnable keys,
-  manual state, next visibility time, and anomalies.
+  manual state, command history, duplicate command evidence, next visibility
+  time, and anomalies.
+
+When command receipt facts are present, `details.latest_command` identifies the
+latest runtime command that led to the current state. `evidence.command_history`
+keeps the redacted command audit trail, `evidence.command_counts` summarizes
+command types, and `evidence.duplicate_commands` makes at-least-once command
+delivery visible without exposing raw Jido internals.
 
 Use this for incident pages, CLI output, and support views where raw journal
 facts would be too noisy.
