@@ -52,4 +52,20 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreterTest do
       assert {:error, {:invalid_signal, ^type}} = SignalInterpreter.apply(signal, [])
     end
   end
+
+  test "manual control validates opts before supported signal fallback" do
+    for build_signal <- [
+          fn -> Signal.resume_run(@run_id, %{}) end,
+          fn -> Signal.approve_run(@run_id, %{}) end,
+          fn -> Signal.reject_run(@run_id, %{}) end
+        ] do
+      assert {:ok, %Signal{} = signal} = build_signal.()
+
+      assert {:error, {:invalid_option, {:opts, :invalid}}} =
+               ManualControl.apply_signal(signal, :bad_opts)
+
+      assert {:error, {:invalid_option, {:opts, :invalid}}} =
+               SignalInterpreter.apply(signal, :bad_opts)
+    end
+  end
 end

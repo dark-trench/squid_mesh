@@ -148,6 +148,9 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
     end
   end
 
+  def apply_signal(%Signal{}, opts) when not is_list(opts),
+    do: {:error, {:invalid_option, {:opts, :invalid}}}
+
   def apply_signal(%Signal{type: type}, _opts)
       when type in [:resume_run, :approve_run, :reject_run],
       do: {:error, {:invalid_signal, type}}
