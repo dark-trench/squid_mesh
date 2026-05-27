@@ -323,12 +323,12 @@ Inspection APIs keep explicit names such as `inspect_run/2`,
 `inspect_run_graph/2`, and `explain_run/2` to avoid confusion with Elixir's
 `inspect/2`.
 
-Breaking API note: public start and control functions now use only the concise
-names. Replace `start_run/*` with `start/*`, `unblock_run/*` with `resume/*`,
-and `approve_run/*`, `reject_run/*`, `cancel_run/*`, and `replay_run/*` with
-`approve/*`, `reject/*`, `cancel/*`, and `replay/*`. Runtime signal constructors
-such as `Signal.approve_run/3` keep their run-suffixed names because those names
-describe persisted command intent.
+Breaking API note: public start, replay, and control functions now use only the
+concise names. Replace `start_run/*` with `start/*`, `unblock_run/*` with
+`resume/*`, and `approve_run/*`, `reject_run/*`, `cancel_run/*`, and
+`replay_run/*` with `approve/*`, `reject/*`, `cancel/*`, and `replay/*`.
+Runtime signal constructors such as `Signal.approve_run/3` keep their
+run-suffixed names because those names describe persisted command intent.
 
 Inspect a run with its full step history, audit events, and approval history:
 
@@ -371,9 +371,9 @@ SquidMesh.approve(run.run_id, %{actor: "elrond", note: "approved by council"})
 SquidMesh.reject(run.run_id, %{actor: "elrond", note: "too much singing"})
 ```
 
-Host apps that already normalize operator commands at their own boundary can
+Host apps that already normalize runtime commands at their own boundary can
 build explicit runtime signals and apply them through the same journal
-interpreter used by the public control functions:
+interpreter used by the public start, replay, and control functions:
 
 ```elixir
 alias SquidMesh.Runtime.Signal
@@ -387,8 +387,9 @@ alias SquidMesh.Runtime.Signal
 {:ok, approved_run} = SquidMesh.apply_signal(signal)
 ```
 
-The same pattern applies to `Signal.resume_run/3`, `Signal.reject_run/3`, and
-`Signal.cancel_run/2`. Reusing an idempotency key makes duplicate command
+The same pattern applies to `Signal.start_run/4`, `Signal.start_cron/4`,
+`Signal.resume_run/3`, `Signal.reject_run/3`, `Signal.cancel_run/2`, and
+`Signal.replay_run/2`. Reusing an idempotency key makes duplicate command
 delivery return the already-applied run state without appending another command
 receipt.
 

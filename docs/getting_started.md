@@ -109,11 +109,12 @@ Manual triggers start through the public API:
 Inspection keeps explicit names such as `inspect_run/2` and
 `inspect_run_graph/2` rather than adding an `inspect/2` alias.
 
-Migration note: public start and control functions now use only the concise
-names. Replace `start_run/*` with `start/*`, `unblock_run/*` with `resume/*`,
-and `approve_run/*`, `reject_run/*`, `cancel_run/*`, and `replay_run/*` with
-`approve/*`, `reject/*`, `cancel/*`, and `replay/*`. `SquidMesh.Runtime.Signal`
-constructors keep run-suffixed names for persisted command intent.
+Migration note: public start, replay, and control functions now use only the
+concise names. Replace `start_run/*` with `start/*`, `unblock_run/*` with
+`resume/*`, and `approve_run/*`, `reject_run/*`, `cancel_run/*`, and
+`replay_run/*` with `approve/*`, `reject/*`, `cancel/*`, and `replay/*`.
+`SquidMesh.Runtime.Signal` constructors keep run-suffixed names for persisted
+command intent.
 
 Workers drain visible journal attempts by calling:
 

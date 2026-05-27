@@ -921,6 +921,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              journal_recovery: journal_recovery,
              journal_cancellation: journal_cancellation,
              journal_replay: journal_replay,
+             journal_command_signals: journal_command_signals,
              journal_cron_digest: journal_cron_digest,
              command_signals: command_signals,
              jido_command_signals: jido_command_signals,
@@ -981,6 +982,20 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              journal_replay.command_history
 
     assert replay_source_run_id == journal_replay.replayed_from_run_id
+
+    assert %{
+             start: %SquidMesh.ReadModel.Inspection.Snapshot{
+               status: :completed,
+               command_history: [%{signal_type: "start_run"}]
+             },
+             replay: %SquidMesh.ReadModel.Inspection.Snapshot{
+               status: :completed,
+               command_history: [%{signal_type: "replay_run"}]
+             }
+           } = journal_command_signals
+
+    assert journal_command_signals.replay.replayed_from_run_id ==
+             journal_command_signals.start.run_id
 
     assert journal_cron_digest.status == :completed
     assert journal_cron_digest.trigger == "daily_digest"
@@ -1136,6 +1151,21 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              run.command_history
 
     assert replay_source_run_id == run.replayed_from_run_id
+  end
+
+  test "runs journal start and replay through command signals" do
+    assert %{start: start, replay: replay} = Smoke.run_journal_command_signals!()
+
+    assert start.status == :completed
+
+    assert [%{signal_type: "start_run", metadata: %{source: "minimal_host_app_smoke"}}] =
+             start.command_history
+
+    assert replay.status == :completed
+    assert replay.replayed_from_run_id == start.run_id
+
+    assert [%{signal_type: "replay_run", metadata: %{source: "minimal_host_app_smoke"}}] =
+             replay.command_history
   end
 
   test "runs the journal cron smoke path" do
