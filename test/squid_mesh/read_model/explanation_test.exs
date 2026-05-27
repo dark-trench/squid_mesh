@@ -339,6 +339,53 @@ defmodule SquidMesh.ReadModel.ExplanationTest do
            }
   end
 
+  test "ignores malformed command history values when deriving an explanation from a snapshot" do
+    for command_history <- [nil, :legacy_projection] do
+      snapshot = %Snapshot{
+        run_id: @run_id,
+        workflow: @workflow,
+        queue: @queue,
+        status: :running,
+        reason: :idle,
+        terminal?: false,
+        terminal_status: nil,
+        thread_revisions: %{run: 2, dispatch: 0},
+        command_history: command_history
+      }
+
+      explanation = Explanation.from_snapshot(snapshot)
+
+      refute Map.has_key?(explanation.details, :command_count)
+      refute Map.has_key?(explanation.details, :latest_command)
+      assert explanation.evidence.command_counts == %{}
+      assert explanation.evidence.duplicate_commands == []
+    end
+  end
+
+  test "does not mark sparse commands as duplicates when payload identity is missing" do
+    snapshot = %Snapshot{
+      run_id: @run_id,
+      workflow: @workflow,
+      queue: @queue,
+      status: :running,
+      reason: :idle,
+      terminal?: false,
+      terminal_status: nil,
+      thread_revisions: %{run: 2, dispatch: 0},
+      command_history: [
+        %{signal_type: "resume_run", metadata: %{}, occurred_at: @claimed_at},
+        %{signal_type: "resume_run", metadata: %{}, occurred_at: @completed_at}
+      ]
+    }
+
+    explanation = Explanation.from_snapshot(snapshot)
+
+    assert explanation.details.command_count == 2
+    refute Map.has_key?(explanation.details, :duplicate_commands)
+    assert explanation.evidence.command_counts == %{"resume_run" => 2}
+    assert explanation.evidence.duplicate_commands == []
+  end
+
   test "returns projected inspection errors unchanged" do
     assert {:error, :not_found} =
              Explanation.explain(@storage, "missing_run",

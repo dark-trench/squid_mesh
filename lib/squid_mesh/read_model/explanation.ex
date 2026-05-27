@@ -236,6 +236,8 @@ defmodule SquidMesh.ReadModel.Explanation do
     maybe_put_non_empty(details, :duplicate_commands, duplicate_commands(commands))
   end
 
+  defp command_details(_commands), do: %{}
+
   defp command_counts(commands) when is_list(commands) do
     Enum.reduce(commands, %{}, fn command, counts ->
       case command_signal_type(command) do
@@ -244,6 +246,8 @@ defmodule SquidMesh.ReadModel.Explanation do
       end
     end)
   end
+
+  defp command_counts(_commands), do: %{}
 
   defp duplicate_commands(commands) when is_list(commands) do
     commands
@@ -264,6 +268,8 @@ defmodule SquidMesh.ReadModel.Explanation do
     |> Enum.sort_by(&{Map.get(&1, :signal_type), Map.get(&1, :idempotency_key, "")})
   end
 
+  defp duplicate_commands(_commands), do: []
+
   defp command_signal_type(command) when is_map(command) do
     case item_value(command, :signal_type) do
       signal_type when is_atom(signal_type) -> Atom.to_string(signal_type)
@@ -279,10 +285,13 @@ defmodule SquidMesh.ReadModel.Explanation do
           {signal_type, :idempotency_key, idempotency_key}
 
         _missing ->
-          {signal_type, :payload, item_value(command, :payload)}
+          command_payload_key(signal_type, item_value(command, :payload))
       end
     end
   end
+
+  defp command_payload_key(_signal_type, nil), do: nil
+  defp command_payload_key(signal_type, payload), do: {signal_type, :payload, payload}
 
   defp duplicate_command_summary({signal_type, :idempotency_key, idempotency_key}, count) do
     %{
