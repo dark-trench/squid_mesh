@@ -132,6 +132,27 @@ The runtime is intentionally asymmetric:
 - execution stays in worker processes and Jido actions
 - inspection stays read-only and projection-backed
 
+## Runtime Command Signals
+
+`SquidMesh.Runtime.Signal` is the Squid Mesh-native command envelope for
+runtime requests. These structs sit above backend primitives: a future adapter
+may translate them into `Jido.Signal`, but workflow authors and host apps should
+not need to construct raw Jido signals for normal workflow control.
+
+| Command type | Stable payload shape | Identity and idempotency |
+| --- | --- | --- |
+| `:start_run` | `%{workflow, trigger, input}` | optional caller-supplied idempotency key |
+| `:start_cron` | `%{workflow, trigger, input}` | scheduler `signal_id` or complete `intended_window` derives the idempotency key |
+| `:approve_run` | `%{run_id, attributes}` | `run_id` is a validated UUID |
+| `:reject_run` | `%{run_id, attributes}` | `run_id` is a validated UUID |
+| `:resume_run` | `%{run_id, attributes}` | `run_id` is a validated UUID |
+| `:cancel_run` | `%{run_id}` | `run_id` is a validated UUID |
+| `:replay_run` | `%{run_id, allow_irreversible}` | `run_id` is a validated UUID and irreversible replay stays explicit |
+
+All command signals carry `metadata`, `occurred_at`, and an optional
+`idempotency_key`. Runtime code should adapt these product-level signals at the
+Jido boundary instead of leaking backend signal shapes into public APIs.
+
 ## Runtime Capability Matrix
 
 ```mermaid

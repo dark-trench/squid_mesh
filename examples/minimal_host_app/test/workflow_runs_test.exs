@@ -914,6 +914,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              journal_cancellation: journal_cancellation,
              journal_replay: journal_replay,
              journal_cron_digest: journal_cron_digest,
+             command_signals: command_signals,
              action_registry: action_registry,
              editor_spec_graph: editor_spec_graph,
              daily_digest: daily_digest
@@ -964,6 +965,22 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert journal_cron_digest.status == :completed
     assert journal_cron_digest.trigger == "daily_digest"
     assert journal_cron_digest.context.schedule.signal_id
+
+    assert %{
+             start_run: %SquidMesh.Runtime.Signal{type: :start_run},
+             start_cron: %SquidMesh.Runtime.Signal{
+               type: :start_cron,
+               idempotency_key: "minimal-host-app:smoke:daily_digest:" <> _
+             },
+             approve_run: %SquidMesh.Runtime.Signal{type: :approve_run},
+             reject_run: %SquidMesh.Runtime.Signal{type: :reject_run},
+             resume_run: %SquidMesh.Runtime.Signal{type: :resume_run},
+             cancel_run: %SquidMesh.Runtime.Signal{type: :cancel_run},
+             replay_run: %SquidMesh.Runtime.Signal{
+               type: :replay_run,
+               payload: %{allow_irreversible: true}
+             }
+           } = command_signals
 
     assert Enum.map(action_registry.steps, &{&1.name, &1.metadata.action}) == [
              {:load_invoice, "payment.load_invoice"},

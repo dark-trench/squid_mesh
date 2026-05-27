@@ -15,6 +15,7 @@ defmodule MinimalHostApp.Smoke do
   alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.Journal.Storage.Ecto, as: JournalStorage
   alias SquidMesh.Runtime.Runner
+  alias SquidMesh.Runtime.Signal
 
   @poll_attempts 20
   @journal_run_attempts 10
@@ -99,6 +100,7 @@ defmodule MinimalHostApp.Smoke do
           journal_cancellation: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_replay: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_cron_digest: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          command_signals: map(),
           action_registry: SquidMesh.Workflow.Spec.t(),
           editor_spec_graph: map(),
           daily_digest: SquidMesh.ReadModel.Inspection.Snapshot.t()
@@ -118,6 +120,7 @@ defmodule MinimalHostApp.Smoke do
     journal_cancellation = run_journal_cancellation!()
     journal_replay = run_journal_replay!()
     journal_cron_digest = run_journal_cron_digest!()
+    command_signals = run_signal_construction!()
     existing_daily_digest_run_ids = daily_digest_run_ids()
 
     with :ok <- run_cron_digest(),
@@ -142,6 +145,7 @@ defmodule MinimalHostApp.Smoke do
         journal_cancellation: journal_cancellation,
         journal_replay: journal_replay,
         journal_cron_digest: journal_cron_digest,
+        command_signals: command_signals,
         action_registry: action_registry,
         editor_spec_graph: editor_spec_graph,
         daily_digest: cron_run
@@ -149,6 +153,117 @@ defmodule MinimalHostApp.Smoke do
     else
       {:error, reason} ->
         raise "cron smoke test failed: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Builds the internal command signal taxonomy from the host-app boundary.
+  """
+  @spec run_signal_construction!() :: %{atom() => Signal.t()}
+  def run_signal_construction! do
+    run_id = Ecto.UUID.generate()
+    occurred_at = DateTime.utc_now(:second)
+
+    cron_input = %{
+      "signal_id" => smoke_cron_signal_id(),
+      "intended_window" => %{
+        "start_at" => "2026-05-26T12:00:00Z",
+        "end_at" => "2026-05-26T13:00:00Z"
+      }
+    }
+
+    with {:ok, start_run} <-
+           Signal.start_run(
+             MinimalHostApp.Workflows.PaymentRecovery,
+             :payment_recovery,
+             %{
+               account_id: "acct_signal_smoke",
+               invoice_id: "inv_signal_smoke",
+               attempt_id: "attempt_signal_smoke",
+               gateway_url: "http://127.0.0.1/signal-smoke"
+             },
+             metadata: %{source: :minimal_host_app_smoke},
+             occurred_at: occurred_at,
+             idempotency_key: "minimal-host-app:signal-smoke:start"
+           ),
+         {:ok, start_cron} <-
+           Signal.start_cron(
+             MinimalHostApp.Workflows.DailyDigest,
+             :daily_digest,
+             cron_input,
+             metadata: %{source: :minimal_host_app_smoke},
+             occurred_at: occurred_at
+           ),
+         {:ok, approve_run} <-
+           Signal.approve_run(run_id, %{actor: "ops_smoke"}, occurred_at: occurred_at),
+         {:ok, reject_run} <-
+           Signal.reject_run(run_id, %{reason: "signal smoke"}, occurred_at: occurred_at),
+         {:ok, resume_run} <-
+           Signal.resume_run(run_id, %{actor: "ops_smoke"}, occurred_at: occurred_at),
+         {:ok, cancel_run} <- Signal.cancel_run(run_id, occurred_at: occurred_at),
+         {:ok, replay_run} <-
+           Signal.replay_run(run_id, allow_irreversible: true, occurred_at: occurred_at) do
+      signals = %{
+        start_run: start_run,
+        start_cron: start_cron,
+        approve_run: approve_run,
+        reject_run: reject_run,
+        resume_run: resume_run,
+        cancel_run: cancel_run,
+        replay_run: replay_run
+      }
+
+      signal_types =
+        signals
+        |> Map.values()
+        |> Enum.map(fn %Signal{type: type} -> type end)
+        |> Enum.sort()
+
+      unless signal_types == [
+               :approve_run,
+               :cancel_run,
+               :reject_run,
+               :replay_run,
+               :resume_run,
+               :start_cron,
+               :start_run
+             ] do
+        raise "unexpected command signal smoke result"
+      end
+
+      signal_id = Map.fetch!(cron_input, "signal_id")
+
+      unless match?(
+               %Signal{
+                 type: :start_run,
+                 payload: %{
+                   workflow: "Elixir.MinimalHostApp.Workflows.PaymentRecovery",
+                   trigger: "payment_recovery"
+                 }
+               },
+               start_run
+             ) do
+        raise "unexpected start run command signal"
+      end
+
+      unless match?(
+               %Signal{
+                 type: :start_cron,
+                 payload: %{
+                   workflow: "Elixir.MinimalHostApp.Workflows.DailyDigest",
+                   trigger: "daily_digest"
+                 },
+                 idempotency_key: ^signal_id
+               },
+               start_cron
+             ) do
+        raise "unexpected cron command signal"
+      end
+
+      signals
+    else
+      {:error, reason} ->
+        raise "command signal smoke test failed: #{inspect(reason)}"
     end
   end
 
