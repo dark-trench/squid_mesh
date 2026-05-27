@@ -999,6 +999,18 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              replay_run: %Jido.Signal{type: "squid_mesh.runtime.command.replay_run"}
            } = jido_command_signals
 
+    assert Enum.all?(jido_command_signals, fn
+             {_name,
+              %Jido.Signal{
+                source: "/squid_mesh/runtime/commands",
+                datacontenttype: "application/vnd.squid-mesh.runtime-signal+json"
+              }} ->
+               true
+
+             _other ->
+               false
+           end)
+
     assert Enum.map(action_registry.steps, &{&1.name, &1.metadata.action}) == [
              {:load_invoice, "payment.load_invoice"},
              {:notify_customer, "payment.notify_customer"}

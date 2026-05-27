@@ -110,6 +110,78 @@ defmodule SquidMesh.Runtime.Signal.JidoAdapterTest do
             }} = JidoAdapter.from_jido(jido_signal)
   end
 
+  test "rejects inbound Jido command signals whose subject does not match command identity" do
+    data = %{
+      "type" => "cancel_run",
+      "payload" => %{"run_id" => @run_id},
+      "metadata" => %{},
+      "occurred_at" => "2026-05-26T12:00:00Z"
+    }
+
+    assert {:ok, jido_signal} =
+             Jido.Signal.new("squid_mesh.runtime.command.cancel_run", data,
+               source: "/squid_mesh/runtime/commands",
+               subject: "6c0de7fd-82a9-46c8-a9e9-40317458b6da"
+             )
+
+    assert {:error, {:invalid_signal_adapter, {:subject, :mismatch}}} =
+             JidoAdapter.from_jido(jido_signal)
+  end
+
+  test "rejects inbound start command signals whose subject does not match workflow" do
+    data = %{
+      "type" => "start_run",
+      "payload" => %{
+        "workflow" => "Elixir.SquidMesh.Runtime.Signal.JidoAdapterTest.CheckoutWorkflow",
+        "trigger" => "manual",
+        "input" => %{}
+      },
+      "metadata" => %{},
+      "occurred_at" => "2026-05-26T12:00:00Z"
+    }
+
+    assert {:ok, jido_signal} =
+             Jido.Signal.new("squid_mesh.runtime.command.start_run", data,
+               source: "/squid_mesh/runtime/commands",
+               subject: "Elixir.OtherWorkflow"
+             )
+
+    assert {:error, {:invalid_signal_adapter, {:subject, :mismatch}}} =
+             JidoAdapter.from_jido(jido_signal)
+  end
+
+  test "rejects inbound run command signals with malformed run ids" do
+    invalid_cases = [
+      {"squid_mesh.runtime.command.approve_run", "approve_run",
+       %{"run_id" => "not-a-uuid", "attributes" => %{}}},
+      {"squid_mesh.runtime.command.reject_run", "reject_run",
+       %{"run_id" => "not-a-uuid", "attributes" => %{}}},
+      {"squid_mesh.runtime.command.resume_run", "resume_run",
+       %{"run_id" => "not-a-uuid", "attributes" => %{}}},
+      {"squid_mesh.runtime.command.cancel_run", "cancel_run", %{"run_id" => "not-a-uuid"}},
+      {"squid_mesh.runtime.command.replay_run", "replay_run",
+       %{"run_id" => "not-a-uuid", "allow_irreversible" => false}}
+    ]
+
+    for {jido_type, command_type, payload} <- invalid_cases do
+      data = %{
+        "type" => command_type,
+        "payload" => payload,
+        "metadata" => %{},
+        "occurred_at" => "2026-05-26T12:00:00Z"
+      }
+
+      assert {:ok, jido_signal} =
+               Jido.Signal.new(jido_type, data,
+                 source: "/squid_mesh/runtime/commands",
+                 subject: "not-a-uuid"
+               )
+
+      assert {:error, {:invalid_signal_adapter, {:run_id, :invalid}}} =
+               JidoAdapter.from_jido(jido_signal)
+    end
+  end
+
   test "rejects non Squid Mesh Jido signals" do
     assert {:ok, jido_signal} =
              Jido.Signal.new("other.command", %{}, source: "/other", subject: "other")

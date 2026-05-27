@@ -14,6 +14,9 @@ defmodule SquidMesh.Runtime.Signal.JidoAdapter do
 
   @type error :: {:invalid_signal_adapter, term()}
 
+  @start_commands [:start_run, :start_cron]
+  @run_commands [:approve_run, :reject_run, :resume_run, :cancel_run, :replay_run]
+
   @type_string_by_command %{
     start_run: "squid_mesh.runtime.command.start_run",
     start_cron: "squid_mesh.runtime.command.start_cron",
@@ -64,11 +67,12 @@ defmodule SquidMesh.Runtime.Signal.JidoAdapter do
   Converts a `Jido.Signal` produced by this adapter back to a Squid Mesh signal.
   """
   @spec from_jido(Jido.Signal.t()) :: {:ok, Signal.t()} | {:error, error()}
-  def from_jido(%Jido.Signal{source: @source, type: jido_type, data: data}) do
+  def from_jido(%Jido.Signal{source: @source, type: jido_type, data: data, subject: subject}) do
     with {:ok, command_type} <- command_type(jido_type),
          {:ok, signal_data} <- signal_data(data),
          :ok <- matching_command_type(command_type, signal_data),
          {:ok, payload} <- fetch_payload(command_type, signal_data),
+         :ok <- validate_subject(command_type, subject, payload),
          {:ok, metadata} <- fetch_map(signal_data, :metadata),
          {:ok, occurred_at} <- fetch_occurred_at(signal_data),
          {:ok, idempotency_key} <- fetch_idempotency_key(signal_data) do
@@ -173,12 +177,7 @@ defmodule SquidMesh.Runtime.Signal.JidoAdapter do
     end
   end
 
-  defp normalize_payload(type, %{workflow: _workflow, trigger: _trigger, input: _input} = payload)
-       when type in [:start_run, :start_cron] do
-    {:ok, payload}
-  end
-
-  defp normalize_payload(type, payload) when type in [:start_run, :start_cron] do
+  defp normalize_payload(type, payload) when type in @start_commands do
     with {:ok, workflow} <- fetch_string(payload, :workflow),
          {:ok, trigger} <- fetch_string_or_nil(payload, :trigger),
          {:ok, input} <- fetch_map(payload, :input) do
@@ -186,35 +185,32 @@ defmodule SquidMesh.Runtime.Signal.JidoAdapter do
     end
   end
 
-  defp normalize_payload(type, %{run_id: _run_id, attributes: _attributes} = payload)
-       when type in [:approve_run, :reject_run, :resume_run] do
-    {:ok, payload}
-  end
-
   defp normalize_payload(type, payload) when type in [:approve_run, :reject_run, :resume_run] do
-    with {:ok, run_id} <- fetch_string(payload, :run_id),
+    with {:ok, run_id} <- fetch_uuid(payload, :run_id),
          {:ok, attributes} <- fetch_map(payload, :attributes) do
       {:ok, %{run_id: run_id, attributes: attributes}}
     end
   end
 
-  defp normalize_payload(:cancel_run, %{run_id: _run_id} = payload), do: {:ok, payload}
-
   defp normalize_payload(:cancel_run, payload) do
-    with {:ok, run_id} <- fetch_string(payload, :run_id) do
+    with {:ok, run_id} <- fetch_uuid(payload, :run_id) do
       {:ok, %{run_id: run_id}}
     end
   end
 
-  defp normalize_payload(:replay_run, %{run_id: _run_id, allow_irreversible: _flag} = payload) do
-    {:ok, payload}
-  end
-
   defp normalize_payload(:replay_run, payload) do
-    with {:ok, run_id} <- fetch_string(payload, :run_id),
+    with {:ok, run_id} <- fetch_uuid(payload, :run_id),
          {:ok, allow_irreversible} <- fetch_boolean(payload, :allow_irreversible) do
       {:ok, %{run_id: run_id, allow_irreversible: allow_irreversible}}
     end
+  end
+
+  defp validate_subject(type, subject, %{workflow: workflow}) when type in @start_commands do
+    if subject == workflow, do: :ok, else: invalid(:subject, :mismatch)
+  end
+
+  defp validate_subject(type, subject, %{run_id: run_id}) when type in @run_commands do
+    if subject == run_id, do: :ok, else: invalid(:subject, :mismatch)
   end
 
   defp fetch_map(data, field) do
@@ -230,6 +226,15 @@ defmodule SquidMesh.Runtime.Signal.JidoAdapter do
       {:ok, value} when is_binary(value) and value != "" -> {:ok, value}
       {:ok, _value} -> invalid(field, :expected_non_empty_string)
       :error -> invalid(field, :missing)
+    end
+  end
+
+  defp fetch_uuid(data, field) do
+    with {:ok, value} <- fetch_string(data, field) do
+      case Ecto.UUID.cast(value) do
+        {:ok, uuid} -> {:ok, uuid}
+        :error -> invalid(field, :invalid)
+      end
     end
   end
 
