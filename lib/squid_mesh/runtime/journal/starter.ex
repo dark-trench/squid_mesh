@@ -21,6 +21,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   alias SquidMesh.Runtime.DispatchAgent
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.Journal
+  alias SquidMesh.Runtime.Journal.CommandReceipt
   alias SquidMesh.Runtime.Journal.Options
   alias SquidMesh.Runtime.RunCatalogProjection
   alias SquidMesh.Runtime.RunIndexProjection
@@ -112,6 +113,17 @@ defmodule SquidMesh.Runtime.Journal.Starter do
              definition_fingerprint: expected_fingerprint,
              occurred_at: now
            }),
+         {:ok, run_signal_received} <-
+           CommandReceipt.new(
+             start_signal_type(opts),
+             %{
+               run_id: run_id,
+               payload: start_signal_payload(opts, workflow, trigger, input),
+               metadata: %{},
+               idempotency_key: start_signal_idempotency_key(opts)
+             },
+             now
+           ),
          {:ok, runnables_planned} <-
            DispatchProtocol.new_entry(:runnables_planned, %{
              run_id: run_id,
@@ -119,7 +131,9 @@ defmodule SquidMesh.Runtime.Journal.Starter do
              occurred_at: now
            }),
          {:ok, _run_thread} <-
-           Journal.append_entries(storage, [run_started, runnables_planned], expected_rev: 0) do
+           Journal.append_entries(storage, [run_signal_received, run_started, runnables_planned],
+             expected_rev: 0
+           ) do
       {:ok, :created}
     else
       {:error, :conflict} ->
@@ -128,6 +142,45 @@ defmodule SquidMesh.Runtime.Journal.Starter do
       {:error, _reason} = error ->
         error
     end
+  end
+
+  defp start_signal_type(opts) do
+    cond do
+      replayed_from_run_id(opts) -> :replay_run
+      schedule_context?(initial_context(opts)) -> :start_cron
+      true -> :start_run
+    end
+  end
+
+  defp start_signal_idempotency_key(opts) do
+    context = initial_context(opts)
+
+    case schedule_idempotency_key(context) do
+      nil -> schedule_signal_id(context)
+      idempotency_key -> idempotency_key
+    end
+  end
+
+  defp start_signal_payload(opts, workflow, trigger, input) do
+    case replayed_from_run_id(opts) do
+      run_id when is_binary(run_id) ->
+        %{run_id: run_id, allow_irreversible: replay_allow_irreversible?(opts)}
+
+      _not_replay ->
+        %{
+          workflow: Definition.serialize_workflow(workflow),
+          trigger: Atom.to_string(Map.fetch!(trigger, :name)),
+          input: input
+        }
+    end
+  end
+
+  defp replay_allow_irreversible?(opts), do: Keyword.get(opts, :allow_irreversible) == true
+
+  defp schedule_signal_id(context) when is_map(context) do
+    context
+    |> schedule_context()
+    |> schedule_value(:signal_id)
   end
 
   defp ensure_run_queued(storage, run_id, queue, %DateTime{} = now) do
@@ -544,6 +597,13 @@ defmodule SquidMesh.Runtime.Journal.Starter do
     case Map.fetch(context, :schedule) do
       {:ok, schedule} -> schedule
       :error -> Map.get(context, "schedule", %{})
+    end
+  end
+
+  defp schedule_context?(context) when is_map(context) do
+    case schedule_context(context) do
+      schedule when is_map(schedule) -> map_size(schedule) > 0
+      _missing -> false
     end
   end
 

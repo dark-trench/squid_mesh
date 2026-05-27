@@ -135,6 +135,7 @@ defmodule SquidMesh.ReadModel.Inspection do
       terminal?: terminal?,
       terminal_status: WorkflowAgent.Projection.terminal_status(workflow_projection),
       manual_state: manual_state,
+      command_history: WorkflowAgent.Projection.command_history(workflow_projection),
       thread_revisions: %{run: run_thread_rev, dispatch: dispatch_thread_rev},
       planned_runnables: normalize_runnables(WorkflowAgent.planned_runnables(workflow_agent)),
       planned_runnable_keys: WorkflowAgent.planned_runnable_keys(workflow_agent),

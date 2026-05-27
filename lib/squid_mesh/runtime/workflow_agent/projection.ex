@@ -42,6 +42,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
           applied_results: %{optional(String.t()) => map() | nil},
           applied_execution_opts: %{optional(String.t()) => keyword()},
           applied_at: %{optional(String.t()) => DateTime.t()},
+          command_history: [map()],
           child_runs: [map()],
           manual_state: manual_state() | nil,
           terminal_status: atom() | nil,
@@ -62,6 +63,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
             applied_results: %{},
             applied_execution_opts: %{},
             applied_at: %{},
+            command_history: [],
             child_runs: [],
             manual_state: nil,
             terminal_status: nil,
@@ -193,14 +195,35 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   end
 
   @doc false
+  @spec command_history(t()) :: [map()]
+  def command_history(%__MODULE__{} = projection) do
+    projection
+    |> Map.get(:command_history, [])
+    |> Enum.reverse()
+  end
+
+  @doc false
   @spec upgrade(t()) :: t()
   def upgrade(%__MODULE__{} = projection) do
-    Map.put_new(projection, :child_runs, [])
+    projection
+    |> Map.put_new(:command_history, [])
+    |> Map.put_new(:child_runs, [])
   end
 
   @doc false
   @spec anomalies(t()) :: [anomaly()]
   def anomalies(%__MODULE__{anomalies: anomalies}), do: Enum.reverse(anomalies)
+
+  defp apply_entry(
+         %Entry{type: :run_signal_received, data: data} = entry,
+         %__MODULE__{} = projection
+       ) do
+    if required_present?(data, [:run_id, :signal_type]) do
+      put_command_history(projection, data)
+    else
+      add_anomaly(projection, entry, :malformed_entry)
+    end
+  end
 
   defp apply_entry(%Entry{type: :run_started, data: data} = entry, %__MODULE__{} = projection) do
     if required_present?(data, [:run_id, :workflow]) do
@@ -298,6 +321,21 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   end
 
   defp apply_entry(%Entry{}, %__MODULE__{} = projection), do: projection
+
+  defp put_command_history(%__MODULE__{} = projection, data) do
+    command =
+      %{
+        signal_type: Map.fetch!(data, :signal_type),
+        payload: Map.get(data, :payload, %{}),
+        metadata: Map.get(data, :metadata, %{}),
+        occurred_at: Map.get(data, :occurred_at)
+      }
+      |> maybe_put(:idempotency_key, Map.get(data, :idempotency_key))
+      |> maybe_put(:actor, Map.get(data, :actor))
+      |> maybe_put(:comment, Map.get(data, :comment))
+
+    Map.update(projection, :command_history, [command], &[command | &1])
+  end
 
   defp definition_metadata_value(data, key) when is_map(data) and is_atom(key) do
     Map.get(data, key) || Map.get(data, Atom.to_string(key))
@@ -576,6 +614,9 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
 
   defp data_map(%Entry{data: data}) when is_map(data), do: data
   defp data_map(%Entry{}), do: %{}
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp maybe_put_run_id(anomaly, nil), do: anomaly
   defp maybe_put_run_id(anomaly, run_id), do: Map.put(anomaly, :run_id, run_id)

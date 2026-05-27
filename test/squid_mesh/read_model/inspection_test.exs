@@ -28,7 +28,7 @@ defmodule SquidMesh.ReadModel.InspectionTest do
   end
 
   test "builds a snapshot from run and dispatch projections" do
-    append_run_entries([run_started(), runnables_planned()])
+    append_run_entries([run_signal_received(), run_started(), runnables_planned()])
     append_dispatch_entries([attempt_scheduled()])
 
     assert {:ok, %Snapshot{} = snapshot} =
@@ -39,7 +39,21 @@ defmodule SquidMesh.ReadModel.InspectionTest do
     assert snapshot.queue == @queue
     assert snapshot.status == :running
     assert snapshot.reason == :attempt_visible
-    assert snapshot.thread_revisions == %{run: 2, dispatch: 1}
+    assert snapshot.thread_revisions == %{run: 3, dispatch: 1}
+
+    assert snapshot.command_history == [
+             %{
+               signal_type: "start_run",
+               payload: %{
+                 workflow: @workflow,
+                 trigger: "manual",
+                 input: %{"payment_id" => "pay_123"}
+               },
+               metadata: %{request_id: "req_123"},
+               occurred_at: @started_at
+             }
+           ]
+
     assert snapshot.planned_runnable_keys == [@runnable_key]
     assert snapshot.applied_runnable_keys == []
     assert [%{runnable_key: @runnable_key, status: :available}] = snapshot.visible_attempts
@@ -402,6 +416,20 @@ defmodule SquidMesh.ReadModel.InspectionTest do
       run_id: @run_id,
       workflow: @workflow,
       context: context,
+      occurred_at: @started_at
+    })
+  end
+
+  defp run_signal_received do
+    entry!(:run_signal_received, %{
+      run_id: @run_id,
+      signal_type: :start_run,
+      payload: %{
+        workflow: @workflow,
+        trigger: "manual",
+        input: %{"payment_id" => "pay_123"}
+      },
+      metadata: %{request_id: "req_123"},
       occurred_at: @started_at
     })
   end

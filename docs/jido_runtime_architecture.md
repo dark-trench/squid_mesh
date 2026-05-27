@@ -154,6 +154,26 @@ All command signals carry `metadata`, `occurred_at`, and an optional
 `idempotency_key`. Runtime code should adapt these product-level signals at the
 Jido boundary instead of leaking backend signal shapes into public APIs.
 
+When a command reaches the journal runtime, Squid Mesh records a
+`:run_signal_received` fact in the run thread before the command's lifecycle
+facts. Starts, cron starts, manual approvals, rejections, resumes,
+cancellations, and replays all use that audit shape. The fact stores the signal
+type, run id when available, payload, actor, comment, metadata, idempotency key,
+and occurrence time. Metadata is redacted for common sensitive keys before it is
+persisted.
+
+The command receipt and command application facts are appended together with one
+thread revision fence. That keeps the journal as the source of truth and avoids a
+crash window where inspection could see a command receipt without the matching
+workflow-state change. Duplicate commands keep their existing semantics: cron
+duplicates and already-applied manual resolutions return the existing run state
+without appending another receipt.
+
+Inspection exposes the projected command receipts through
+`Snapshot.command_history`, ordered by receipt time. This is the lightweight
+operator-facing command audit surface; `include_history: true` still controls
+the detailed step and manual audit events.
+
 The Jido adapter uses CloudEvents-compatible envelopes with source
 `/squid_mesh/runtime/commands`, type names such as
 `squid_mesh.runtime.command.start_run`, and content type

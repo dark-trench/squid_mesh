@@ -18,7 +18,8 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
   alias SquidMesh.Runtime.DispatchProtocol.Entry
 
   @type entry_type ::
-          :run_started
+          :run_signal_received
+          | :run_started
           | :runnables_planned
           | :runnable_applied
           | :child_run_started
@@ -38,6 +39,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
   @manual_entry_types [:manual_step_paused, :manual_step_resolved]
 
   @run_entry_types [
+    :run_signal_received,
     :run_started,
     :runnables_planned,
     :runnable_applied,
@@ -61,6 +63,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
   @run_catalog_entry_types [:run_cataloged]
 
   @required_fields %{
+    run_signal_received: [:run_id, :signal_type, :payload, :metadata, :occurred_at],
     run_started: [:run_id, :workflow, :occurred_at],
     runnables_planned: [:run_id, :runnables, :occurred_at],
     runnable_applied: [:run_id, :runnable_key, :occurred_at],
@@ -166,8 +169,14 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
     |> Map.update(:step, nil, &normalize_manual_value/1)
     |> Map.update(:kind, nil, &normalize_manual_value/1)
     |> Map.update(:action, nil, &normalize_manual_value/1)
-    |> Map.put_new(:metadata, %{})
+    |> Map.update(:metadata, %{}, &redact_metadata/1)
     |> Map.put_new(:result, %{})
+  end
+
+  defp normalize_attrs(attrs, :run_signal_received) do
+    attrs
+    |> Map.update(:signal_type, nil, &normalize_thread_id/1)
+    |> Map.update(:metadata, %{}, &redact_metadata/1)
   end
 
   defp normalize_attrs(attrs, :child_run_started) do
@@ -239,6 +248,51 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
   end
 
   defp normalize_origin(origin), do: origin
+
+  defp redact_metadata(metadata) when is_map(metadata) do
+    Map.new(metadata, fn {key, value} ->
+      if sensitive_metadata_key?(key) do
+        {key, "[REDACTED]"}
+      else
+        {key, redact_metadata_value(value)}
+      end
+    end)
+  end
+
+  defp redact_metadata(_metadata), do: %{}
+
+  defp redact_metadata_value(value) when is_map(value), do: redact_metadata(value)
+
+  defp redact_metadata_value(value) when is_list(value) do
+    Enum.map(value, fn
+      item when is_map(item) -> redact_metadata(item)
+      item -> item
+    end)
+  end
+
+  defp redact_metadata_value(value), do: value
+
+  defp sensitive_metadata_key?(key) do
+    key
+    |> to_string()
+    |> String.downcase()
+    |> then(&(&1 in sensitive_metadata_keys()))
+  end
+
+  defp sensitive_metadata_keys do
+    [
+      "access_token",
+      "api_key",
+      "authorization",
+      "claim_token",
+      "credential",
+      "password",
+      "private_key",
+      "refresh_token",
+      "secret",
+      "token"
+    ]
+  end
 
   defp normalize_thread_id(id) when is_binary(id), do: id
   defp normalize_thread_id(id), do: to_string(id)

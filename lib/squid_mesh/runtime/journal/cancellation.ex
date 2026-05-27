@@ -12,8 +12,8 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
   alias Jido.Agent
   alias SquidMesh.ReadModel.Inspection
   alias SquidMesh.Runtime.DispatchProtocol
-  alias SquidMesh.Runtime.DispatchProtocol.Entry
   alias SquidMesh.Runtime.Journal
+  alias SquidMesh.Runtime.Journal.CommandReceipt
   alias SquidMesh.Runtime.Journal.Options
   alias SquidMesh.Runtime.WorkflowAgent
   alias SquidMesh.Runtime.WorkflowAgent.Projection
@@ -51,15 +51,21 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
   defp cancel_or_repair(storage, run_id, %DateTime{} = now, retries_left) do
     with {:ok, workflow_agent} <- rebuild_workflow_agent(storage, run_id),
          :ok <- cancellable?(storage, workflow_agent),
+         {:ok, command_receipt} <- cancel_command_receipt(run_id, now),
          {:ok, terminal_entry} <- run_terminal_entry(run_id, :cancelled, now) do
-      append_cancellation(storage, workflow_agent, terminal_entry, now, retries_left)
+      append_cancellation(
+        storage,
+        workflow_agent,
+        [command_receipt, terminal_entry],
+        now,
+        retries_left
+      )
     end
   end
 
-  defp append_cancellation(storage, workflow_agent, %Entry{} = terminal_entry, now, retries_left) do
-    case Journal.append_entries(storage, [terminal_entry],
-           expected_rev: workflow_agent.state.thread_rev
-         ) do
+  defp append_cancellation(storage, workflow_agent, entries, now, retries_left)
+       when is_list(entries) do
+    case Journal.append_entries(storage, entries, expected_rev: workflow_agent.state.thread_rev) do
       {:ok, _thread} ->
         with {:ok, workflow_agent} <- WorkflowAgent.rebuild(storage, workflow_agent.state.run_id) do
           _checkpoint_result =
@@ -139,6 +145,10 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
       status: status,
       occurred_at: now
     })
+  end
+
+  defp cancel_command_receipt(run_id, %DateTime{} = now) do
+    CommandReceipt.new(:cancel_run, %{run_id: run_id, payload: %{run_id: run_id}}, now)
   end
 
   defp run_id(run_id) do

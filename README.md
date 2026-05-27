@@ -68,6 +68,12 @@ Support code also touches lower-level details such as `Jido.Thread.EntryNormaliz
 
 Runtime command signals use `SquidMesh.Runtime.Signal` as the stable Squid Mesh contract. `SquidMesh.Runtime.Signal.JidoAdapter` can convert those structs to and from `Jido.Signal` envelopes for advanced runtime integration, while public callers stay on Squid Mesh APIs.
 
+Journal-backed runtime commands are also persisted as run-thread command
+receipts before their lifecycle facts. `SquidMesh.inspect_run/2` exposes those
+receipts through `snapshot.command_history`, including the command signal type,
+payload, actor/comment when supplied, redacted metadata, idempotency key when
+relevant, and occurrence time.
+
 ## Getting Started
 
 After the first run, use these references to go deeper:

@@ -80,8 +80,8 @@ The smoke task:
 - starts a saga checkout run through
   `MinimalHostApp.WorkflowRuns.start_saga_checkout/1`
 - waits for execution, inspects all completed manual workflows, and
-  verifies the paused approval run's durable audit history, local transaction
-  rollback, and saga rollback compensation history
+  verifies the paused approval run's durable audit history, command receipt
+  history, local transaction rollback, and saga rollback compensation history
 - activates the same digest workflow through the host app's cron plugin
 - verifies both digest triggers complete through the same workflow graph
 

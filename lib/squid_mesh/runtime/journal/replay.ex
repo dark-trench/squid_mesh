@@ -55,6 +55,7 @@ defmodule SquidMesh.Runtime.Journal.Replay do
         config_opts
         |> Keyword.put(:initial_context, context)
         |> Keyword.put(:replayed_from_run_id, run_id)
+        |> Keyword.put(:allow_irreversible, Keyword.get(replay_opts, :allow_irreversible, false))
       )
     end
   end
