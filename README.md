@@ -30,6 +30,12 @@ Squid Mesh is an embedded durable workflow runtime for Elixir applications. Work
 
 The runtime stores workflow state, step attempts, retries, approvals, transitions, audit events, and recovery history inside the host application's database through `Jido.Storage` and the default Ecto adapter. Squid Mesh does not run as a separate service, broker, or orchestration cluster — the host application keeps its existing supervision tree, deployment model, repository, schedulers, and queue backend.
 
+Storage portability comes from the journal storage adapter contract, not from
+arbitrary database compatibility. The bundled production relational path is a
+Postgres-compatible Ecto adapter; see the
+[storage strategy](docs/storage_strategy.md) for the required adapter
+guarantees.
+
 Squid Mesh owns workflow progression, transition routing, retry semantics, pause and approval handling, replay and recovery policy, durable execution history, and graph inspection. Queue delivery, worker supervision, and backend leasing remain host-owned concerns.
 
 Internally, the runtime builds on [Jido](https://github.com/agentjido/jido) for actions, execution, and journaling; [Runic](https://github.com/dark-trench/runic) for workflow planning; and [Spark](https://github.com/ash-project/spark) for the DSL authoring surface.
