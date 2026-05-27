@@ -2020,6 +2020,16 @@ defmodule SquidMeshTest do
       assert snapshot.reason == :attempt_visible
     end
 
+    test "start/3 rejects invalid default-trigger payloads" do
+      assert {:error, {:invalid_payload, :expected_map}} =
+               SquidMesh.start(PaymentRecoveryWorkflow, :invalid_payload,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+    end
+
     test "concise convenience arities use configured runtime defaults" do
       put_squid_mesh_config(
         repo: Repo,
