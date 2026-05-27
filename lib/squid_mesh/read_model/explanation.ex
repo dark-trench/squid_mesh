@@ -50,6 +50,7 @@ defmodule SquidMesh.ReadModel.Explanation do
   @spec from_snapshot(Snapshot.t()) :: Diagnostic.t()
   def from_snapshot(%Snapshot{} = snapshot) do
     {summary, details, next_actions, step} = explanation_parts(snapshot)
+    command_details = command_details(snapshot.command_history)
 
     %Diagnostic{
       run_id: snapshot.run_id,
@@ -60,7 +61,7 @@ defmodule SquidMesh.ReadModel.Explanation do
       reason: snapshot.reason,
       step: step,
       summary: summary,
-      details: details,
+      details: Map.merge(details, command_details),
       next_actions: next_actions,
       evidence: evidence(snapshot)
     }
@@ -212,12 +213,89 @@ defmodule SquidMesh.ReadModel.Explanation do
       manual_state: snapshot.manual_state,
       parent_run: snapshot.parent_run,
       child_runs: snapshot.child_runs,
+      command_history: snapshot.command_history,
+      command_counts: command_counts(snapshot.command_history),
+      duplicate_commands: duplicate_commands(snapshot.command_history),
       planned_runnable_keys: snapshot.planned_runnable_keys,
       applied_runnable_keys: snapshot.applied_runnable_keys,
       next_visible_at: snapshot.next_visible_at,
       attempt_counts: attempt_counts(snapshot.attempts),
       anomaly_count: length(snapshot.anomalies),
       anomalies: snapshot.anomalies
+    }
+  end
+
+  defp command_details([]), do: %{}
+
+  defp command_details(commands) when is_list(commands) do
+    details = %{
+      command_count: length(commands),
+      latest_command: List.last(commands)
+    }
+
+    maybe_put_non_empty(details, :duplicate_commands, duplicate_commands(commands))
+  end
+
+  defp command_counts(commands) when is_list(commands) do
+    Enum.reduce(commands, %{}, fn command, counts ->
+      case command_signal_type(command) do
+        nil -> counts
+        signal_type -> Map.update(counts, signal_type, 1, &(&1 + 1))
+      end
+    end)
+  end
+
+  defp duplicate_commands(commands) when is_list(commands) do
+    commands
+    |> Enum.group_by(&command_duplicate_key/1)
+    |> Enum.flat_map(fn
+      {nil, _commands} ->
+        []
+
+      {key, commands} ->
+        count = length(commands)
+
+        if count > 1 do
+          [duplicate_command_summary(key, count)]
+        else
+          []
+        end
+    end)
+    |> Enum.sort_by(&{Map.get(&1, :signal_type), Map.get(&1, :idempotency_key, "")})
+  end
+
+  defp command_signal_type(command) when is_map(command) do
+    case item_value(command, :signal_type) do
+      signal_type when is_atom(signal_type) -> Atom.to_string(signal_type)
+      signal_type when is_binary(signal_type) -> signal_type
+      _other -> nil
+    end
+  end
+
+  defp command_duplicate_key(command) when is_map(command) do
+    with signal_type when is_binary(signal_type) <- command_signal_type(command) do
+      case item_value(command, :idempotency_key) do
+        idempotency_key when is_binary(idempotency_key) ->
+          {signal_type, :idempotency_key, idempotency_key}
+
+        _missing ->
+          {signal_type, :payload, item_value(command, :payload)}
+      end
+    end
+  end
+
+  defp duplicate_command_summary({signal_type, :idempotency_key, idempotency_key}, count) do
+    %{
+      signal_type: signal_type,
+      idempotency_key: idempotency_key,
+      count: count
+    }
+  end
+
+  defp duplicate_command_summary({signal_type, :payload, _payload}, count) do
+    %{
+      signal_type: signal_type,
+      count: count
     }
   end
 
@@ -255,4 +333,7 @@ defmodule SquidMesh.ReadModel.Explanation do
   defp item_value(item, key) when is_map(item) and is_atom(key) do
     Map.get(item, key) || Map.get(item, Atom.to_string(key))
   end
+
+  defp maybe_put_non_empty(map, _key, []), do: map
+  defp maybe_put_non_empty(map, key, value), do: Map.put(map, key, value)
 end

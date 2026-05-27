@@ -225,6 +225,8 @@ Host apps can expose diagnostics through the same boundary:
 {:ok, explanation} = MinimalHostApp.WorkflowRuns.explain_run(run_id)
 
 explanation.reason
+explanation.details.latest_command.signal_type
+explanation.evidence.command_counts
 ```
 
 The reference workflow and step modules live in:

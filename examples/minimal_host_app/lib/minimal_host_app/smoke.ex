@@ -446,6 +446,12 @@ defmodule MinimalHostApp.Smoke do
           raise "unexpected journal run queue"
         end
 
+        unless explanation.details.command_count == 1 and
+                 get_in(explanation.details, [:latest_command, :signal_type]) == "start_run" and
+                 explanation.evidence.command_counts == %{"start_run" => 1} do
+          raise "unexpected journal command explanation"
+        end
+
         unless inspected_run.status == :completed do
           raise "unexpected journal run smoke result"
         end

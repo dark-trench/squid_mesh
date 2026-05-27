@@ -327,6 +327,9 @@ explanation.reason #=> :waiting_for_retry
 ```
 
 `explain_run/2` summarizes the current runtime reason, valid next actions, and supporting evidence. It is designed for dashboards, CLIs, and operational tooling.
+When command receipt facts are present, `explanation.details.latest_command`
+shows the most recent runtime command and `explanation.evidence.command_history`
+keeps the redacted command audit trail, including duplicate command evidence.
 
 ## Approvals and Manual Gates
 

@@ -51,6 +51,51 @@ defmodule SquidMesh.ReadModel.ExplanationTest do
     assert explanation.evidence.snapshot_reason == :planned_dispatch_pending_schedule
   end
 
+  test "surfaces command history and duplicate command evidence" do
+    append_run_entries([
+      run_signal_received(
+        idempotency_key: "command_start_123",
+        metadata: %{request_id: "req_123"}
+      ),
+      run_signal_received(
+        idempotency_key: "command_start_123",
+        metadata: %{request_id: "req_123"}
+      ),
+      run_started(),
+      runnables_planned()
+    ])
+
+    assert {:ok, %Diagnostic{} = explanation} =
+             Explanation.explain(@storage, @run_id, queue: @queue, now: @visible_at)
+
+    assert explanation.details.command_count == 2
+
+    assert explanation.details.latest_command == %{
+             signal_type: "start_run",
+             payload: %{
+               workflow: @workflow,
+               trigger: "manual",
+               input: %{"payment_id" => "pay_123"}
+             },
+             metadata: %{request_id: "req_123"},
+             occurred_at: @started_at,
+             idempotency_key: "command_start_123"
+           }
+
+    assert explanation.details.duplicate_commands == [
+             %{signal_type: "start_run", idempotency_key: "command_start_123", count: 2}
+           ]
+
+    assert explanation.evidence.command_counts == %{"start_run" => 2}
+
+    assert explanation.evidence.command_history == [
+             explanation.details.latest_command,
+             explanation.details.latest_command
+           ]
+
+    assert explanation.evidence.duplicate_commands == explanation.details.duplicate_commands
+  end
+
   test "explains attempts scheduled for future visibility" do
     append_run_entries([
       run_started(),
@@ -212,6 +257,32 @@ defmodule SquidMesh.ReadModel.ExplanationTest do
         metadata: %{}
       },
       child_runs: [child_run],
+      command_history: [
+        %{
+          signal_type: "start_run",
+          payload: %{workflow: @workflow},
+          metadata: %{request_id: "req_123"},
+          occurred_at: @started_at
+        },
+        %{
+          signal_type: "cancel_run",
+          payload: %{run_id: @run_id},
+          metadata: %{access_token: "[REDACTED]", reason: "qa"},
+          occurred_at: @claimed_at,
+          actor: "ops@example.test",
+          comment: "customer requested cancellation",
+          idempotency_key: "cancel_123"
+        },
+        %{
+          signal_type: "cancel_run",
+          payload: %{run_id: @run_id},
+          metadata: %{access_token: "[REDACTED]", reason: "qa"},
+          occurred_at: @completed_at,
+          actor: "ops@example.test",
+          comment: "customer requested cancellation",
+          idempotency_key: "cancel_123"
+        }
+      ],
       planned_runnable_keys: [@runnable_key],
       visible_attempts: [
         %{
@@ -237,8 +308,26 @@ defmodule SquidMesh.ReadModel.ExplanationTest do
     assert explanation.step == "charge_card"
     assert explanation.next_actions == [:wait_for_worker_claim]
     assert explanation.details.runnable_keys == [@runnable_key]
+    assert explanation.details.command_count == 3
+
+    assert explanation.details.latest_command == %{
+             signal_type: "cancel_run",
+             payload: %{run_id: @run_id},
+             metadata: %{access_token: "[REDACTED]", reason: "qa"},
+             occurred_at: @completed_at,
+             actor: "ops@example.test",
+             comment: "customer requested cancellation",
+             idempotency_key: "cancel_123"
+           }
+
+    assert explanation.details.duplicate_commands == [
+             %{signal_type: "cancel_run", idempotency_key: "cancel_123", count: 2}
+           ]
+
     assert explanation.evidence.attempt_counts.available == 1
     assert explanation.evidence.child_runs == [child_run]
+    assert explanation.evidence.command_counts == %{"cancel_run" => 2, "start_run" => 1}
+    assert explanation.evidence.duplicate_commands == explanation.details.duplicate_commands
 
     assert explanation.evidence.parent_run == %{
              run_id: "parent_run_123",
@@ -280,6 +369,27 @@ defmodule SquidMesh.ReadModel.ExplanationTest do
       workflow: @workflow,
       occurred_at: @started_at
     })
+  end
+
+  defp run_signal_received(overrides) do
+    entry!(
+      :run_signal_received,
+      %{
+        run_id: @run_id,
+        signal_type: Keyword.get(overrides, :signal_type, :start_run),
+        payload:
+          Keyword.get(overrides, :payload, %{
+            workflow: @workflow,
+            trigger: "manual",
+            input: %{"payment_id" => "pay_123"}
+          }),
+        metadata: Keyword.get(overrides, :metadata, %{}),
+        occurred_at: Keyword.get(overrides, :occurred_at, @started_at)
+      }
+      |> maybe_put(:idempotency_key, Keyword.get(overrides, :idempotency_key))
+      |> maybe_put(:actor, Keyword.get(overrides, :actor))
+      |> maybe_put(:comment, Keyword.get(overrides, :comment))
+    )
   end
 
   defp runnables_planned(runnables \\ [planned_runnable()]) do
@@ -363,6 +473,9 @@ defmodule SquidMesh.ReadModel.ExplanationTest do
     assert {:ok, entry} = DispatchProtocol.new_entry(type, attrs)
     entry
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp table_name(:checkpoints), do: :squid_mesh_read_model_explanation_test_checkpoints
   defp table_name(:threads), do: :squid_mesh_read_model_explanation_test_threads
