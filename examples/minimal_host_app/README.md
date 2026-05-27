@@ -72,7 +72,7 @@ The smoke task:
 - starts a manual approval workflow through
   `MinimalHostApp.WorkflowRuns.start_manual_approval/1`
 - explains the paused approval run through `MinimalHostApp.WorkflowRuns.explain_run/1`
-- approves the paused run through `MinimalHostApp.WorkflowRuns.approve_run/2`
+- approves the paused run through `MinimalHostApp.WorkflowRuns.approve/2`
 - starts a manual digest run through
   `MinimalHostApp.WorkflowRuns.start_manual_digest/1`
 - starts the local ledger checkout workflow through

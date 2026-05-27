@@ -133,7 +133,7 @@ defmodule MinimalHostApp.Verification.RestartResilience do
     :ok = RuntimeHarness.restart_oban!()
 
     {:ok, resumed_run} =
-      WorkflowRuns.approve_run(
+      WorkflowRuns.approve(
         run.run_id,
         %{actor: "ops_restart", comment: "approved", metadata: %{ticket: "RESTART-1"}}
       )

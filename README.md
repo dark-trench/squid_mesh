@@ -313,10 +313,9 @@ Start a run through the public API:
   )
 ```
 
-The longer `start_run/2`, `start_run/3`, and `start_run/4` names remain
-supported for existing code. Inspection APIs keep explicit names such as
-`inspect_run/2`, `inspect_run_graph/2`, and `explain_run/2` to avoid confusion
-with Elixir's `inspect/2`.
+Inspection APIs keep explicit names such as `inspect_run/2`,
+`inspect_run_graph/2`, and `explain_run/2` to avoid confusion with Elixir's
+`inspect/2`.
 
 Inspect a run with its full step history, audit events, and approval history:
 
@@ -359,12 +358,9 @@ SquidMesh.approve(run.run_id, %{actor: "elrond", note: "approved by council"})
 SquidMesh.reject(run.run_id, %{actor: "elrond", note: "too much singing"})
 ```
 
-The longer `unblock_run/3`, `approve_run/3`, and `reject_run/3` names remain
-available when that style is clearer at a host boundary.
-
 Host apps that already normalize operator commands at their own boundary can
 build explicit runtime signals and apply them through the same journal
-interpreter used by the public wrappers:
+interpreter used by the public control functions:
 
 ```elixir
 alias SquidMesh.Runtime.Signal
@@ -444,8 +440,6 @@ Each child is a normal journal run with its own inspection, retry, replay, and c
 # Replay past irreversible steps requires an explicit override
 {:ok, _} = SquidMesh.replay(run.run_id, allow_irreversible: true)
 ```
-
-The longer `cancel_run/2` and `replay_run/2` names remain supported.
 
 ## Graph Inspection
 

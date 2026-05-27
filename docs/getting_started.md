@@ -106,9 +106,8 @@ Manual triggers start through the public API:
   )
 ```
 
-The longer `start_run/*` names remain supported. Inspection keeps explicit
-names such as `inspect_run/2` and `inspect_run_graph/2` rather than adding an
-`inspect/2` alias.
+Inspection keeps explicit names such as `inspect_run/2` and
+`inspect_run_graph/2` rather than adding an `inspect/2` alias.
 
 Workers drain visible journal attempts by calling:
 

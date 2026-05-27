@@ -437,15 +437,15 @@ defmodule MyApp.WorkflowRuns do
     SquidMesh.inspect_run(run_id, include_history: true)
   end
 
-  def unblock_run(run_id, attrs \\ %{}) do
+  def resume(run_id, attrs \\ %{}) do
     SquidMesh.resume(run_id, attrs)
   end
 
-  def approve_run(run_id, attrs) do
+  def approve(run_id, attrs) do
     SquidMesh.approve(run_id, attrs)
   end
 
-  def reject_run(run_id, attrs) do
+  def reject(run_id, attrs) do
     SquidMesh.reject(run_id, attrs)
   end
 end
@@ -455,8 +455,7 @@ If the host app exposes pause-resume or approval workflows, keep the latest
 Squid Mesh migrations applied before deploying the feature. Paused step runs
 now persist internal resume metadata so `resume/2`, `approve/3`, and
 `reject/3` can continue with stable output and transition semantics after
-restarts or code changes. The longer `unblock_run/2`, `approve_run/3`, and
-`reject_run/3` names remain supported.
+restarts or code changes.
 
 Operational review shape:
 
@@ -467,7 +466,7 @@ Enum.map(paused_run.audit_events, &{&1.type, &1.step})
 #=> [{:paused, :wait_for_review}]
 
 {:ok, _run} =
-  MyApp.WorkflowRuns.approve_run(run_id, %{
+  MyApp.WorkflowRuns.approve(run_id, %{
     actor: "ops_123",
     comment: "customer verified",
     metadata: %{ticket: "SUP-42"}
@@ -511,15 +510,15 @@ defmodule MyApp.WorkflowRuns do
     SquidMesh.inspect_run(run_id, include_history: true)
   end
 
-  def unblock_run(run_id, attrs \\ %{}) do
+  def resume(run_id, attrs \\ %{}) do
     SquidMesh.resume(run_id, attrs)
   end
 
-  def approve_run(run_id, attrs) do
+  def approve(run_id, attrs) do
     SquidMesh.approve(run_id, attrs)
   end
 
-  def reject_run(run_id, attrs) do
+  def reject(run_id, attrs) do
     SquidMesh.reject(run_id, attrs)
   end
 end

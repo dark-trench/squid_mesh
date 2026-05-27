@@ -159,7 +159,7 @@ then hand them to the journal signal interpreter. That keeps public callers on
 Squid Mesh concepts while cancellation and manual decisions share one internal
 command path with any future signal-delivery adapter. Host apps that already
 normalize commands at their own boundary can call `SquidMesh.apply_signal/2`
-with a `SquidMesh.Runtime.Signal` instead of calling each control wrapper
+with a `SquidMesh.Runtime.Signal` instead of calling each control function
 directly.
 
 When a command reaches the journal runtime, Squid Mesh records a
@@ -581,8 +581,8 @@ dispatch attempts from the journal, and returns the projection-backed inspection
 snapshot. Journal execution currently supports normal action steps, immediate
 built-in `:log` steps, built-in `:wait` steps in transition and dependency
 workflows, and manual `:pause` or `:approval` boundaries. Manual boundaries
-persist intervention state: `unblock_run/3` resumes `:pause` steps, while
-`approve_run/3` and `reject_run/3` resolve `:approval` decisions through the
+persist intervention state: `resume/3` resumes `:pause` steps, while
+`approve/3` and `reject/3` resolve `:approval` decisions through the
 configured journal runtime.
 
 | Feature | Issue | Runtime dependency |

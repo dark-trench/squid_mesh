@@ -228,12 +228,12 @@ shows the root step, and later work is declared with `after: [...]`.
 
 ## Start A Run
 
-Manual triggers can start through `SquidMesh.start_run/3` when the workflow has
+Manual triggers can start through `SquidMesh.start/3` when the workflow has
 one trigger.
 
 ```elixir
 {:ok, started} =
-  SquidMesh.start_run(
+  SquidMesh.start(
     SquidMeshAuthoringLivebook.RoutePlanningWorkflow,
     %{
       bearer: "Frodo",

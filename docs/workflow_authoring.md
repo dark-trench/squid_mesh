@@ -684,8 +684,6 @@ threading journal options through every boundary:
 {:ok, cancelled} = SquidMesh.cancel(cancellable.run_id)
 ```
 
-The longer `*_run` names remain supported for existing host code.
-
 When no `journal_storage` is configured, Squid Mesh infers
 `{SquidMesh.Runtime.Journal.Storage.Ecto, repo: MyApp.Repo}`. The storage
 setting remains intentionally adapter-shaped rather than database-shaped, so

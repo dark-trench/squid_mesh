@@ -46,9 +46,7 @@
 ## Manual And Long-Running Work
 
 - Use `:pause` or `approval_step/2` for operator-controlled boundaries.
-- Resolve manual gates through `resume/3`, `approve/3`, and `reject/3`. The
-  longer `unblock_run/3`, `approve_run/3`, and `reject_run/3` forms remain
-  supported.
+- Resolve manual gates through `resume/3`, `approve/3`, and `reject/3`.
 - Use `:wait` for workflow-scale delays, not arbitrary timers.
 - Prefer cron or host scheduling when the whole workflow should start later.
 
