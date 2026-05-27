@@ -34,6 +34,23 @@ Squid Mesh owns workflow progression, transition routing, retry semantics, pause
 
 Internally, the runtime builds on [Jido](https://github.com/agentjido/jido) for actions, execution, and journaling; [Runic](https://github.com/dark-trench/runic) for workflow planning; and [Spark](https://github.com/ash-project/spark) for the DSL authoring surface.
 
+> **Warning**
+> Squid Mesh is still in early development. The runtime is suitable for evaluation, local development, and integration work, but it is not yet documented as production-ready. See [Production Readiness](docs/production_readiness.md) for the current checklist and remaining items.
+
+## Start Here
+
+The quickest first run is the guided Livebook. It creates a small workflow, starts a journal-backed run, drains visible work with `SquidMesh.execute_next/1`, and inspects the durable result without making you read the full workflow reference first.
+
+[![Run in Livebook](https://livebook.dev/badge/v1/pink.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fdark-trench%2Fsquid_mesh%2Fblob%2Fmain%2Fdocs%2Fgetting_started.livemd)
+
+| If you want to... | Start with |
+| --- | --- |
+| Run the smallest guided example | [Getting Started Livebook](docs/getting_started.livemd) |
+| Add Squid Mesh to a host app | [Getting Started guide](docs/getting_started.md) |
+| Inspect a working app harness | [Minimal host app](examples/minimal_host_app/README.md) |
+
+The written guide follows the same path in a little more detail: installation, one workflow, draining journal attempts, inspecting the run, then adding retries, manual gates, cron, and Bedrock-backed leases only when those pieces are useful.
+
 ## Jido Primitive Boundary
 
 Squid Mesh uses Jido as an internal runtime foundation while keeping the public workflow API focused on Squid Mesh concepts. Production runtime code uses five main Jido primitive families:
@@ -48,24 +65,17 @@ Squid Mesh uses Jido as an internal runtime foundation while keeping the public 
 
 Support code also touches lower-level details such as `Jido.Thread.EntryNormalizer` and validates built-in storage adapters like `Jido.Storage.File` and `Jido.Storage.Redis`. Workflow authors normally do not need to use those primitives directly.
 
-> **Warning**  
-> Squid Mesh is still in early development. The runtime is suitable for evaluation, local development, and integration work, but it is not yet documented as production-ready. See [Production Readiness](docs/production_readiness.md) for the current checklist and remaining items.
-
 ## Getting Started
 
-The fastest path is the [Getting Started guide](docs/getting_started.md). It walks through the model in order: installation, writing one workflow, draining journal attempts, inspecting the run, then adding retries, manual gates, cron, and Bedrock-backed leases when those pieces are needed.
+After the first run, use these references to go deeper:
 
-You can also run an interactive version in Livebook:
-
-[![Run in Livebook](https://livebook.dev/badge/v1/pink.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fdark-trench%2Fsquid_mesh%2Fblob%2Fmain%2Fdocs%2Fgetting_started.livemd)
-
-For deeper reference:
-
-| Guide | Use when |
+| Reference | Use when |
 | --- | --- |
+| [Getting Started](docs/getting_started.md) | You want the shortest written setup and run path. |
 | [Workflow Authoring](docs/workflow_authoring.md) | You want to understand triggers, payloads, steps, transitions, dependencies, input mapping, retries, and compensation. |
 | [Host App Integration](docs/host_app_integration.md) | You are adding Squid Mesh to a Phoenix or OTP app. |
 | [Reference Workflows](docs/reference_workflows.md) | You want approval, recovery, dependency, saga, cron, restart, and soak examples. |
+| [Minimal Host App](examples/minimal_host_app/README.md) | You want the executable example app used for smoke testing. |
 | [Bedrock Minimal Host App](examples/bedrock_minimal_host_app/README.md) | You want backend-owned delivery, leases, delayed visibility, retry requeue, and dead-letter handling. |
 | [Architecture](docs/architecture.md) | You want the runtime flow diagram and component boundaries. |
 | [Positioning Guide](docs/positioning.md) | You want to understand how Squid Mesh compares to adjacent projects. |
