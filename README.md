@@ -363,7 +363,8 @@ alias SquidMesh.Runtime.Signal
 
 {:ok, signal} =
   Signal.approve_run(run.run_id, %{actor: "elrond", note: "approved by council"},
-    metadata: %{source: "middle_earth.workflow_runs"}
+    metadata: %{source: "middle_earth.workflow_runs"},
+    idempotency_key: "council-approval-#{run.run_id}"
   )
 
 {:ok, approved_run} = SquidMesh.apply_signal(signal)
