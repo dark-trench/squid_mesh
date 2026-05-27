@@ -143,6 +143,11 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
                step: :wait_for_review,
                action: :approved,
                result: %{actor: "ops_123"},
+               metadata: %{
+                 request_id: "req_123",
+                 access_token: "secret",
+                 nested: %{password: "secret"}
+               },
                occurred_at: @visible_at
              })
 
@@ -155,6 +160,12 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
     assert resolved_entry.data.step == "wait_for_review"
     assert resolved_entry.data.action == "approved"
     assert resolved_entry.data.result == %{actor: "ops_123"}
+
+    assert resolved_entry.data.metadata == %{
+             request_id: "req_123",
+             access_token: "[REDACTED]",
+             nested: %{password: "[REDACTED]"}
+           }
   end
 
   test "normalizes runtime command receipt entries on the run thread" do

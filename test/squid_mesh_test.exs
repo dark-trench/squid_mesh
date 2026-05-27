@@ -5248,7 +5248,7 @@ defmodule SquidMeshTest do
                    "event" => "resumed",
                    "actor" => "ops_123",
                    "comment" => "resume requested",
-                   "metadata" => %{access_token: "secret", reason: "qa"},
+                   "metadata" => %{access_token: "[REDACTED]", reason: "qa"},
                    "at" => ^resumed_at_iso
                  }
                }

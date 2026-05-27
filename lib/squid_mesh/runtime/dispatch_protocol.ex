@@ -169,7 +169,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
     |> Map.update(:step, nil, &normalize_manual_value/1)
     |> Map.update(:kind, nil, &normalize_manual_value/1)
     |> Map.update(:action, nil, &normalize_manual_value/1)
-    |> Map.put_new(:metadata, %{})
+    |> Map.update(:metadata, %{}, &redact_metadata/1)
     |> Map.put_new(:result, %{})
   end
 
@@ -177,7 +177,6 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
     attrs
     |> Map.update(:signal_type, nil, &normalize_thread_id/1)
     |> Map.update(:metadata, %{}, &redact_metadata/1)
-    |> Map.put_new(:metadata, %{})
   end
 
   defp normalize_attrs(attrs, :child_run_started) do
