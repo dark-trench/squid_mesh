@@ -77,6 +77,22 @@ defmodule SquidMesh.Runtime.SignalTest do
              )
   end
 
+  test "builds a cron start command signal deriving idempotency from intended window" do
+    input = %{
+      "intended_window" => %{
+        "start_at" => "2026-05-26T12:00:00Z",
+        "end_at" => "2026-05-26T13:00:00Z"
+      }
+    }
+
+    assert {:ok,
+            %Signal{
+              type: :start_cron,
+              payload: %{input: ^input},
+              idempotency_key: "sha256:2rax63Kcl2-mdqSRkMMPtvu8OdyyTNUQZMiKylfxcpc"
+            }} = Signal.start_cron(@workflow, :nightly, input, occurred_at: @occurred_at)
+  end
+
   test "builds a cron start command signal without scheduler identity" do
     assert {:ok,
             %Signal{
