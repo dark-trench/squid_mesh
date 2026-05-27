@@ -4165,6 +4165,7 @@ defmodule SquidMeshTest do
       assert {:ok, %Signal{} = signal} =
                Signal.cancel_run(run_id,
                  metadata: %{source: "public_signal_test"},
+                 idempotency_key: "public-cancel-signal-1",
                  occurred_at: cancelled_at
                )
 
@@ -4177,15 +4178,98 @@ defmodule SquidMeshTest do
 
       assert cancelled.status == :cancelled
 
+      command_history_before = cancelled.command_history
+      run_entries_before = raw_run_entries(run_id, @read_model_storage)
+
+      assert {:ok, %Snapshot{} = duplicate_cancelled} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert duplicate_cancelled.status == :cancelled
+      assert duplicate_cancelled.command_history == command_history_before
+      assert raw_run_entries(run_id, @read_model_storage) == run_entries_before
+
       assert [
                %{signal_type: "start_run"},
                %{
                  signal_type: "cancel_run",
                  payload: %{run_id: ^run_id},
                  metadata: %{source: "public_signal_test"},
+                 idempotency_key: "public-cancel-signal-1",
                  occurred_at: ^cancelled_at
                }
              ] = cancelled.command_history
+    end
+
+    test "manual control signals are idempotent for duplicate delivery" do
+      manual_signal_cases = [
+        {:resume_run, PauseWorkflow, :resume_run, "resume-signal-duplicate-1", :running},
+        {:approve_run, ApprovalWorkflow, :approve_run, "approve-signal-duplicate-1", :running},
+        {:reject_run, ApprovalWorkflow, :reject_run, "reject-signal-duplicate-1", :running}
+      ]
+
+      for {label, workflow, signal_type, idempotency_key, expected_status} <- manual_signal_cases do
+        run_id = Ecto.UUID.generate()
+        occurred_at = DateTime.add(@read_model_visible_at, 2, :second)
+
+        assert {:ok, %Snapshot{}} =
+                 SquidMesh.start_run(
+                   workflow,
+                   %{account_id: "acct_#{label}"},
+                   runtime: :journal,
+                   journal_storage: @read_model_storage,
+                   queue: @read_model_queue,
+                   now: @read_model_started_at,
+                   run_id: run_id
+                 )
+
+        assert {:ok, %Snapshot{status: :paused}} =
+                 execute_journal_next(
+                   runtime: :journal,
+                   journal_storage: @read_model_storage,
+                   queue: @read_model_queue,
+                   owner_id: "journal-#{label}-duplicate-test",
+                   claim_id: "claim_#{label}_duplicate",
+                   claim_token: "token_#{label}_duplicate",
+                   now: @read_model_visible_at,
+                   finished_at: @read_model_visible_at
+                 )
+
+        attrs = %{actor: "ops_123", comment: "#{label} requested"}
+
+        assert {:ok, %Signal{} = signal} =
+                 apply(Signal, signal_type, [
+                   run_id,
+                   attrs,
+                   [
+                     metadata: %{source: "ops_console"},
+                     idempotency_key: idempotency_key,
+                     occurred_at: occurred_at
+                   ]
+                 ])
+
+        assert {:ok, %Snapshot{} = applied} =
+                 SignalInterpreter.apply(signal,
+                   journal_storage: @read_model_storage,
+                   queue: @read_model_queue
+                 )
+
+        command_history_before = applied.command_history
+        run_entries_before = raw_run_entries(run_id, @read_model_storage)
+
+        assert {:ok, %Snapshot{} = duplicate} =
+                 SignalInterpreter.apply(signal,
+                   journal_storage: @read_model_storage,
+                   queue: @read_model_queue
+                 )
+
+        assert duplicate.status == expected_status
+        assert duplicate.command_history == command_history_before
+        assert raw_run_entries(run_id, @read_model_storage) == run_entries_before
+      end
     end
 
     test "apply_signal/2 rejects malformed signal application requests" do

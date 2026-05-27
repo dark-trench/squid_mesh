@@ -80,17 +80,8 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
          %{run_id: run_id, occurred_at: %DateTime{} = now} = command,
          retries_left
        ) do
-    with {:ok, workflow_agent} <- rebuild_workflow_agent(storage, run_id),
-         :ok <- cancellable?(storage, workflow_agent),
-         {:ok, command_receipt} <- cancel_command_receipt(command),
-         {:ok, terminal_entry} <- run_terminal_entry(run_id, :cancelled, now) do
-      append_cancellation(
-        storage,
-        workflow_agent,
-        [command_receipt, terminal_entry],
-        command,
-        retries_left
-      )
+    with {:ok, workflow_agent} <- rebuild_workflow_agent(storage, run_id) do
+      cancel_or_ignore_duplicate(storage, workflow_agent, command, now, retries_left)
     end
   end
 
@@ -137,6 +128,28 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
     end
   end
 
+  defp cancel_or_ignore_duplicate(storage, workflow_agent, command, now, retries_left) do
+    if duplicate_cancel_signal?(workflow_agent, command) do
+      {:ok, workflow_agent}
+    else
+      cancel_workflow_agent(storage, workflow_agent, command, now, retries_left)
+    end
+  end
+
+  defp cancel_workflow_agent(storage, workflow_agent, command, %DateTime{} = now, retries_left) do
+    with :ok <- cancellable?(storage, workflow_agent),
+         {:ok, command_receipt} <- cancel_command_receipt(command),
+         {:ok, terminal_entry} <- run_terminal_entry(command.run_id, :cancelled, now) do
+      append_cancellation(
+        storage,
+        workflow_agent,
+        [command_receipt, terminal_entry],
+        command,
+        retries_left
+      )
+    end
+  end
+
   defp linked_children_started?(storage, %Projection{} = projection) do
     projection
     |> Projection.child_runs()
@@ -166,6 +179,20 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
   defp child_starting_error do
     {:error, {:invalid_transition, :child_starting, :cancelling}}
   end
+
+  defp duplicate_cancel_signal?(
+         %Agent{agent_module: WorkflowAgent, state: %{projection: %Projection{} = projection}},
+         %{signal: %Signal{idempotency_key: idempotency_key}}
+       )
+       when is_binary(idempotency_key) do
+    Projection.status(projection) == :cancelled and
+      Enum.any?(Projection.command_history(projection), fn command ->
+        Map.get(command, :signal_type) == "cancel_run" and
+          Map.get(command, :idempotency_key) == idempotency_key
+      end)
+  end
+
+  defp duplicate_cancel_signal?(_workflow_agent, _command), do: false
 
   defp child_run_id(child_run) when is_map(child_run) do
     Map.get(child_run, :child_run_id) || Map.get(child_run, "child_run_id")
