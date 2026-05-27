@@ -59,7 +59,7 @@ The written guide follows the same path in a little more detail: installation, o
 
 ## Jido Primitive Boundary
 
-Squid Mesh uses Jido as an internal runtime foundation while keeping the public workflow API focused on Squid Mesh concepts. Production runtime code uses five main Jido primitive families:
+Squid Mesh uses Jido as an internal runtime foundation while keeping the public workflow API focused on Squid Mesh concepts. Production runtime code uses these main Jido primitive families:
 
 | Jido primitive | Squid Mesh use |
 | --- | --- |
@@ -68,11 +68,11 @@ Squid Mesh uses Jido as an internal runtime foundation while keeping the public 
 | `Jido.Storage` | Journal and checkpoint persistence boundary. |
 | `Jido.Thread` / `Jido.Thread.Entry` | Durable journal facts for run, dispatch, index, and catalog threads. |
 | `Jido.Exec` | Action execution inside the journal executor. |
-| `Jido.Signal` | Optional boundary envelope for internal Squid Mesh runtime command signals. |
+| `Jido.Signal` | Interop envelope for Squid Mesh runtime signals when agents or other Jido primitives need to exchange commands/events. |
 
 Support code also touches lower-level details such as `Jido.Thread.EntryNormalizer` and validates built-in storage adapters like `Jido.Storage.File` and `Jido.Storage.Redis`. Workflow authors normally do not need to use those primitives directly.
 
-Runtime command signals use `SquidMesh.Runtime.Signal` as the stable Squid Mesh contract. `SquidMesh.Runtime.Signal.JidoAdapter` can convert those structs to and from `Jido.Signal` envelopes for advanced runtime integration, while public callers stay on Squid Mesh APIs.
+Runtime command signals use `SquidMesh.Runtime.Signal` as the stable Squid Mesh contract. Signals are the natural internal command/event shape for runtime control; `SquidMesh.Runtime.Signal.JidoAdapter` converts those structs to and from `Jido.Signal` envelopes when agents or other Jido primitives need to participate, while public callers can stay on Squid Mesh APIs.
 
 Journal-backed runtime commands are also persisted as run-thread command
 receipts before their lifecycle facts. `SquidMesh.inspect_run/2` exposes those

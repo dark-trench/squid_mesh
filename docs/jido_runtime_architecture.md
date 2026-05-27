@@ -137,8 +137,9 @@ The runtime is intentionally asymmetric:
 `SquidMesh.Runtime.Signal` is the Squid Mesh-native command envelope for
 runtime requests. These structs sit above backend primitives:
 `SquidMesh.Runtime.Signal.JidoAdapter` can translate them into `Jido.Signal`
-envelopes at the boundary, but workflow authors and host apps should not need
-to construct raw Jido signals for normal workflow control.
+envelopes at the boundary when agents, signal routers, or other Jido primitives
+need to exchange runtime commands or events. Workflow authors and host apps
+should not need to construct raw Jido signals for normal workflow control.
 
 | Command type | Stable payload shape | Identity and idempotency |
 | --- | --- | --- |
@@ -152,7 +153,9 @@ to construct raw Jido signals for normal workflow control.
 
 All command signals carry `metadata`, `occurred_at`, and an optional
 `idempotency_key`. Runtime code should adapt these product-level signals at the
-Jido boundary instead of leaking backend signal shapes into public APIs.
+Jido boundary instead of leaking backend signal shapes into public APIs. The
+signal path is first-class inside Squid Mesh; raw `Jido.Signal` is the interop
+envelope, not a replacement for the Squid Mesh signal taxonomy.
 
 Public workflow-control functions normalize caller input into these signals and
 then hand them to the journal signal interpreter. That keeps public callers on
@@ -549,9 +552,9 @@ Design questions before adding such a construct:
 | Area | Current path | Notes |
 | --- | --- | --- |
 | Workflow authoring | Squid Mesh DSL | Workflow authors do not need to write Jido agents directly |
-| Step execution | `SquidMesh.Step` and `Jido.Action` interop | Workers claim visible attempts with `SquidMesh.execute_next/1` |
+| Step execution | `SquidMesh.Step` and `Jido.Action` interop | Workers claim visible attempts with `SquidMesh.execute_next/1`; both paths receive safe attempt metadata in context |
 | Durable run state | Jido-backed run threads plus projections | The default Ecto adapter stores threads, entries, and checkpoints in the host repo |
-| Dispatch | Dispatch agent plus journal attempts | Backend-owned leases can be layered through `SquidMesh.Executor.Leases` |
+| Dispatch | Dispatch agent plus journal attempts | Live wakeups go through `SquidMesh.Runtime.DispatchNotifier`; backend-owned leases can be layered through `SquidMesh.Executor.Leases` |
 | Long-running recovery | Lease heartbeat, expired claim recovery, journal rebuild | Timeout-based step reclaim is not part of the public config |
 | Inspection | Projection-backed snapshots and explanations | Inspection rebuilds from journal facts |
 | Storage | `Jido.Storage` adapters | Postgres-compatible Ecto storage is the default supported path |

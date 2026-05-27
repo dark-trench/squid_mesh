@@ -8,13 +8,24 @@ defmodule SquidMesh.Step.Context do
   """
 
   @enforce_keys [:run_id, :workflow, :step, :attempt, :state]
-  defstruct [:run_id, :workflow, :step, :attempt, :runnable_key, state: %{}]
+  defstruct [
+    :run_id,
+    :workflow,
+    :step,
+    :attempt,
+    :runnable_key,
+    :idempotency_key,
+    :claim_id,
+    state: %{}
+  ]
 
   @type t :: %__MODULE__{
           run_id: Ecto.UUID.t(),
           workflow: module(),
           step: atom(),
           runnable_key: String.t() | nil,
+          idempotency_key: String.t() | nil,
+          claim_id: String.t() | nil,
           attempt: pos_integer() | nil,
           state: map()
         }
@@ -28,6 +39,8 @@ defmodule SquidMesh.Step.Context do
       step: Map.fetch!(context, :step),
       attempt: Map.get(context, :attempt),
       runnable_key: Map.get(context, :runnable_key),
+      idempotency_key: Map.get(context, :idempotency_key),
+      claim_id: Map.get(context, :claim_id),
       state: Map.get(context, :state, %{})
     }
   end

@@ -1111,6 +1111,78 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule NativeAttemptContextWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :capture_attempt_context do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :capture_context, NativeAttemptContextWorkflow.CaptureContext
+      transition :capture_context, on: :ok, to: :complete
+    end
+  end
+
+  defmodule NativeAttemptContextWorkflow.CaptureContext do
+    use SquidMesh.Step,
+      name: :capture_context,
+      input_schema: [account_id: [type: :string, required: true]],
+      output_schema: [captured: [type: :map, required: true]]
+
+    @impl SquidMesh.Step
+    def run(_input, context) do
+      {:ok,
+       %{
+         captured: %{
+           idempotency_key: context.idempotency_key,
+           claim_id: context.claim_id,
+           claim_token_present?: Map.has_key?(Map.from_struct(context), :claim_token)
+         }
+       }}
+    end
+  end
+
+  defmodule RawActionAttemptContextWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :capture_attempt_context do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :capture_context, RawActionAttemptContextWorkflow.CaptureContext
+      transition :capture_context, on: :ok, to: :complete
+    end
+  end
+
+  defmodule RawActionAttemptContextWorkflow.CaptureContext do
+    use Jido.Action,
+      name: "capture_raw_action_attempt_context",
+      description: "Captures raw action attempt context",
+      schema: [account_id: [type: :string, required: true]]
+
+    @impl Jido.Action
+    def run(_input, context) do
+      {:ok,
+       %{
+         captured: %{
+           idempotency_key: Map.fetch!(context, :idempotency_key),
+           claim_id: Map.fetch!(context, :claim_id),
+           claim_token_present?: Map.has_key?(context, :claim_token)
+         }
+       }}
+    end
+  end
+
   defmodule PauseWorkflow do
     use SquidMesh.Workflow
 
@@ -7365,6 +7437,86 @@ defmodule SquidMeshTest do
                :attempt_claimed,
                :attempt_completed
              ]
+    end
+
+    test "execute_next/1 exposes safe attempt metadata to native step context" do
+      storage = {Jido.Storage.ETS, table: :squid_mesh_native_attempt_context_test}
+      queue = "native-attempt-context-test"
+
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start(
+                 NativeAttemptContextWorkflow,
+                 %{account_id: "acct_native_context"},
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 now: @read_model_started_at
+               )
+
+      assert [runnable_key] = started_snapshot.planned_runnable_keys
+
+      assert {:ok, %Snapshot{} = executed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 owner_id: "worker_native_context",
+                 claim_id: "claim_native_context",
+                 claim_token: "raw-native-context-token",
+                 now: @read_model_visible_at
+               )
+
+      assert [
+               %{
+                 result: %{
+                   captured: %{
+                     idempotency_key: ^runnable_key,
+                     claim_id: "claim_native_context",
+                     claim_token_present?: false
+                   }
+                 }
+               }
+             ] = executed_snapshot.attempts
+    end
+
+    test "execute_next/1 exposes safe attempt metadata to raw Jido action context" do
+      storage = {Jido.Storage.ETS, table: :squid_mesh_raw_action_attempt_context_test}
+      queue = "raw-action-attempt-context-test"
+
+      assert {:ok, %Snapshot{} = started_snapshot} =
+               SquidMesh.start(
+                 RawActionAttemptContextWorkflow,
+                 %{account_id: "acct_raw_context"},
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 now: @read_model_started_at
+               )
+
+      assert [runnable_key] = started_snapshot.planned_runnable_keys
+
+      assert {:ok, %Snapshot{} = executed_snapshot} =
+               execute_journal_next(
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue,
+                 owner_id: "worker_raw_context",
+                 claim_id: "claim_raw_context",
+                 claim_token: "raw-action-context-token",
+                 now: @read_model_visible_at
+               )
+
+      assert [
+               %{
+                 result: %{
+                   captured: %{
+                     idempotency_key: ^runnable_key,
+                     claim_id: "claim_raw_context",
+                     claim_token_present?: false
+                   }
+                 }
+               }
+             ] = executed_snapshot.attempts
     end
 
     test "execute_next/1 rolls back repo transaction writes when journal completion aborts" do

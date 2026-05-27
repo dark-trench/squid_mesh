@@ -17,6 +17,19 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
   @lease_until ~U[2026-05-15 00:01:00Z]
   @expired_at ~U[2026-05-15 00:02:00Z]
 
+  defmodule TestNotifier do
+    @spec notify_attempt_scheduled(map(), keyword()) :: :ok
+    def notify_attempt_scheduled(attempt, opts) do
+      send(Keyword.fetch!(opts, :test_pid), {:attempt_wakeup, attempt})
+      :ok
+    end
+  end
+
+  defmodule FailingNotifier do
+    @spec notify_attempt_scheduled(map(), keyword()) :: {:error, :offline}
+    def notify_attempt_scheduled(_attempt, _opts), do: {:error, :offline}
+  end
+
   setup do
     cleanup_storage()
 
@@ -79,6 +92,61 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
     assert scheduled_entry.data.runnable_key == @runnable_key
     assert scheduled_entry.data.queue == "default"
     assert scheduled_entry.data.occurred_at == @visible_at
+  end
+
+  test "emits live wakeup facts after scheduled attempts are durable" do
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: scheduled_agent, runnables: [%{runnable_key: @runnable_key}]}} =
+             DispatchAgent.schedule_attempts(
+               @storage,
+               agent,
+               @run_id,
+               [planned_runnable()],
+               now: @visible_at,
+               notifier: TestNotifier,
+               notifier_opts: [test_pid: self()]
+             )
+
+    assert_receive {:attempt_wakeup, %{runnable_key: @runnable_key, queue: "default"}}
+
+    assert scheduled_agent.state.thread_rev == 2
+
+    assert [
+             %{runnable_key: @runnable_key, status: :available, wakeup_emitted?: true}
+           ] = DispatchAgent.visible_attempts(scheduled_agent, @visible_at)
+
+    assert {:ok, [scheduled_entry, wakeup_entry]} =
+             Journal.load_entries(@storage, {:dispatch, "default"})
+
+    assert scheduled_entry.type == :attempt_scheduled
+    assert wakeup_entry.type == :live_wakeup_emitted
+    assert wakeup_entry.data.runnable_key == @runnable_key
+    assert wakeup_entry.data.queue == "default"
+    assert wakeup_entry.data.occurred_at == @visible_at
+  end
+
+  test "keeps scheduled attempts recoverable when live wakeup notification is lost" do
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: scheduled_agent, runnables: [%{runnable_key: @runnable_key}]}} =
+             DispatchAgent.schedule_attempts(
+               @storage,
+               agent,
+               @run_id,
+               [planned_runnable()],
+               now: @visible_at,
+               notifier: FailingNotifier
+             )
+
+    assert scheduled_agent.state.thread_rev == 1
+
+    assert [
+             %{runnable_key: @runnable_key, status: :available, wakeup_emitted?: false}
+           ] = DispatchAgent.visible_attempts(scheduled_agent, @visible_at)
+
+    assert {:ok, [scheduled_entry]} = Journal.load_entries(@storage, {:dispatch, "default"})
+    assert scheduled_entry.type == :attempt_scheduled
   end
 
   test "records known run ids idempotently on the dispatch queue" do
