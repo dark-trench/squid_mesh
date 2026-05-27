@@ -63,19 +63,19 @@ defmodule BedrockMinimalHostApp.WorkflowRuns do
   @spec start_payment_recovery(payment_recovery_attrs()) ::
           {:ok, run_result()} | {:error, term()}
   def start_payment_recovery(attrs) when is_map(attrs) do
-    SquidMesh.start_run(BedrockMinimalHostApp.Workflows.PaymentRecovery, :payment_recovery, attrs)
+    SquidMesh.start(BedrockMinimalHostApp.Workflows.PaymentRecovery, :payment_recovery, attrs)
   end
 
   @spec start_cancellable_wait(cancellable_wait_attrs()) ::
           {:ok, run_result()} | {:error, term()}
   def start_cancellable_wait(attrs) when is_map(attrs) do
-    SquidMesh.start_run(BedrockMinimalHostApp.Workflows.CancellableWait, attrs)
+    SquidMesh.start(BedrockMinimalHostApp.Workflows.CancellableWait, attrs)
   end
 
   @spec start_retry_verification(retry_verification_attrs()) ::
           {:ok, run_result()} | {:error, term()}
   def start_retry_verification(attrs) when is_map(attrs) do
-    SquidMesh.start_run(
+    SquidMesh.start(
       BedrockMinimalHostApp.Workflows.RetryVerification,
       :retry_verification,
       attrs
@@ -85,7 +85,7 @@ defmodule BedrockMinimalHostApp.WorkflowRuns do
   @spec start_dependency_recovery(dependency_recovery_attrs()) ::
           {:ok, run_result()} | {:error, term()}
   def start_dependency_recovery(attrs) when is_map(attrs) do
-    SquidMesh.start_run(
+    SquidMesh.start(
       BedrockMinimalHostApp.Workflows.DependencyRecovery,
       :dependency_recovery,
       attrs
@@ -95,13 +95,13 @@ defmodule BedrockMinimalHostApp.WorkflowRuns do
   @spec start_manual_approval(manual_approval_attrs()) ::
           {:ok, run_result()} | {:error, term()}
   def start_manual_approval(attrs) when is_map(attrs) do
-    SquidMesh.start_run(BedrockMinimalHostApp.Workflows.ManualApproval, :manual_approval, attrs)
+    SquidMesh.start(BedrockMinimalHostApp.Workflows.ManualApproval, :manual_approval, attrs)
   end
 
   @spec start_manual_digest(manual_digest_attrs()) ::
           {:ok, run_result()} | {:error, term()}
   def start_manual_digest(attrs) when is_map(attrs) do
-    SquidMesh.start_run(BedrockMinimalHostApp.Workflows.DailyDigest, :manual_digest, attrs)
+    SquidMesh.start(BedrockMinimalHostApp.Workflows.DailyDigest, :manual_digest, attrs)
   end
 
   @doc """
@@ -109,7 +109,7 @@ defmodule BedrockMinimalHostApp.WorkflowRuns do
   """
   @spec start_saga_checkout(saga_checkout_attrs()) :: {:ok, run_result()} | {:error, term()}
   def start_saga_checkout(attrs) when is_map(attrs) do
-    SquidMesh.start_run(BedrockMinimalHostApp.Workflows.SagaCheckout, :saga_checkout, attrs)
+    SquidMesh.start(BedrockMinimalHostApp.Workflows.SagaCheckout, :saga_checkout, attrs)
   end
 
   @doc """
@@ -118,7 +118,7 @@ defmodule BedrockMinimalHostApp.WorkflowRuns do
   @spec start_local_ledger_checkout(local_ledger_checkout_attrs()) ::
           {:ok, run_result()} | {:error, term()}
   def start_local_ledger_checkout(attrs) when is_map(attrs) do
-    SquidMesh.start_run(
+    SquidMesh.start(
       BedrockMinimalHostApp.Workflows.LocalLedgerCheckout,
       :local_ledger_checkout,
       attrs
@@ -131,7 +131,7 @@ defmodule BedrockMinimalHostApp.WorkflowRuns do
   @spec start_nested_invite_delivery(nested_invite_delivery_attrs()) ::
           {:ok, run_result()} | {:error, term()}
   def start_nested_invite_delivery(attrs) when is_map(attrs) do
-    SquidMesh.start_run(
+    SquidMesh.start(
       BedrockMinimalHostApp.Workflows.NestedInviteDelivery,
       :nested_invite_delivery,
       attrs
@@ -153,8 +153,8 @@ defmodule BedrockMinimalHostApp.WorkflowRuns do
     SquidMesh.explain_run(run_id)
   end
 
-  @spec cancel_run(Ecto.UUID.t()) :: {:ok, run_result()} | {:error, term()}
-  def cancel_run(run_id) do
+  @spec cancel(Ecto.UUID.t()) :: {:ok, run_result()} | {:error, term()}
+  def cancel(run_id) do
     with {:ok, signal} <-
            Signal.cancel_run(run_id,
              metadata: %{source: "bedrock_minimal_host_app.workflow_runs"}
@@ -163,33 +163,33 @@ defmodule BedrockMinimalHostApp.WorkflowRuns do
     end
   end
 
-  @spec unblock_run(Ecto.UUID.t()) :: {:ok, run_result()} | {:error, term()}
-  def unblock_run(run_id), do: unblock_run(run_id, %{})
+  @spec resume(Ecto.UUID.t()) :: {:ok, run_result()} | {:error, term()}
+  def resume(run_id), do: resume(run_id, %{})
 
-  @spec unblock_run(Ecto.UUID.t(), map()) :: {:ok, run_result()} | {:error, term()}
-  def unblock_run(run_id, attrs) when is_map(attrs) do
+  @spec resume(Ecto.UUID.t(), map()) :: {:ok, run_result()} | {:error, term()}
+  def resume(run_id, attrs) when is_map(attrs) do
     with {:ok, signal} <- Signal.resume_run(run_id, attrs) do
       SquidMesh.apply_signal(signal)
     end
   end
 
-  @spec approve_run(Ecto.UUID.t(), map()) :: {:ok, run_result()} | {:error, term()}
-  def approve_run(run_id, attrs) when is_map(attrs) do
+  @spec approve(Ecto.UUID.t(), map()) :: {:ok, run_result()} | {:error, term()}
+  def approve(run_id, attrs) when is_map(attrs) do
     with {:ok, signal} <- Signal.approve_run(run_id, attrs) do
       SquidMesh.apply_signal(signal)
     end
   end
 
-  @spec reject_run(Ecto.UUID.t(), map()) :: {:ok, run_result()} | {:error, term()}
-  def reject_run(run_id, attrs) when is_map(attrs) do
+  @spec reject(Ecto.UUID.t(), map()) :: {:ok, run_result()} | {:error, term()}
+  def reject(run_id, attrs) when is_map(attrs) do
     with {:ok, signal} <- Signal.reject_run(run_id, attrs) do
       SquidMesh.apply_signal(signal)
     end
   end
 
-  @spec replay_run(Ecto.UUID.t()) :: {:ok, run_result()} | {:error, term()}
-  def replay_run(run_id) do
-    SquidMesh.replay_run(run_id)
+  @spec replay(Ecto.UUID.t()) :: {:ok, run_result()} | {:error, term()}
+  def replay(run_id) do
+    SquidMesh.replay(run_id)
   end
 
   @spec list_daily_digest_runs() :: {:ok, [listing_result()]} | {:error, term()}

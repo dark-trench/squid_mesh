@@ -122,7 +122,7 @@ Bedrock code. The public integration boundary is:
 
 - workflow modules declare triggers, payloads, steps, transitions, retries, and
   manual controls
-- host code starts runs and exposes inspection through `SquidMesh.start_run/3`,
+- host code starts runs and exposes inspection through `SquidMesh.start/3`,
   `SquidMesh.list_runs/2`, `SquidMesh.inspect_run/2`,
   `SquidMesh.inspect_run_graph/2`, and `SquidMesh.explain_run/2`
 - host workers provide execution capacity by calling `SquidMesh.execute_next/1`
@@ -430,31 +430,31 @@ Host-facing boundary:
 ```elixir
 defmodule MyApp.WorkflowRuns do
   def start_payment_recovery(payload) do
-    SquidMesh.start_run(MyApp.Workflows.PaymentRecovery, :payment_recovery, payload)
+    SquidMesh.start(MyApp.Workflows.PaymentRecovery, :payment_recovery, payload)
   end
 
   def inspect_run(run_id) do
     SquidMesh.inspect_run(run_id, include_history: true)
   end
 
-  def unblock_run(run_id, attrs \\ %{}) do
-    SquidMesh.unblock_run(run_id, attrs)
+  def resume(run_id, attrs \\ %{}) do
+    SquidMesh.resume(run_id, attrs)
   end
 
-  def approve_run(run_id, attrs) do
-    SquidMesh.approve_run(run_id, attrs)
+  def approve(run_id, attrs) do
+    SquidMesh.approve(run_id, attrs)
   end
 
-  def reject_run(run_id, attrs) do
-    SquidMesh.reject_run(run_id, attrs)
+  def reject(run_id, attrs) do
+    SquidMesh.reject(run_id, attrs)
   end
 end
 ```
 
 If the host app exposes pause-resume or approval workflows, keep the latest
 Squid Mesh migrations applied before deploying the feature. Paused step runs
-now persist internal resume metadata so `unblock_run/2`, `approve_run/3`, and
-`reject_run/3` can continue with stable output and transition semantics after
+now persist internal resume metadata so `resume/2`, `approve/3`, and
+`reject/3` can continue with stable output and transition semantics after
 restarts or code changes.
 
 Operational review shape:
@@ -466,7 +466,7 @@ Enum.map(paused_run.audit_events, &{&1.type, &1.step})
 #=> [{:paused, :wait_for_review}]
 
 {:ok, _run} =
-  MyApp.WorkflowRuns.approve_run(run_id, %{
+  MyApp.WorkflowRuns.approve(run_id, %{
     actor: "ops_123",
     comment: "customer verified",
     metadata: %{ticket: "SUP-42"}
@@ -503,23 +503,23 @@ Context boundary:
 ```elixir
 defmodule MyApp.WorkflowRuns do
   def start_payment_recovery(attrs) do
-    SquidMesh.start_run(MyApp.Workflows.PaymentRecovery, :payment_recovery, attrs)
+    SquidMesh.start(MyApp.Workflows.PaymentRecovery, :payment_recovery, attrs)
   end
 
   def inspect_run(run_id) do
     SquidMesh.inspect_run(run_id, include_history: true)
   end
 
-  def unblock_run(run_id, attrs \\ %{}) do
-    SquidMesh.unblock_run(run_id, attrs)
+  def resume(run_id, attrs \\ %{}) do
+    SquidMesh.resume(run_id, attrs)
   end
 
-  def approve_run(run_id, attrs) do
-    SquidMesh.approve_run(run_id, attrs)
+  def approve(run_id, attrs) do
+    SquidMesh.approve(run_id, attrs)
   end
 
-  def reject_run(run_id, attrs) do
-    SquidMesh.reject_run(run_id, attrs)
+  def reject(run_id, attrs) do
+    SquidMesh.reject(run_id, attrs)
   end
 end
 ```

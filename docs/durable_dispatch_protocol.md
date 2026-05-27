@@ -259,8 +259,8 @@ same boundary was completed by an operator action such as resume, approve, or
 reject.
 
 The journal runtime appends `manual_step_paused` for built-in `:pause` and
-`:approval` steps. `manual_step_resolved` is appended when `unblock_run/3`,
-`approve_run/3`, or `reject_run/3` resolves that manual boundary with
+`:approval` steps. `manual_step_resolved` is appended when `resume/3`,
+`approve/3`, or `reject/3` resolves that manual boundary with
 `runtime: :journal`.
 
 The workflow projection exposes only the current manual state. Duplicate pause

@@ -1358,14 +1358,14 @@ defmodule SquidMeshTest do
                SquidMesh.list_runs([], repo: Repo)
     end
 
-    test "cancel_run/2 returns not found through the journal default" do
+    test "cancel/2 returns not found through the journal default" do
       assert {:error, :not_found} =
-               SquidMesh.cancel_run(Ecto.UUID.generate(), repo: Repo)
+               SquidMesh.cancel(Ecto.UUID.generate(), repo: Repo)
     end
 
-    test "replay_run/2 returns not found through the journal default" do
+    test "replay/2 returns not found through the journal default" do
       assert {:error, :not_found} =
-               SquidMesh.replay_run(Ecto.UUID.generate(), repo: Repo)
+               SquidMesh.replay(Ecto.UUID.generate(), repo: Repo)
     end
 
     test "cron starts run through the journal default and expose schedule context" do
@@ -1644,7 +1644,7 @@ defmodule SquidMeshTest do
       assert skipped_run_id == completed.run_id
     end
 
-    test "replay_run/2 preserves journal cron schedule context" do
+    test "replay/2 preserves journal cron schedule context" do
       storage = {Jido.Storage.ETS, table: :squid_mesh_journal_cron_replay_context_test}
       queue = "journal-cron-replay-context-test"
       started_at = ~U[2026-05-15 00:00:00Z]
@@ -1690,7 +1690,7 @@ defmodule SquidMeshTest do
       assert completed.context.schedule_seen == completed.context.schedule
 
       assert {:ok, %Snapshot{} = replayed} =
-               SquidMesh.replay_run(summary.run_id,
+               SquidMesh.replay(summary.run_id,
                  runtime: :journal,
                  journal_storage: storage,
                  queue: queue,
@@ -1712,7 +1712,7 @@ defmodule SquidMeshTest do
       assert completed_replay.context.schedule_seen == completed.context.schedule
     end
 
-    test "replay_run/2 removes schedule idempotency identity from journal cron context" do
+    test "replay/2 removes schedule idempotency identity from journal cron context" do
       storage = {Jido.Storage.ETS, table: :squid_mesh_journal_cron_replay_idempotency_test}
       queue = "journal-cron-replay-idempotency-test"
       started_at = ~U[2026-05-15 00:00:00Z]
@@ -1754,7 +1754,7 @@ defmodule SquidMeshTest do
       assert source.context.schedule.idempotency_key == "journal_replay_idempotency_signal_123"
 
       assert {:ok, %Snapshot{} = replayed} =
-               SquidMesh.replay_run(summary.run_id,
+               SquidMesh.replay(summary.run_id,
                  runtime: :journal,
                  journal_storage: storage,
                  queue: queue,
@@ -1909,9 +1909,9 @@ defmodule SquidMeshTest do
                snapshot.visible_attempts
     end
 
-    test "start_run/3 appends journal start and dispatch facts" do
+    test "start/3 appends journal start and dispatch facts" do
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -1987,9 +1987,126 @@ defmodule SquidMeshTest do
              ]
     end
 
-    test "start_run/3 exposes workflow definition version metadata in read models" do
+    test "start/3 starts a default-trigger journal run" do
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_concise_default"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert snapshot.workflow == Atom.to_string(PaymentRecoveryWorkflow)
+      assert snapshot.queue == @read_model_queue
+      assert snapshot.reason == :attempt_visible
+    end
+
+    test "start/4 starts a named-trigger journal run" do
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start(
+                 PaymentRecoveryWorkflow,
+                 :gateway_recovery,
+                 %{account_id: "acct_concise_named"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert snapshot.workflow == Atom.to_string(PaymentRecoveryWorkflow)
+      assert snapshot.queue == @read_model_queue
+      assert snapshot.reason == :attempt_visible
+    end
+
+    test "start/3 rejects invalid default-trigger payloads" do
+      assert {:error, {:invalid_payload, :expected_map}} =
+               SquidMesh.start(PaymentRecoveryWorkflow, :invalid_payload,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+    end
+
+    test "concise convenience arities use configured runtime defaults" do
+      put_squid_mesh_config(
+        repo: Repo,
+        runtime: :journal,
+        journal_storage: @read_model_storage,
+        queue: @read_model_queue
+      )
+
+      assert {:ok, %Snapshot{} = default_trigger_snapshot} =
+               SquidMesh.start(PaymentRecoveryWorkflow, %{account_id: "acct_concise_start"})
+
+      assert {:ok, %Snapshot{} = named_trigger_snapshot} =
+               SquidMesh.start(PaymentRecoveryWorkflow, :gateway_recovery, %{
+                 account_id: "acct_concise_trigger"
+               })
+
+      assert default_trigger_snapshot.queue == @read_model_queue
+      assert named_trigger_snapshot.queue == @read_model_queue
+
+      missing_run_id = Ecto.UUID.generate()
+      attrs = %{actor: "ops_123"}
+
+      assert {:error, :not_found} = SquidMesh.resume(missing_run_id)
+      assert {:error, :not_found} = SquidMesh.resume(missing_run_id, runtime: :journal)
+      assert {:error, :not_found} = SquidMesh.resume(missing_run_id, attrs)
+      assert {:error, :not_found} = SquidMesh.approve(missing_run_id, attrs)
+      assert {:error, :not_found} = SquidMesh.reject(missing_run_id, attrs)
+    end
+
+    test "concise control functions preserve existing public error shapes" do
+      missing_run_id = Ecto.UUID.generate()
+      malformed_run_id = "not-a-uuid"
+      attrs = %{actor: "ops_123"}
+
+      opts = [
+        runtime: :journal,
+        journal_storage: @read_model_storage,
+        queue: @read_model_queue
+      ]
+
+      assert {:error, :not_found} = SquidMesh.resume(missing_run_id, attrs, opts)
+      assert {:error, :not_found} = SquidMesh.approve(missing_run_id, attrs, opts)
+      assert {:error, :not_found} = SquidMesh.reject(missing_run_id, attrs, opts)
+      assert {:error, :not_found} = SquidMesh.cancel(missing_run_id, opts)
+      assert {:error, :not_found} = SquidMesh.replay(missing_run_id, opts)
+
+      assert {:error, :invalid_run_id} = SquidMesh.resume(malformed_run_id, attrs, opts)
+      assert {:error, :invalid_run_id} = SquidMesh.approve(malformed_run_id, attrs, opts)
+      assert {:error, :invalid_run_id} = SquidMesh.reject(malformed_run_id, attrs, opts)
+      assert {:error, :invalid_run_id} = SquidMesh.cancel(malformed_run_id, opts)
+      assert {:error, :invalid_run_id} = SquidMesh.replay(malformed_run_id, opts)
+    end
+
+    test "concise API keeps supported runtime names explicit" do
+      refute function_exported?(SquidMesh, :inspect, 2)
+      assert function_exported?(SquidMesh, :start, 2)
+      assert function_exported?(SquidMesh, :start, 3)
+      assert function_exported?(SquidMesh, :start, 4)
+      assert function_exported?(SquidMesh, :resume, 1)
+      assert function_exported?(SquidMesh, :resume, 2)
+      assert function_exported?(SquidMesh, :resume, 3)
+      assert function_exported?(SquidMesh, :approve, 2)
+      assert function_exported?(SquidMesh, :approve, 3)
+      assert function_exported?(SquidMesh, :reject, 2)
+      assert function_exported?(SquidMesh, :reject, 3)
+      assert function_exported?(SquidMesh, :cancel, 1)
+      assert function_exported?(SquidMesh, :cancel, 2)
+      assert function_exported?(SquidMesh, :replay, 1)
+      assert function_exported?(SquidMesh, :replay, 2)
+      assert function_exported?(SquidMesh, :inspect_run, 2)
+      assert function_exported?(SquidMesh, :inspect_run_graph, 2)
+      assert function_exported?(SquidMesh, :explain_run, 2)
+    end
+
+    test "start/3 exposes workflow definition version metadata in read models" do
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.start(
                  VersionedPaymentRecoveryWorkflow,
                  %{account_id: "acct_versioned"},
                  runtime: :journal,
@@ -2044,9 +2161,9 @@ defmodule SquidMeshTest do
                |> Map.fetch!(:data)
     end
 
-    test "start_run/3 leaves workflow definition version nil when undeclared" do
+    test "start/3 leaves workflow definition version nil when undeclared" do
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_unversioned"},
                  runtime: :journal,
@@ -2091,7 +2208,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 starts a deterministic child and links it to the parent" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_parent_child"},
                  runtime: :journal,
@@ -2164,7 +2281,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 is idempotent for duplicate child keys" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_duplicate_child"},
                  runtime: :journal,
@@ -2224,7 +2341,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 uses the child workflow default trigger" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_default_child_trigger"},
                  runtime: :journal,
@@ -2261,7 +2378,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 rejects missing child keys and terminal parents" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_terminal_child"},
                  runtime: :journal,
@@ -2469,7 +2586,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, %Snapshot{terminal?: true}} =
-               SquidMesh.cancel_run(parent.run_id,
+               SquidMesh.cancel(parent.run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue,
@@ -2527,7 +2644,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 accepts atom child keys and storage-safe metadata" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_atom_child_key"},
                  runtime: :journal,
@@ -2582,7 +2699,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 repairs a missing parent link for an existing child" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_repair_child_link"},
                  runtime: :journal,
@@ -2654,7 +2771,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 rejects stale contexts when parent link exists without child" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_stale_linked_child"},
                  runtime: :journal,
@@ -2710,7 +2827,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 rejects terminal parents after the child link exists" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_linked_then_terminal_child"},
                  runtime: :journal,
@@ -2768,7 +2885,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 rejects parent links that reuse a child key for another child" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_reused_child_key"},
                  runtime: :journal,
@@ -2814,7 +2931,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 allows the same child key from different parent steps" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalDependencyWorkflow,
                  %{account_id: "acct_child_key_steps", invoice_id: "inv_child_key_steps"},
                  runtime: :journal,
@@ -2877,7 +2994,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 reuses string-keyed persisted parent links" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_string_keyed_child_link"},
                  runtime: :journal,
@@ -2944,7 +3061,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 rejects an existing child with matching input but no parent lineage" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_orphaned_child_conflict"},
                  runtime: :journal,
@@ -2964,7 +3081,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, %Snapshot{run_id: ^child_run_id}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  ChildDigestWorkflow,
                  %{subscription_id: "sub_123"},
                  runtime: :journal,
@@ -2990,7 +3107,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 returns conflict when parent link repair keeps conflicting" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_child_link_conflict_retry"},
                  runtime: :journal,
@@ -3049,7 +3166,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 returns append errors while linking existing children" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_child_link_append_error"},
                  runtime: :journal,
@@ -3108,7 +3225,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 rejects malformed existing child links for the same child" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_malformed_same_child_link"},
                  runtime: :journal,
@@ -3152,7 +3269,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 ignores malformed origins when checking child key reuse" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_malformed_origin_child_key"},
                  runtime: :journal,
@@ -3197,9 +3314,9 @@ defmodule SquidMeshTest do
       assert child.parent_run.child_key == child_key
     end
 
-    test "cancel_run/2 rejects parents with linked children that have not started" do
+    test "cancel/2 rejects parents with linked children that have not started" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_cancel_during_child_start"},
                  runtime: :journal,
@@ -3232,7 +3349,7 @@ defmodule SquidMeshTest do
       assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [link_entry])
 
       assert {:error, {:invalid_transition, :child_starting, :cancelling}} =
-               SquidMesh.cancel_run(parent.run_id,
+               SquidMesh.cancel(parent.run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue,
@@ -3242,9 +3359,9 @@ defmodule SquidMeshTest do
       assert {:error, :not_found} = Journal.load_thread(@read_model_storage, {:run, child_run_id})
     end
 
-    test "cancel_run/2 allows parents after linked children have started" do
+    test "cancel/2 allows parents after linked children have started" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_cancel_after_child_started"},
                  runtime: :journal,
@@ -3271,7 +3388,7 @@ defmodule SquidMeshTest do
       assert {:ok, _thread} = Journal.load_thread(@read_model_storage, {:run, child.run_id})
 
       assert {:ok, %Snapshot{terminal?: true, status: :cancelled}} =
-               SquidMesh.cancel_run(parent.run_id,
+               SquidMesh.cancel(parent.run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue,
@@ -3279,9 +3396,9 @@ defmodule SquidMeshTest do
                )
     end
 
-    test "cancel_run/2 rejects malformed checkpoint child links without raising" do
+    test "cancel/2 rejects malformed checkpoint child links without raising" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_malformed_child_checkpoint"},
                  runtime: :journal,
@@ -3318,7 +3435,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, {:invalid_transition, :child_starting, :cancelling}} =
-               SquidMesh.cancel_run(parent.run_id,
+               SquidMesh.cancel(parent.run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue,
@@ -3326,9 +3443,9 @@ defmodule SquidMeshTest do
                )
     end
 
-    test "cancel_run/2 rejects checkpoint child links without child run ids" do
+    test "cancel/2 rejects checkpoint child links without child run ids" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_missing_child_id_checkpoint"},
                  runtime: :journal,
@@ -3354,7 +3471,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, {:invalid_transition, :child_starting, :cancelling}} =
-               SquidMesh.cancel_run(parent.run_id,
+               SquidMesh.cancel(parent.run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue,
@@ -3362,9 +3479,9 @@ defmodule SquidMeshTest do
                )
     end
 
-    test "cancel_run/2 returns storage errors while checking linked children" do
+    test "cancel/2 returns storage errors while checking linked children" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_child_load_error_checkpoint"},
                  runtime: :journal,
@@ -3394,7 +3511,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, :load_failed} =
-               SquidMesh.cancel_run(parent.run_id,
+               SquidMesh.cancel(parent.run_id,
                  runtime: :journal,
                  journal_storage:
                    {FaultInjectingStorage,
@@ -3594,7 +3711,7 @@ defmodule SquidMeshTest do
 
     test "start_child_run/4 rejects conflicting existing children before linking parent" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_conflicting_child"},
                  runtime: :journal,
@@ -3614,7 +3731,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, %Snapshot{run_id: ^child_run_id}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  ChildDigestWorkflow,
                  %{subscription_id: "conflicting_sub"},
                  runtime: :journal,
@@ -3643,9 +3760,9 @@ defmodule SquidMeshTest do
       refute Enum.any?(parent_entries, &(&1.type == :child_run_started))
     end
 
-    test "replay_run/2 does not copy source child links" do
+    test "replay/2 does not copy source child links" do
       assert {:ok, %Snapshot{} = parent} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_replay_child_parent"},
                  runtime: :journal,
@@ -3679,7 +3796,7 @@ defmodule SquidMeshTest do
       assert child_run_id == child.run_id
 
       assert {:ok, %Snapshot{} = replay} =
-               SquidMesh.replay_run(parent.run_id,
+               SquidMesh.replay(parent.run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue,
@@ -3862,7 +3979,7 @@ defmodule SquidMeshTest do
 
     test "list_runs/2 lists journal runs for one workflow newest first" do
       assert {:ok, %Snapshot{} = older_run} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_older"},
                  runtime: :journal,
@@ -3872,7 +3989,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, %Snapshot{} = newer_run} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_newer"},
                  runtime: :journal,
@@ -3897,7 +4014,7 @@ defmodule SquidMeshTest do
 
     test "list_runs/2 lists journal runs across workflows from the global catalog" do
       assert {:ok, %Snapshot{} = payment_run} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_payment"},
                  runtime: :journal,
@@ -3907,7 +4024,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, %Snapshot{} = approval_run} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  ApprovalWorkflow,
                  %{account_id: "acct_approval"},
                  runtime: :journal,
@@ -3945,7 +4062,7 @@ defmodule SquidMeshTest do
 
     test "list_runs/2 applies journal status and limit filters after rebuilding snapshots" do
       assert {:ok, %Snapshot{} = completed_run} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_completed"},
                  runtime: :journal,
@@ -3966,7 +4083,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, _running_run} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_running"},
                  runtime: :journal,
@@ -3993,7 +4110,7 @@ defmodule SquidMeshTest do
       second_queue = "journal-list-second-queue"
 
       assert {:ok, %Snapshot{} = first_run} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_first_queue"},
                  runtime: :journal,
@@ -4003,7 +4120,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, %Snapshot{} = second_run} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_second_queue"},
                  runtime: :journal,
@@ -4052,9 +4169,9 @@ defmodule SquidMeshTest do
       assert Enum.map(graph.nodes, &{&1.id, &1.status}) == [{"check_gateway", :pending}]
     end
 
-    test "cancel_run/2 cancels a visible journal run and fences dispatch" do
+    test "cancel/2 cancels a visible journal run and fences dispatch" do
       assert {:ok, %Snapshot{} = started} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_cancel"},
                  runtime: :journal,
@@ -4066,7 +4183,7 @@ defmodule SquidMeshTest do
       assert [%{step: "check_gateway", status: :available}] = started.visible_attempts
 
       assert {:ok, %Snapshot{} = cancelled} =
-               SquidMesh.cancel_run(started.run_id,
+               SquidMesh.cancel(started.run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue,
@@ -4099,7 +4216,7 @@ defmodule SquidMeshTest do
       cancelled_at = DateTime.add(@read_model_visible_at, 1, :second)
 
       assert {:ok, %Snapshot{} = started} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_signal_cancel"},
                  runtime: :journal,
@@ -4151,7 +4268,7 @@ defmodule SquidMeshTest do
       cancelled_at = DateTime.add(@read_model_visible_at, 1, :second)
 
       assert {:ok, %Snapshot{} = started} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_public_signal_cancel"},
                  runtime: :journal,
@@ -4216,7 +4333,7 @@ defmodule SquidMeshTest do
         occurred_at = DateTime.add(@read_model_visible_at, 2, :second)
 
         assert {:ok, %Snapshot{}} =
-                 SquidMesh.start_run(
+                 SquidMesh.start(
                    workflow,
                    %{account_id: "acct_#{label}"},
                    runtime: :journal,
@@ -4281,9 +4398,9 @@ defmodule SquidMeshTest do
                SquidMesh.apply_signal(signal, :bad_opts)
     end
 
-    test "cancel_run/2 rejects stale claim completions after journal cancellation" do
+    test "cancel/2 rejects stale claim completions after journal cancellation" do
       assert {:ok, %Snapshot{} = started} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_stale_cancel"},
                  runtime: :journal,
@@ -4306,7 +4423,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, %Snapshot{status: :cancelled}} =
-               SquidMesh.cancel_run(started.run_id,
+               SquidMesh.cancel(started.run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue,
@@ -4325,14 +4442,14 @@ defmodule SquidMeshTest do
                )
     end
 
-    test "cancel_run/2 fences cancellation between claim and step execution" do
+    test "cancel/2 fences cancellation between claim and step execution" do
       parent = self()
 
       on_exit(fn -> :persistent_term.erase(:journal_gateway_run_hook) end)
       :persistent_term.put(:journal_gateway_run_hook, fn -> send(parent, :gateway_step_ran) end)
 
       assert {:ok, %Snapshot{} = started} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_claim_cancel"},
                  runtime: :journal,
@@ -4345,7 +4462,7 @@ defmodule SquidMeshTest do
         send(parent, :after_claim)
 
         assert {:ok, %Snapshot{status: :cancelled}} =
-                 SquidMesh.cancel_run(run_id,
+                 SquidMesh.cancel(run_id,
                    runtime: :journal,
                    journal_storage: @read_model_storage,
                    queue: @read_model_queue,
@@ -4371,9 +4488,9 @@ defmodule SquidMeshTest do
       refute_receive :gateway_step_ran
     end
 
-    test "cancel_run/2 clears journal manual state for paused runs" do
+    test "cancel/2 clears journal manual state for paused runs" do
       assert {:ok, %Snapshot{} = started} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  ApprovalWorkflow,
                  %{account_id: "acct_cancel_paused"},
                  runtime: :journal,
@@ -4394,7 +4511,7 @@ defmodule SquidMeshTest do
       assert %{step: "wait_for_review", kind: "approval"} = paused.manual_state
 
       assert {:ok, %Snapshot{} = cancelled} =
-               SquidMesh.cancel_run(paused.run_id,
+               SquidMesh.cancel(paused.run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue,
@@ -4406,9 +4523,9 @@ defmodule SquidMeshTest do
       assert cancelled.visible_attempts == []
     end
 
-    test "cancel_run/2 rejects terminal journal runs" do
+    test "cancel/2 rejects terminal journal runs" do
       assert {:ok, %Snapshot{} = started} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_cancel_terminal"},
                  runtime: :journal,
@@ -4426,16 +4543,16 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, {:invalid_transition, :completed, :cancelling}} =
-               SquidMesh.cancel_run(started.run_id,
+               SquidMesh.cancel(started.run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue
                )
     end
 
-    test "replay_run/2 creates a fresh journal run from source input" do
+    test "replay/2 creates a fresh journal run from source input" do
       assert {:ok, %Snapshot{} = source} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_replay"},
                  runtime: :journal,
@@ -4445,7 +4562,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, %Snapshot{} = replay} =
-               SquidMesh.replay_run(source.run_id,
+               SquidMesh.replay(source.run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue,
@@ -4471,9 +4588,9 @@ defmodule SquidMeshTest do
                replay.visible_attempts
     end
 
-    test "replay_run/2 blocks unsafe journal replays unless explicitly allowed" do
+    test "replay/2 blocks unsafe journal replays unless explicitly allowed" do
       assert {:ok, %Snapshot{} = source} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  IrreversibleWorkflow,
                  %{account_id: "acct_replay_unsafe"},
                  runtime: :journal,
@@ -4499,14 +4616,14 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, {:unsafe_replay, %{steps: [%{step: :capture_payment}]}}} =
-               SquidMesh.replay_run(source.run_id,
+               SquidMesh.replay(source.run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue
                )
 
       assert {:ok, %Snapshot{} = replay} =
-               SquidMesh.replay_run(source.run_id,
+               SquidMesh.replay(source.run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue,
@@ -4518,7 +4635,7 @@ defmodule SquidMeshTest do
       assert [%{step: "load_account"}] = replay.visible_attempts
     end
 
-    test "replay_run/2 uses persisted journal recovery policy when checking replay safety" do
+    test "replay/2 uses persisted journal recovery policy when checking replay safety" do
       run_id = Ecto.UUID.generate()
       runnable_key = "#{run_id}:check_gateway:1"
       {:ok, definition} = Definition.load(PaymentRecoveryWorkflow)
@@ -4563,16 +4680,16 @@ defmodule SquidMeshTest do
       assert {:ok, _thread} = Journal.append_entries(@read_model_storage, entries)
 
       assert {:error, {:unsafe_replay, %{steps: [%{step: :check_gateway}]}}} =
-               SquidMesh.replay_run(run_id,
+               SquidMesh.replay(run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue
                )
     end
 
-    test "replay_run/2 treats completed dispatch attempts as unsafe before run progression" do
+    test "replay/2 treats completed dispatch attempts as unsafe before run progression" do
       assert {:ok, %Snapshot{} = source} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  IrreversibleWorkflow,
                  %{account_id: "acct_replay_crash_window"},
                  runtime: :journal,
@@ -4643,7 +4760,7 @@ defmodule SquidMeshTest do
       assert {:ok, _thread} = Journal.append_entries(@read_model_storage, dispatch_entries)
 
       assert {:error, {:unsafe_replay, %{steps: [%{step: :capture_payment}]}}} =
-               SquidMesh.replay_run(source.run_id,
+               SquidMesh.replay(source.run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue
@@ -4652,7 +4769,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 persists recovery policy on retry runnables" do
       assert {:ok, %Snapshot{} = source} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalRetryWorkflow,
                  %{account_id: "acct_retry_replay"},
                  runtime: :journal,
@@ -4694,7 +4811,7 @@ defmodule SquidMeshTest do
              }
     end
 
-    test "replay_run/2 rejects completed journal runnables without persisted recovery policy" do
+    test "replay/2 rejects completed journal runnables without persisted recovery policy" do
       run_id = Ecto.UUID.generate()
       runnable_key = "#{run_id}:check_gateway:1"
       {:ok, definition} = Definition.load(PaymentRecoveryWorkflow)
@@ -4724,7 +4841,7 @@ defmodule SquidMeshTest do
       assert {:ok, _thread} = Journal.append_entries(@read_model_storage, entries)
 
       assert {:error, {:invalid_replay_source, {:missing_recovery, "check_gateway"}}} =
-               SquidMesh.replay_run(run_id,
+               SquidMesh.replay(run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  allow_irreversible: true,
@@ -4732,7 +4849,7 @@ defmodule SquidMeshTest do
                )
     end
 
-    test "replay_run/2 returns structured errors for malformed source workflow" do
+    test "replay/2 returns structured errors for malformed source workflow" do
       run_id = Ecto.UUID.generate()
 
       assert {:ok, run_started} =
@@ -4748,14 +4865,14 @@ defmodule SquidMeshTest do
       assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [run_started])
 
       assert {:error, {:invalid_replay_source, :workflow}} =
-               SquidMesh.replay_run(run_id,
+               SquidMesh.replay(run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue
                )
     end
 
-    test "replay_run/2 returns structured errors for invalid source triggers" do
+    test "replay/2 returns structured errors for invalid source triggers" do
       run_id = Ecto.UUID.generate()
       {:ok, definition} = Definition.load(PaymentRecoveryWorkflow)
 
@@ -4772,14 +4889,14 @@ defmodule SquidMeshTest do
       assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [run_started])
 
       assert {:error, {:invalid_replay_source, :trigger}} =
-               SquidMesh.replay_run(run_id,
+               SquidMesh.replay(run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue
                )
     end
 
-    test "replay_run/2 returns structured errors for missing source input" do
+    test "replay/2 returns structured errors for missing source input" do
       run_id = Ecto.UUID.generate()
       {:ok, definition} = Definition.load(PaymentRecoveryWorkflow)
 
@@ -4795,28 +4912,28 @@ defmodule SquidMeshTest do
       assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [run_started])
 
       assert {:error, {:invalid_replay_source, :missing_input}} =
-               SquidMesh.replay_run(run_id,
+               SquidMesh.replay(run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue
                )
     end
 
-    test "replay_run/2 returns structured journal errors for missing and malformed run ids" do
+    test "replay/2 returns structured journal errors for missing and malformed run ids" do
       assert {:error, :not_found} =
-               SquidMesh.replay_run(Ecto.UUID.generate(),
+               SquidMesh.replay(Ecto.UUID.generate(),
                  runtime: :journal,
                  journal_storage: @read_model_storage
                )
 
       assert {:error, :invalid_run_id} =
-               SquidMesh.replay_run("not-a-uuid",
+               SquidMesh.replay("not-a-uuid",
                  runtime: :journal,
                  journal_storage: @read_model_storage
                )
     end
 
-    test "replay_run/2 rejects journal runs with stale workflow definitions" do
+    test "replay/2 rejects journal runs with stale workflow definitions" do
       run_id = Ecto.UUID.generate()
       {:ok, current_definition} = Definition.load(VersionedPaymentRecoveryWorkflow)
       current_fingerprint = Definition.fingerprint(current_definition)
@@ -4850,28 +4967,28 @@ defmodule SquidMeshTest do
                  current_definition_version: "2026-05-26.payment-recovery-v2",
                  current_definition_fingerprint: ^current_fingerprint
                }}} =
-               SquidMesh.replay_run(run_id,
+               SquidMesh.replay(run_id,
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue
                )
     end
 
-    test "cancel_run/2 returns structured journal errors for missing and malformed run ids" do
+    test "cancel/2 returns structured journal errors for missing and malformed run ids" do
       assert {:error, :not_found} =
-               SquidMesh.cancel_run(Ecto.UUID.generate(),
+               SquidMesh.cancel(Ecto.UUID.generate(),
                  runtime: :journal,
                  journal_storage: @read_model_storage
                )
 
       assert {:error, :invalid_run_id} =
-               SquidMesh.cancel_run("not-a-uuid",
+               SquidMesh.cancel("not-a-uuid",
                  runtime: :journal,
                  journal_storage: @read_model_storage
                )
 
       assert {:error, {:invalid_option, {:now, :invalid}}} =
-               SquidMesh.cancel_run(Ecto.UUID.generate(),
+               SquidMesh.cancel(Ecto.UUID.generate(),
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  now: :not_a_datetime
@@ -4991,7 +5108,7 @@ defmodule SquidMeshTest do
                )
     end
 
-    test "start_run/3 rejects conflicting catalog facts before dispatch visibility" do
+    test "start/3 rejects conflicting catalog facts before dispatch visibility" do
       run_id = Ecto.UUID.generate()
 
       assert {:ok, bad_catalog_entry} =
@@ -5005,7 +5122,7 @@ defmodule SquidMeshTest do
       assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [bad_catalog_entry])
 
       assert {:error, {:journal_start_committed, ^run_id, {:conflicting_run_catalog, ^run_id}}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -5019,7 +5136,7 @@ defmodule SquidMeshTest do
                Journal.load_entries(@read_model_storage, {:dispatch, @read_model_queue})
     end
 
-    test "start_run/3 rejects conflicting run index facts before dispatch visibility" do
+    test "start/3 rejects conflicting run index facts before dispatch visibility" do
       run_id = Ecto.UUID.generate()
 
       assert {:ok, bad_index_entry} =
@@ -5033,7 +5150,7 @@ defmodule SquidMeshTest do
       assert {:ok, _thread} = Journal.append_entries(@read_model_storage, [bad_index_entry])
 
       assert {:error, {:journal_start_committed, ^run_id, {:conflicting_run_index, ^run_id}}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -5058,7 +5175,7 @@ defmodule SquidMeshTest do
       )
 
       assert {:ok, %Snapshot{} = started} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  now: @read_model_started_at
@@ -5102,7 +5219,7 @@ defmodule SquidMeshTest do
       run_id = Ecto.UUID.generate()
 
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  ManualAndScheduledDigestWorkflow,
                  :manual_digest,
                  %{chat_id: 123},
@@ -5154,7 +5271,7 @@ defmodule SquidMeshTest do
       delayed_at = DateTime.add(@read_model_visible_at, 2, :second)
 
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  WaitWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -5246,7 +5363,7 @@ defmodule SquidMeshTest do
       run_id = Ecto.UUID.generate()
 
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PauseWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -5304,7 +5421,7 @@ defmodule SquidMeshTest do
       assert graph_nodes["wait_for_approval"].current?
       assert graph_nodes["wait_for_approval"].manual_state == paused_snapshot.manual_state
 
-      assert {:error, :not_found} = SquidMesh.unblock_run(run_id, %{})
+      assert {:error, :not_found} = SquidMesh.resume(run_id, %{})
 
       assert {:ok, :none} =
                execute_journal_next(
@@ -5340,7 +5457,7 @@ defmodule SquidMeshTest do
       resumed_at_iso = DateTime.to_iso8601(resumed_at)
 
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PauseWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -5365,7 +5482,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, %Snapshot{} = resumed_snapshot} =
-               SquidMesh.unblock_run(
+               SquidMesh.resume(
                  run_id,
                  %{
                    actor: "ops_123",
@@ -5450,7 +5567,7 @@ defmodule SquidMeshTest do
              } = Enum.at(run_entries, 4)
 
       assert {:ok, %Snapshot{} = replayed_resume_snapshot} =
-               SquidMesh.unblock_run(
+               SquidMesh.resume(
                  run_id,
                  %{actor: "ops_123"},
                  runtime: :journal,
@@ -5492,17 +5609,15 @@ defmodule SquidMeshTest do
 
     test "journal runtime returns structured errors for invalid pause resume requests" do
       assert {:error, :not_found} =
-               SquidMesh.unblock_run(Ecto.UUID.generate(),
+               SquidMesh.resume(Ecto.UUID.generate(),
                  journal_storage: @read_model_storage
                )
 
       assert {:error, :not_found} =
-               SquidMesh.unblock_run(Ecto.UUID.generate(), %{},
-                 journal_storage: @read_model_storage
-               )
+               SquidMesh.resume(Ecto.UUID.generate(), %{}, journal_storage: @read_model_storage)
 
       assert {:error, :invalid_run_id} =
-               SquidMesh.unblock_run(
+               SquidMesh.resume(
                  "not-a-uuid",
                  %{},
                  runtime: :journal,
@@ -5512,7 +5627,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, :not_found} =
-               SquidMesh.unblock_run(
+               SquidMesh.resume(
                  Ecto.UUID.generate(),
                  %{},
                  runtime: :journal,
@@ -5524,7 +5639,7 @@ defmodule SquidMeshTest do
       run_id = Ecto.UUID.generate()
 
       assert {:ok, %Snapshot{}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PauseWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -5545,7 +5660,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, {:invalid_resume, %{actor: :invalid}}} =
-               SquidMesh.unblock_run(
+               SquidMesh.resume(
                  run_id,
                  %{actor: ""},
                  runtime: :journal,
@@ -5564,7 +5679,7 @@ defmodule SquidMeshTest do
       approved_at_iso = DateTime.to_iso8601(approved_at)
 
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  ApprovalWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -5603,7 +5718,7 @@ defmodule SquidMeshTest do
              }
 
       assert {:ok, %Snapshot{} = approved_snapshot} =
-               SquidMesh.approve_run(
+               SquidMesh.approve(
                  run_id,
                  %{actor: "ops_123", comment: "approved"},
                  runtime: :journal,
@@ -5684,7 +5799,7 @@ defmodule SquidMeshTest do
       approved_at = DateTime.add(@read_model_visible_at, 1, :second)
 
       assert {:ok, %Snapshot{}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  ApprovalWorkflow,
                  %{account_id: "acct_signal_approval"},
                  runtime: :journal,
@@ -5807,7 +5922,7 @@ defmodule SquidMeshTest do
       ])
 
       assert {:ok, %Snapshot{} = approved_snapshot} =
-               SquidMesh.approve_run(
+               SquidMesh.approve(
                  run_id,
                  %{actor: "ops_123", comment: "approved"},
                  runtime: :journal,
@@ -5839,7 +5954,7 @@ defmodule SquidMeshTest do
       rejected_at = DateTime.add(@read_model_visible_at, 1, :second)
 
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  ApprovalWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -5864,7 +5979,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, %Snapshot{} = rejected_snapshot} =
-               SquidMesh.reject_run(
+               SquidMesh.reject(
                  run_id,
                  %{actor: "ops_456", comment: "rejected"},
                  runtime: :journal,
@@ -5906,7 +6021,7 @@ defmodule SquidMeshTest do
       approved_at = DateTime.add(@read_model_visible_at, 1, :second)
 
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  ApprovalWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -5966,7 +6081,7 @@ defmodule SquidMeshTest do
       ])
 
       assert {:ok, %Snapshot{} = approved_snapshot} =
-               SquidMesh.approve_run(
+               SquidMesh.approve(
                  run_id,
                  %{actor: "ops_123"},
                  runtime: :journal,
@@ -5997,7 +6112,7 @@ defmodule SquidMeshTest do
       terminal_at = DateTime.add(@read_model_visible_at, 1, :second)
 
       assert {:ok, %Snapshot{}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  ApprovalWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -6026,7 +6141,7 @@ defmodule SquidMeshTest do
       ])
 
       assert {:error, {:invalid_transition, :cancelled, :running}} =
-               SquidMesh.approve_run(
+               SquidMesh.approve(
                  run_id,
                  %{actor: "ops_123"},
                  runtime: :journal,
@@ -6041,12 +6156,10 @@ defmodule SquidMeshTest do
 
     test "journal runtime returns structured errors for invalid approval controls" do
       assert {:error, {:invalid_review, %{actor: :required}}} =
-               SquidMesh.approve_run(Ecto.UUID.generate(), %{},
-                 journal_storage: @read_model_storage
-               )
+               SquidMesh.approve(Ecto.UUID.generate(), %{}, journal_storage: @read_model_storage)
 
       assert {:error, :invalid_run_id} =
-               SquidMesh.approve_run(
+               SquidMesh.approve(
                  "not-a-uuid",
                  %{actor: "ops_123"},
                  runtime: :journal,
@@ -6056,7 +6169,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, :not_found} =
-               SquidMesh.reject_run(
+               SquidMesh.reject(
                  Ecto.UUID.generate(),
                  %{actor: "ops_123"},
                  runtime: :journal,
@@ -6066,7 +6179,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, {:invalid_review, %{actor: :required}}} =
-               SquidMesh.approve_run(
+               SquidMesh.approve(
                  Ecto.UUID.generate(),
                  %{actor: ""},
                  runtime: :journal,
@@ -6081,7 +6194,7 @@ defmodule SquidMeshTest do
       resumed_at = DateTime.add(@read_model_visible_at, 1, :second)
 
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PauseWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -6133,7 +6246,7 @@ defmodule SquidMeshTest do
       ])
 
       assert {:ok, %Snapshot{} = resumed_snapshot} =
-               SquidMesh.unblock_run(
+               SquidMesh.resume(
                  run_id,
                  %{actor: "ops_123"},
                  runtime: :journal,
@@ -6163,7 +6276,7 @@ defmodule SquidMeshTest do
       terminal_at = DateTime.add(@read_model_visible_at, 1, :second)
 
       assert {:ok, %Snapshot{}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PauseWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -6192,7 +6305,7 @@ defmodule SquidMeshTest do
       ])
 
       assert {:error, {:invalid_transition, :cancelled, :running}} =
-               SquidMesh.unblock_run(
+               SquidMesh.resume(
                  run_id,
                  %{actor: "ops_123"},
                  runtime: :journal,
@@ -6210,7 +6323,7 @@ defmodule SquidMeshTest do
       recovery_at = DateTime.add(@read_model_visible_at, 1, :second)
 
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PauseWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -6300,7 +6413,7 @@ defmodule SquidMeshTest do
       recovery_at = DateTime.add(@read_model_visible_at, 1, :second)
 
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  ApprovalWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -6384,7 +6497,7 @@ defmodule SquidMeshTest do
       recovery_at = DateTime.add(@read_model_visible_at, 1, :second)
 
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  WaitWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -6448,7 +6561,7 @@ defmodule SquidMeshTest do
       delayed_at = DateTime.add(@read_model_visible_at, 4, :second)
 
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalDependencyWaitWorkflow,
                  %{account_id: "acct_123", invoice_id: "inv_456"},
                  runtime: :journal,
@@ -6563,7 +6676,7 @@ defmodule SquidMeshTest do
       recovery_at = DateTime.add(wait_finished_at, 1, :second)
 
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalDependencyWaitWorkflow,
                  %{account_id: "acct_123", invoice_id: "inv_456"},
                  runtime: :journal,
@@ -6656,7 +6769,7 @@ defmodule SquidMeshTest do
       delayed_at = DateTime.add(wait_finished_at, 2, :second)
 
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalRootWaitWorkflow,
                  %{invoice_id: "inv_456"},
                  runtime: :journal,
@@ -6738,7 +6851,7 @@ defmodule SquidMeshTest do
       delayed_at = DateTime.add(@read_model_visible_at, 2, :second)
 
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalRootWaitWorkflow,
                  %{invoice_id: "inv_456"},
                  runtime: :journal,
@@ -6815,7 +6928,7 @@ defmodule SquidMeshTest do
 
     test "inspect_run_graph/2 identifies claimed journal attempts as the current node" do
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -6882,7 +6995,7 @@ defmodule SquidMeshTest do
 
     test "journal runtime start can be rebuilt through inspection after process restart" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -6908,7 +7021,7 @@ defmodule SquidMeshTest do
 
     test "journal runtime start infers Ecto journal storage from the configured repo" do
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal
@@ -6918,18 +7031,18 @@ defmodule SquidMeshTest do
       assert snapshot.status == :running
     end
 
-    test "start_run/3 rejects unsupported runtime mode" do
+    test "start/3 rejects unsupported runtime mode" do
       assert {:error, {:invalid_option, {:runtime, :invalid}}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :unsupported
                )
     end
 
-    test "start_run/3 redacts invalid runtime values" do
+    test "start/3 redacts invalid runtime values" do
       assert {:error, reason} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: %{claim_token: "super-secret-token"}
@@ -6941,7 +7054,7 @@ defmodule SquidMeshTest do
 
     test "journal runtime start rejects removed public options" do
       assert {:error, {:invalid_option, {:journal_storage, String}}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -6949,7 +7062,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, {:invalid_option, {:journal_storage, Jido.Storage.File}}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -6957,7 +7070,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, {:invalid_option, {:journal_storage, String}}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -6965,7 +7078,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, {:invalid_option, {:queue, :invalid}}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -6974,7 +7087,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, {:invalid_option, {:run_id, :invalid}}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -6983,7 +7096,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, reason} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -7001,7 +7114,7 @@ defmodule SquidMeshTest do
       run_id = Ecto.UUID.generate()
 
       assert {:error, {:journal_start_committed, ^run_id, :load_failed}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -7016,7 +7129,7 @@ defmodule SquidMeshTest do
       run_id = Ecto.UUID.generate()
 
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -7029,7 +7142,7 @@ defmodule SquidMeshTest do
       assert snapshot.run_id == run_id
 
       assert {:ok, %Snapshot{} = duplicate_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -7054,7 +7167,7 @@ defmodule SquidMeshTest do
       run_id = Ecto.UUID.generate()
 
       assert {:ok, %Snapshot{}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -7065,7 +7178,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, :conflict} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_456"},
                  runtime: :journal,
@@ -7094,7 +7207,7 @@ defmodule SquidMeshTest do
       ])
 
       assert {:error, :conflict} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -7127,7 +7240,7 @@ defmodule SquidMeshTest do
       ])
 
       assert {:ok, %Snapshot{} = snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -7161,7 +7274,7 @@ defmodule SquidMeshTest do
         1..8
         |> Task.async_stream(
           fn index ->
-            SquidMesh.start_run(
+            SquidMesh.start(
               PaymentRecoveryWorkflow,
               %{account_id: "acct_#{index}"},
               runtime: :journal,
@@ -7195,7 +7308,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 runs and applies one visible journal attempt" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -7261,7 +7374,7 @@ defmodule SquidMeshTest do
       storage = {SquidMesh.Runtime.Journal.Storage.Ecto, repo: Repo}
 
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  RepoTransactionWorkflow,
                  :repo_transaction,
                  %{account_id: "acct_repo_txn"},
@@ -7309,7 +7422,7 @@ defmodule SquidMeshTest do
       queue = "repo-transaction-unsupported-#{System.unique_integer([:positive])}"
 
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  RepoTransactionWorkflow,
                  :repo_transaction,
                  %{account_id: "acct_repo_txn_unsupported"},
@@ -7339,7 +7452,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 plans and schedules the successor step after a journal completion" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  InvoiceReminderWorkflow,
                  %{account_id: "acct_123", invoice_id: "inv_456"},
                  runtime: :journal,
@@ -7396,7 +7509,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 plans the journal successor selected by a transition condition" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalConditionalWorkflow,
                  %{account_id: "acct_123", decision: "auto"},
                  runtime: :journal,
@@ -7461,7 +7574,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 evaluates journal conditions against accumulated context" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalAccumulatedConditionalWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -7516,7 +7629,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 records selected conditional error transitions to complete" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalConditionalErrorCompleteWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -7564,7 +7677,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 skips conditional error completion after a terminal conflict" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalConditionalErrorCompleteWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -7617,7 +7730,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 advances dependency workflows after prerequisites complete" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalDependencyWorkflow,
                  %{account_id: "acct_123", invoice_id: "inv_456"},
                  runtime: :journal,
@@ -7705,7 +7818,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 fails journal runs durably when successor named path input is missing" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalMissingPathWorkflow,
                  %{draft: %{}},
                  runtime: :journal,
@@ -7863,7 +7976,7 @@ defmodule SquidMeshTest do
       on_exit(fn -> :persistent_term.erase(:journal_dependency_invoice_hook) end)
 
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalDependencyWorkflow,
                  %{account_id: "acct_123", invoice_id: "inv_456"},
                  runtime: :journal,
@@ -7944,7 +8057,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 terminally fails dependency workflows after nonretryable root failure" do
       assert {:ok, %Snapshot{}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalDependencyFailureWorkflow,
                  %{account_id: "acct_123", invoice_id: "inv_456"},
                  runtime: :journal,
@@ -7981,7 +8094,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 returns none after the visible journal attempt is already applied" do
       assert {:ok, %Snapshot{}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -8025,7 +8138,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 recovers a completed attempt that crashed before run progression" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -8091,7 +8204,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 does not apply completed attempts after the run became terminal" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -8152,7 +8265,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 recovers a failed attempt that crashed before run progression" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalFailureWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -8216,7 +8329,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 recovers dispatch scheduling after run progression was committed" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  InvoiceReminderWorkflow,
                  %{account_id: "acct_123", invoice_id: "inv_456"},
                  runtime: :journal,
@@ -8367,7 +8480,7 @@ defmodule SquidMeshTest do
       run_id = Ecto.UUID.generate()
 
       assert {:ok, %Snapshot{run_id: ^run_id}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -8378,7 +8491,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:error, :conflict} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -8400,7 +8513,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 does not repeatedly recover failed attempts after an error transition is planned" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalErrorTransitionWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -8486,7 +8599,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 does not duplicate error transition progression after a run-thread conflict" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalErrorTransitionWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -8877,7 +8990,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 uses completion time for lease fencing" do
       assert {:ok, %Snapshot{}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -8911,7 +9024,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 retries terminal append after unrelated same-queue writes" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalConflictWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -8922,7 +9035,7 @@ defmodule SquidMeshTest do
 
       :persistent_term.put(:journal_run_conflict_hook, fn ->
         assert {:ok, %Snapshot{}} =
-                 SquidMesh.start_run(
+                 SquidMesh.start(
                    PaymentRecoveryWorkflow,
                    %{account_id: "acct_456"},
                    runtime: :journal,
@@ -8967,7 +9080,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 records durable failed-attempt facts" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalFailureWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -9028,7 +9141,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 schedules retry attempts through the journal dispatch projection" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalRetryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -9144,7 +9257,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 does not duplicate retry progression after a run-thread conflict" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalRetryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -9214,7 +9327,7 @@ defmodule SquidMeshTest do
 
     test "graph inspection serializes completed runs with details redacted by default" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  PaymentRecoveryWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,
@@ -9288,7 +9401,7 @@ defmodule SquidMeshTest do
 
     test "graph inspection serializes conditional selected and skipped routes" do
       assert {:ok, %Snapshot{} = started_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalConditionalWorkflow,
                  %{account_id: "acct_123", decision: "auto"},
                  runtime: :journal,
@@ -9338,7 +9451,7 @@ defmodule SquidMeshTest do
 
     test "graph inspection serializes dependency, paused, retrying, and failed states" do
       assert {:ok, %Snapshot{} = dependency_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalDependencyWorkflow,
                  %{account_id: "acct_123", invoice_id: "inv_456"},
                  runtime: :journal,
@@ -9397,7 +9510,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, %Snapshot{} = approval_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  ApprovalWorkflow,
                  %{account_id: "acct_456"},
                  runtime: :journal,
@@ -9435,7 +9548,7 @@ defmodule SquidMeshTest do
       assert approval_nodes["wait_for_review"].manual_state.step == "wait_for_review"
 
       assert {:ok, %Snapshot{} = retry_snapshot} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalRetryWorkflow,
                  %{account_id: "acct_789"},
                  runtime: :journal,
@@ -9500,7 +9613,7 @@ defmodule SquidMeshTest do
 
     test "execute_next/1 redacts secret-bearing action errors before persistence" do
       assert {:ok, %Snapshot{}} =
-               SquidMesh.start_run(
+               SquidMesh.start(
                  JournalSecretFailureWorkflow,
                  %{account_id: "acct_123"},
                  runtime: :journal,

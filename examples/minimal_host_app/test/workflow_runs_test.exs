@@ -446,7 +446,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert reconstructed_parent.child_runs == parent_history.child_runs
     assert reconstructed_child.parent_run == child_history.parent_run
 
-    assert {:ok, replayed_parent} = WorkflowRuns.replay_run(run.run_id)
+    assert {:ok, replayed_parent} = WorkflowRuns.replay(run.run_id)
     assert replayed_parent.replayed_from_run_id == run.run_id
     assert replayed_parent.child_runs == []
 
@@ -620,7 +620,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
         assert started_run.status == :running
         assert [_attempt | _] = started_run.visible_attempts
 
-        assert {:ok, %Snapshot{} = cancelled_run} = WorkflowRuns.cancel_run(started_run.run_id)
+        assert {:ok, %Snapshot{} = cancelled_run} = WorkflowRuns.cancel(started_run.run_id)
 
         assert cancelled_run.run_id == started_run.run_id
         assert cancelled_run.queue == queue
@@ -668,7 +668,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
         assert {:ok, %Snapshot{status: :completed} = completed_run} =
                  drain_default_journal_run(started_run.run_id, queue, 10)
 
-        assert {:ok, %Snapshot{} = replayed_run} = WorkflowRuns.replay_run(completed_run.run_id)
+        assert {:ok, %Snapshot{} = replayed_run} = WorkflowRuns.replay(completed_run.run_id)
 
         assert replayed_run.run_id != completed_run.run_id
         assert replayed_run.replayed_from_run_id == completed_run.run_id
@@ -728,7 +728,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert paused_run.manual_state.step == "wait_for_approval"
 
     assert {:ok, resumed_run} =
-             WorkflowRuns.approve_run(
+             WorkflowRuns.approve(
                run.run_id,
                %{actor: "ops_123", comment: "approved", metadata: %{ticket: "SUP-123"}}
              )
@@ -890,7 +890,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert paused_run.manual_state.step == "wait_for_approval"
 
     assert {:ok, resumed_run} =
-             WorkflowRuns.reject_run(run.run_id, %{actor: "ops_456", comment: "rejected"})
+             WorkflowRuns.reject(run.run_id, %{actor: "ops_456", comment: "rejected"})
 
     assert resumed_run.status == :running
     assert [%{step: "record_rejection", status: :available}] = resumed_run.visible_attempts

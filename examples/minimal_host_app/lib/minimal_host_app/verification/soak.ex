@@ -94,7 +94,7 @@ defmodule MinimalHostApp.Verification.Soak do
     successful_runs
     |> Enum.take(2)
     |> Enum.map(fn run ->
-      {:ok, replay_run} = WorkflowRuns.replay_run(run.run_id)
+      {:ok, replay_run} = WorkflowRuns.replay(run.run_id)
       :ok = RuntimeHarness.wait_for_execution()
 
       {:ok, completed_replay} =
@@ -140,7 +140,7 @@ defmodule MinimalHostApp.Verification.Soak do
     |> Enum.map(fn index ->
       {:ok, run} = WorkflowRuns.start_cancellable_wait(%{account_id: "acct_soak_cancel_#{index}"})
       :ok = RuntimeHarness.perform_scheduled_step!(run.run_id, "wait_for_cancellation")
-      {:ok, cancelling_run} = WorkflowRuns.cancel_run(run.run_id)
+      {:ok, cancelling_run} = WorkflowRuns.cancel(run.run_id)
 
       unless cancelling_run.status == :cancelling do
         raise "expected cancellation soak run to enter cancelling"

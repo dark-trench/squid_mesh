@@ -74,53 +74,47 @@ defmodule SquidMesh do
   defdelegate config!(overrides \\ []), to: Config, as: :load!
 
   @doc """
-  Starts a new workflow run with the given payload through the workflow's
-  default trigger.
-
-  The Jido journal runtime returns a projection-backed
-  `SquidMesh.ReadModel.Inspection.Snapshot`.
+  Starts a new workflow run through the workflow's default trigger.
   """
-  @spec start_run(module(), map()) ::
+  @spec start(module(), map()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error, Config.config_error()}
           | {:error, start_option_error()}
           | {:error, Starter.start_error()}
           | {:error, {:dispatch_failed, term()}}
-  def start_run(workflow, payload) when is_map(payload) do
-    start_run(workflow, payload, [])
-  end
+  def start(workflow, payload) when is_map(payload), do: start(workflow, payload, [])
 
-  @spec start_run(module(), map(), keyword()) ::
+  @doc """
+  Starts a new workflow run through the workflow's default trigger with runtime
+  overrides, or through a named trigger without runtime overrides.
+  """
+  @spec start(module(), map(), keyword()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error, Config.config_error()}
           | {:error, {:invalid_option, atom()}}
           | {:error, start_option_error()}
           | {:error, Starter.start_error()}
           | {:error, {:dispatch_failed, term()}}
-  def start_run(workflow, payload, overrides) when is_map(payload) and is_list(overrides) do
+  def start(workflow, payload, overrides) when is_map(payload) and is_list(overrides) do
     with :ok <- reject_public_start_options(overrides),
          {:ok, :journal} <- runtime(overrides) do
       start_default_run_with_runtime(:journal, workflow, payload, overrides)
     end
   end
 
-  def start_run(_workflow, _payload, overrides) when is_list(overrides) do
+  def start(_workflow, _payload, overrides) when is_list(overrides) do
     {:error, {:invalid_payload, :expected_map}}
   end
 
-  @doc """
-  Starts a new workflow run through a named trigger with the given payload.
-  """
-  @spec start_run(module(), atom(), map()) ::
+  @spec start(module(), atom(), map()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error, Config.config_error()}
           | {:error, start_option_error()}
           | {:error, Starter.start_error()}
           | {:error, {:dispatch_failed, term()}}
-  def start_run(workflow, trigger_name, payload)
-      when is_atom(trigger_name) and is_map(payload) do
-    start_run(workflow, trigger_name, payload, [])
-  end
+  def start(workflow, trigger_name, payload)
+      when is_atom(trigger_name) and is_map(payload),
+      do: start(workflow, trigger_name, payload, [])
 
   @doc """
   Starts a named trigger while applying runtime configuration overrides.
@@ -136,14 +130,14 @@ defmodule SquidMesh do
   `:wait` steps in transition and dependency workflows, and manual `:pause` or
   `:approval` boundaries.
   """
-  @spec start_run(module(), atom(), map(), keyword()) ::
+  @spec start(module(), atom(), map(), keyword()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error, Config.config_error()}
           | {:error, {:invalid_option, atom()}}
           | {:error, start_option_error()}
           | {:error, Starter.start_error()}
           | {:error, {:dispatch_failed, term()}}
-  def start_run(workflow, trigger_name, payload, overrides)
+  def start(workflow, trigger_name, payload, overrides)
       when is_atom(trigger_name) and is_map(payload) and is_list(overrides) do
     with :ok <- reject_public_start_options(overrides),
          {:ok, :journal} <- runtime(overrides) do
@@ -387,14 +381,14 @@ defmodule SquidMesh do
   @doc """
   Requests cancellation for an eligible workflow run.
   """
-  @spec cancel_run(Ecto.UUID.t(), keyword()) ::
+  @spec cancel(Ecto.UUID.t(), keyword()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
              | Cancellation.cancel_error()}
-  def cancel_run(run_id, overrides \\ []) do
+  def cancel(run_id, overrides \\ []) do
     with {:ok, :journal} <- runtime(overrides) do
       cancel_run_with_runtime(:journal, run_id, overrides)
     end
@@ -404,9 +398,9 @@ defmodule SquidMesh do
   Applies a Squid Mesh-native runtime command signal.
 
   Host applications can use this when they already normalize control requests
-  into `SquidMesh.Runtime.Signal` envelopes. Public wrapper functions such as
-  `cancel_run/2`, `unblock_run/3`, `approve_run/3`, and `reject_run/3` use the
-  same journal signal interpreter internally.
+  into `SquidMesh.Runtime.Signal` envelopes. Public control functions such as
+  `cancel/2`, `resume/3`, `approve/3`, and `reject/3` use the same journal
+  signal interpreter internally.
   """
   @spec apply_signal(Signal.t(), keyword()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
@@ -424,65 +418,50 @@ defmodule SquidMesh do
 
   @doc """
   Resumes a run that is intentionally paused for manual intervention.
-
-  This arity uses the configured runtime. By default, it resolves an inspectable
-  journal pause boundary using the inferred Ecto journal storage.
   """
-  @spec unblock_run(Ecto.UUID.t()) ::
+  @spec resume(Ecto.UUID.t()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
              | term()}
-  def unblock_run(run_id), do: unblock_run(run_id, %{}, [])
+  def resume(run_id), do: resume(run_id, %{}, [])
 
   @doc """
   Resumes a paused run with either configuration overrides or manual action
   attributes.
-
-  Pass a keyword list to override runtime configuration, or a map to provide
-  manual action attributes. Attribute maps are validated against the paused
-  step's manual action contract before the runtime appends resume events or
-  dispatches successor work.
   """
-  @spec unblock_run(Ecto.UUID.t(), keyword()) ::
+  @spec resume(Ecto.UUID.t(), keyword()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
              | term()}
-  def unblock_run(run_id, overrides) when is_list(overrides) do
-    unblock_run(run_id, %{}, overrides)
-  end
+  def resume(run_id, overrides) when is_list(overrides), do: resume(run_id, %{}, overrides)
 
-  @spec unblock_run(Ecto.UUID.t(), map()) ::
+  @spec resume(Ecto.UUID.t(), map()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
              | term()}
-  def unblock_run(run_id, attrs) when is_map(attrs) do
-    unblock_run(run_id, attrs, [])
-  end
+  def resume(run_id, attrs) when is_map(attrs), do: resume(run_id, attrs, [])
 
   @doc """
-  Resumes a paused run with manual action attributes and configuration overrides.
-
-  By default, this resolves an inspectable journal pause boundary and persists
-  the manual action attributes in journal resolution metadata. Pass
-  `journal_storage:` only when overriding the inferred Ecto storage boundary.
+  Resumes a paused run with manual action attributes and configuration
+  overrides.
   """
-  @spec unblock_run(Ecto.UUID.t(), map(), keyword()) ::
+  @spec resume(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
              | term()}
-  def unblock_run(run_id, attrs, overrides) when is_map(attrs) and is_list(overrides) do
+  def resume(run_id, attrs, overrides) when is_map(attrs) and is_list(overrides) do
     with {:ok, :journal} <- runtime(overrides),
          {:ok, signal} <- control_signal(:resume_run, run_id, attrs, overrides) do
       SignalInterpreter.apply(signal, journal_control_options(overrides))
@@ -494,19 +473,15 @@ defmodule SquidMesh do
 
   @doc """
   Approves a paused approval step and resumes the run through its success path.
-
-  By default, this resolves an inspectable journal approval boundary and
-  persists the decision as journal facts. Pass `journal_storage:` only when
-  overriding the inferred Ecto storage boundary.
   """
-  @spec approve_run(Ecto.UUID.t(), map(), keyword()) ::
+  @spec approve(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
              | term()}
-  def approve_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
+  def approve(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
     with {:ok, :journal} <- runtime(overrides),
          {:ok, signal} <- control_signal(:approve_run, run_id, attrs, overrides) do
       SignalInterpreter.apply(signal, journal_control_options(overrides))
@@ -518,19 +493,15 @@ defmodule SquidMesh do
 
   @doc """
   Rejects a paused approval step and resumes the run through its rejection path.
-
-  By default, this resolves an inspectable journal approval boundary and
-  persists the decision as journal facts. Pass `journal_storage:` only when
-  overriding the inferred Ecto storage boundary.
   """
-  @spec reject_run(Ecto.UUID.t(), map(), keyword()) ::
+  @spec reject(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
              | :invalid_run_id
              | Config.config_error()
              | term()}
-  def reject_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
+  def reject(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
     with {:ok, :journal} <- runtime(overrides),
          {:ok, signal} <- control_signal(:reject_run, run_id, attrs, overrides) do
       SignalInterpreter.apply(signal, journal_control_options(overrides))
@@ -547,7 +518,7 @@ defmodule SquidMesh do
   or non-compensatable step. Pass `allow_irreversible: true` only after an
   operator has reviewed the side effect and accepted re-execution.
   """
-  @spec replay_run(Ecto.UUID.t(), keyword()) ::
+  @spec replay(Ecto.UUID.t(), keyword()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
           | {:error,
              :not_found
@@ -555,7 +526,7 @@ defmodule SquidMesh do
              | Config.config_error()
              | Replay.replay_error()}
           | {:error, {:dispatch_failed, term()}}
-  def replay_run(run_id, overrides \\ []) do
+  def replay(run_id, overrides \\ []) do
     {replay_opts, config_overrides} = Keyword.split(overrides, [:allow_irreversible])
 
     with {:ok, :journal} <- runtime(config_overrides),

@@ -183,11 +183,11 @@ For deeper authoring rules, see [Workflow Authoring](workflow_authoring.md).
 ## Start A Run
 
 Manual triggers start through the public API. This workflow has one trigger, so
-`start_run/3` uses it as the default trigger.
+`start/3` uses it as the default trigger.
 
 ```elixir
 {:ok, run} =
-  SquidMesh.start_run(
+  SquidMesh.start(
     SquidMeshLivebook.RingErrandWorkflow,
     %{ring_id: "one-ring"},
     opts
@@ -381,7 +381,7 @@ end
 child_queue = "livebook-child"
 
 {:ok, nested_parent} =
-  SquidMesh.start_run(
+  SquidMesh.start(
     SquidMeshLivebook.NestedInviteWorkflow,
     %{
       party_id: "shire-party",
@@ -538,7 +538,7 @@ wakeup_opts = Keyword.merge(opts, queue: "livebook-wakeup", now: wakeup_time)
 wakeup_worker_opts = Keyword.put(wakeup_opts, :owner_id, "livebook-worker")
 
 {:ok, wakeup_run} =
-  SquidMesh.start_run(
+  SquidMesh.start(
     SquidMeshLivebook.GandalfRendezvousWorkflow,
     %{ring_id: "one-ring"},
     wakeup_opts
@@ -640,7 +640,7 @@ approval_opts = Keyword.put(opts, :queue, "livebook-approval")
 approval_worker_opts = Keyword.put(approval_opts, :owner_id, "livebook-worker")
 
 {:ok, approval_run} =
-  SquidMesh.start_run(
+  SquidMesh.start(
     SquidMeshLivebook.CouncilApprovalWorkflow,
     %{ring_id: "one-ring"},
     approval_opts
@@ -651,7 +651,7 @@ approval_worker_opts = Keyword.put(approval_opts, :owner_id, "livebook-worker")
 {:ok, paused_explanation} = SquidMesh.explain_run(approval_run.run_id, approval_opts)
 
 {:ok, resumed_run} =
-  SquidMesh.approve_run(
+  SquidMesh.approve(
     approval_run.run_id,
     %{actor: "ops_123", comment: "looks good"},
     approval_opts
@@ -673,7 +673,7 @@ approval_worker_opts = Keyword.put(approval_opts, :owner_id, "livebook-worker")
 ```
 
 The paused snapshot exposes `manual_state`, so a host UI can render the
-operator decision boundary. `approve_run/3` records the decision and makes the
+operator decision boundary. `approve/3` records the decision and makes the
 approval path visible. The next worker execution runs `record_council_approval`
 and finishes the workflow.
 

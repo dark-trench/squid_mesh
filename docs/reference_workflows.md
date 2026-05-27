@@ -72,7 +72,7 @@ transition :wait_for_approval, on: :error, to: :record_rejection
 
 The approval step is durable state in the journal. It is not a process waiting
 in memory. Host code resolves the boundary through public APIs such as
-`SquidMesh.approve_run/2` or `SquidMesh.reject_run/2`, and inspection history
+`SquidMesh.approve/2` or `SquidMesh.reject/2`, and inspection history
 keeps the pause and resolution facts visible for operator tools.
 
 ## Dependency Recovery

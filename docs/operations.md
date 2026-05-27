@@ -134,14 +134,14 @@ When a completed source run contains a step marked `irreversible: true` or
 `compensatable: false`, Squid Mesh blocks replay by default:
 
 ```elixir
-{:error, {:unsafe_replay, details}} = SquidMesh.replay_run(run_id)
+{:error, {:unsafe_replay, details}} = SquidMesh.replay(run_id)
 ```
 
 Operator tooling should show `details.steps` and require a deliberate decision
 before retrying. If the operator accepts the risk, pass the explicit override:
 
 ```elixir
-SquidMesh.replay_run(run_id, allow_irreversible: true)
+SquidMesh.replay(run_id, allow_irreversible: true)
 ```
 
 Use this path only after checking the external system or domain records. The

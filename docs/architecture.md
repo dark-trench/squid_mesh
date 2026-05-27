@@ -135,7 +135,7 @@ flowchart TB
     adapter --> storage
 ```
 
-1. A host application starts a run through `SquidMesh.start_run/2`, `start_run/3`, or `start_run/4`.
+1. A host application starts a run through `SquidMesh.start/2`, `start/3`, or `start/4`.
 2. Squid Mesh validates the workflow definition and payload.
 3. The journal runtime appends run and runnable facts to the host repo through
    the configured journal storage adapter.

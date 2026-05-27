@@ -429,7 +429,7 @@ defmodule MinimalHostApp.Smoke do
 
     with_journal_runtime_config(queue, fn ->
       with {:ok, started_run} <-
-             SquidMesh.start_run(
+             SquidMesh.start(
                MinimalHostApp.Workflows.DependencyRecovery,
                :dependency_recovery,
                attrs
@@ -495,7 +495,7 @@ defmodule MinimalHostApp.Smoke do
 
     with_journal_runtime_config(queue, fn ->
       with {:ok, started_run} <-
-             SquidMesh.start_run(
+             SquidMesh.start(
                MinimalHostApp.Workflows.DependencyRecovery,
                :dependency_recovery,
                attrs
@@ -536,12 +536,12 @@ defmodule MinimalHostApp.Smoke do
 
     with_journal_runtime_config(queue, fn ->
       with {:ok, started_run} <-
-             SquidMesh.start_run(
+             SquidMesh.start(
                MinimalHostApp.Workflows.DependencyRecovery,
                :dependency_recovery,
                attrs
              ),
-           {:ok, cancelled_run} <- SquidMesh.cancel_run(started_run.run_id),
+           {:ok, cancelled_run} <- SquidMesh.cancel(started_run.run_id),
            {:ok, inspected_run} <- SquidMesh.inspect_run(started_run.run_id),
            {:ok, :none} <- SquidMesh.execute_next(journal_run_execute_options()) do
         unless started_run.queue == queue and
@@ -594,7 +594,7 @@ defmodule MinimalHostApp.Smoke do
     try do
       with_journal_runtime_config(queue, fn ->
         with {:ok, started_run} <-
-               SquidMesh.start_run(
+               SquidMesh.start(
                  MinimalHostApp.Workflows.PaymentRecovery,
                  :payment_recovery,
                  attrs
@@ -602,7 +602,7 @@ defmodule MinimalHostApp.Smoke do
              {:ok, completed_run} <-
                drain_journal_run(started_run.run_id, @journal_run_attempts),
              {:ok, replayed_run} <-
-               SquidMesh.replay_run(completed_run.run_id, allow_irreversible: true),
+               SquidMesh.replay(completed_run.run_id, allow_irreversible: true),
              {:ok, completed_replay} <-
                drain_journal_run(replayed_run.run_id, @journal_run_attempts),
              {:ok, replay_graph} <- SquidMesh.inspect_run_graph(completed_replay.run_id) do
@@ -725,7 +725,7 @@ defmodule MinimalHostApp.Smoke do
          {:ok, explanation} <- WorkflowRuns.explain_run(run.run_id),
          :ok <- ensure_paused_approval_explanation(explanation),
          {:ok, resumed_run} <-
-           WorkflowRuns.approve_run(
+           WorkflowRuns.approve(
              run.run_id,
              %{actor: "ops_smoke", comment: "approved", metadata: %{ticket: "SMOKE-1"}}
            ),
@@ -962,7 +962,7 @@ defmodule MinimalHostApp.Smoke do
   defp run_cancellation_smoke do
     with {:ok, run} <- WorkflowRuns.start_cancellable_wait(%{account_id: "acct_demo"}),
          :ok <- wait_for_execution(),
-         {:ok, cancelling_run} <- WorkflowRuns.cancel_run(run.run_id),
+         {:ok, cancelling_run} <- WorkflowRuns.cancel(run.run_id),
          :ok <- ensure_cancelling(cancelling_run),
          {:ok, cancelled_run} <-
            RuntimeHarness.await_terminal_run(run.run_id, attempts: @poll_attempts) do
