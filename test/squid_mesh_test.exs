@@ -1427,6 +1427,43 @@ defmodule SquidMeshTest do
       assert completed.context.schedule_seen == completed.context.schedule
     end
 
+    test "apply_signal/2 starts cron-triggered journal runs from command signals" do
+      storage = {Jido.Storage.ETS, table: :squid_mesh_journal_cron_signal_test}
+      queue = "journal-cron-signal-test"
+      started_at = ~U[2026-05-15 00:00:00Z]
+
+      assert {:ok, %Signal{} = signal} =
+               Signal.start_cron(
+                 ScheduledContextWorkflow,
+                 :scheduled_capture,
+                 %{},
+                 metadata: %{source: "signal_interpreter"},
+                 occurred_at: started_at
+               )
+
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: storage,
+                 queue: queue
+               )
+
+      assert started.trigger == "scheduled_capture"
+      assert started.queue == queue
+
+      assert [
+               %{
+                 signal_type: "start_cron",
+                 metadata: %{source: "signal_interpreter"},
+                 payload: %{
+                   workflow: "Elixir.SquidMeshTest.ScheduledContextWorkflow",
+                   trigger: "scheduled_capture",
+                   input: %{}
+                 }
+               }
+             ] = started.command_history
+    end
+
     test "idempotent cron starts reuse one journal run for duplicate schedule delivery" do
       storage = {Jido.Storage.ETS, table: :squid_mesh_journal_cron_idempotency_test}
       queue = "journal-cron-idempotency-test"
@@ -1985,6 +2022,51 @@ defmodule SquidMeshTest do
       assert SquidMesh.Runtime.RunIndexProjection.run_ids(run_index_projection) == [
                snapshot.run_id
              ]
+    end
+
+    test "apply_signal/2 starts journal runs through a durable signal receipt" do
+      assert {:ok, %Signal{} = signal} =
+               Signal.start_run(
+                 PaymentRecoveryWorkflow,
+                 :gateway_recovery,
+                 %{account_id: "acct_signal_start"},
+                 metadata: %{source: "signal_interpreter"},
+                 idempotency_key: "start-signal-1",
+                 occurred_at: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = snapshot} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert snapshot.workflow == Atom.to_string(PaymentRecoveryWorkflow)
+      assert snapshot.queue == @read_model_queue
+      assert snapshot.reason == :attempt_visible
+
+      assert [
+               %{
+                 signal_type: "start_run",
+                 payload: %{
+                   workflow: workflow,
+                   trigger: "gateway_recovery",
+                   input: %{account_id: "acct_signal_start"}
+                 },
+                 metadata: %{source: "signal_interpreter"},
+                 idempotency_key: "start-signal-1",
+                 occurred_at: @read_model_started_at
+               }
+             ] = snapshot.command_history
+
+      assert workflow == Atom.to_string(PaymentRecoveryWorkflow)
+
+      assert [
+               %{type: :run_signal_received},
+               %{type: :run_started},
+               %{type: :runnables_planned}
+             ] = raw_run_entries(snapshot.run_id, @read_model_storage)
     end
 
     test "start/3 starts a default-trigger journal run" do
@@ -4586,6 +4668,50 @@ defmodule SquidMeshTest do
 
       assert [%{step: "check_gateway", input: %{account_id: "acct_replay"}}] =
                replay.visible_attempts
+    end
+
+    test "apply_signal/2 replays journal runs through a durable signal receipt" do
+      replayed_at = DateTime.add(@read_model_started_at, 1, :second)
+
+      assert {:ok, %Snapshot{} = source} =
+               SquidMesh.start(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_signal_replay"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Signal{} = signal} =
+               Signal.replay_run(source.run_id,
+                 metadata: %{source: "signal_interpreter"},
+                 idempotency_key: "replay-signal-1",
+                 occurred_at: replayed_at
+               )
+
+      assert {:ok, %Snapshot{} = replay} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert replay.run_id != source.run_id
+      assert replay.replayed_from_run_id == source.run_id
+      assert replay.input == %{account_id: "acct_signal_replay"}
+
+      assert [
+               %{
+                 signal_type: "replay_run",
+                 payload: %{run_id: source_run_id, allow_irreversible: false},
+                 metadata: %{source: "signal_interpreter"},
+                 idempotency_key: "replay-signal-1",
+                 occurred_at: ^replayed_at
+               }
+             ] = replay.command_history
+
+      assert source_run_id == source.run_id
     end
 
     test "replay/2 blocks unsafe journal replays unless explicitly allowed" do

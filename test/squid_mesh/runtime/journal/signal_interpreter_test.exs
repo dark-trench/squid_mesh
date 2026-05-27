@@ -8,10 +8,28 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreterTest do
 
   @run_id "3c82d86d-31a6-4d57-9e41-4f5c95125be6"
 
-  test "rejects unsupported runtime command signals" do
-    assert {:ok, %Signal{} = signal} = Signal.replay_run(@run_id)
+  test "validates malformed supported runtime command signals" do
+    for type <- [:start_run, :start_cron, :replay_run] do
+      signal = %Signal{
+        type: type,
+        payload: %{},
+        metadata: %{},
+        occurred_at: DateTime.utc_now()
+      }
 
-    assert {:error, {:unsupported_signal, :replay_run}} =
+      assert {:error, {:invalid_signal, ^type}} = SignalInterpreter.apply(signal, [])
+    end
+  end
+
+  test "rejects unsupported runtime command signals" do
+    signal = %Signal{
+      type: :unknown_command,
+      payload: %{},
+      metadata: %{},
+      occurred_at: DateTime.utc_now()
+    }
+
+    assert {:error, {:unsupported_signal, :unknown_command}} =
              SignalInterpreter.apply(signal, [])
   end
 

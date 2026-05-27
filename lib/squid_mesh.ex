@@ -18,7 +18,6 @@ defmodule SquidMesh do
   alias SquidMesh.Runtime.Journal.Replay
   alias SquidMesh.Runtime.Journal.SignalInterpreter
   alias SquidMesh.Runtime.Journal.Starter
-  alias SquidMesh.Runtime.ScheduleIdentity
   alias SquidMesh.Runtime.Signal
 
   @read_models [:read_model]
@@ -398,9 +397,9 @@ defmodule SquidMesh do
   Applies a Squid Mesh-native runtime command signal.
 
   Host applications can use this when they already normalize control requests
-  into `SquidMesh.Runtime.Signal` envelopes. Public control functions such as
-  `cancel/2`, `resume/3`, `approve/3`, and `reject/3` use the same journal
-  signal interpreter internally.
+  into `SquidMesh.Runtime.Signal` envelopes. Public runtime functions such as
+  `start/3`, `start/4`, `cancel/2`, `resume/3`, `approve/3`, `reject/3`, and
+  `replay/2` use the same journal signal interpreter internally.
   """
   @spec apply_signal(Signal.t(), keyword()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
@@ -563,15 +562,25 @@ defmodule SquidMesh do
   end
 
   defp replay_run_with_runtime(:journal, run_id, replay_opts, config_overrides) do
-    Replay.replay(run_id, replay_opts, journal_control_options(config_overrides))
+    with {:ok, signal_opts} <- runtime_signal_options(config_overrides),
+         {:ok, signal} <-
+           Signal.replay_run(
+             run_id,
+             Keyword.merge(signal_opts, Keyword.take(replay_opts, [:allow_irreversible]))
+           ) do
+      SignalInterpreter.apply(signal, journal_control_options(config_overrides))
+    else
+      {:error, {:invalid_signal, reason}} -> {:error, public_signal_error(reason)}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp start_default_run_with_runtime(:journal, workflow, payload, overrides) do
-    Starter.start_run(workflow, nil, payload, journal_start_options(overrides))
+    start_signal_with_runtime(workflow, nil, payload, %{}, overrides)
   end
 
   defp start_triggered_run_with_runtime(:journal, workflow, trigger_name, payload, overrides) do
-    Starter.start_run(workflow, trigger_name, payload, journal_start_options(overrides))
+    start_signal_with_runtime(workflow, trigger_name, payload, %{}, overrides)
   end
 
   defp start_initial_context_run_with_runtime(
@@ -582,14 +591,76 @@ defmodule SquidMesh do
          initial_context,
          overrides
        ) do
-    with {:ok, opts} <-
-           journal_initial_context_start_options(
-             workflow,
-             trigger_name,
-             initial_context,
-             overrides
-           ) do
-      Starter.start_run(workflow, trigger_name, payload, opts)
+    start_signal_with_runtime(workflow, trigger_name, payload, initial_context, overrides)
+  end
+
+  defp start_signal_with_runtime(workflow, trigger_name, payload, initial_context, overrides) do
+    with {:ok, signal_opts} <- runtime_signal_options(overrides),
+         {:ok, signal_opts} <- maybe_put_schedule_idempotency(signal_opts, initial_context),
+         {:ok, signal} <-
+           start_signal(workflow, trigger_name, payload, initial_context, signal_opts) do
+      overrides =
+        overrides
+        |> journal_start_options()
+        |> Keyword.put(:initial_context, initial_context)
+
+      SignalInterpreter.apply(signal, overrides)
+    else
+      {:error, {:invalid_signal, reason}} -> {:error, public_signal_error(reason)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp start_signal(workflow, trigger_name, payload, initial_context, signal_opts) do
+    if schedule_context?(initial_context) do
+      Signal.start_cron(workflow, trigger_name, payload, signal_opts)
+    else
+      Signal.start_run(workflow, trigger_name, payload, signal_opts)
+    end
+  end
+
+  defp schedule_context?(context) when is_map(context) do
+    case schedule_context(context) do
+      schedule when is_map(schedule) -> map_size(schedule) > 0
+      _other -> false
+    end
+  end
+
+  defp maybe_put_schedule_idempotency(signal_opts, context) when is_map(context) do
+    context
+    |> schedule_context()
+    |> schedule_receipt_idempotency_key()
+    |> case do
+      {:ok, nil} -> {:ok, signal_opts}
+      {:ok, idempotency_key} -> {:ok, Keyword.put(signal_opts, :idempotency_key, idempotency_key)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp schedule_receipt_idempotency_key(schedule) when is_map(schedule) do
+    case schedule_value(schedule, :idempotency_key) do
+      idempotency_key when is_binary(idempotency_key) ->
+        {:ok, idempotency_key}
+
+      nil ->
+        case schedule_value(schedule, :signal_id) do
+          signal_id when is_binary(signal_id) -> {:ok, signal_id}
+          nil -> {:ok, nil}
+          _invalid -> {:error, {:invalid_option, {:schedule_idempotency_key, :invalid}}}
+        end
+
+      _invalid ->
+        {:error, {:invalid_option, {:schedule_idempotency_key, :invalid}}}
+    end
+  end
+
+  defp schedule_receipt_idempotency_key(_schedule), do: {:ok, nil}
+
+  defp runtime_signal_options(overrides) do
+    case Keyword.fetch(overrides, :now) do
+      {:ok, %DateTime{} = now} -> {:ok, [occurred_at: now]}
+      {:ok, _invalid} -> {:error, {:invalid_option, {:now, :invalid}}}
+      :error -> {:ok, []}
     end
   end
 
@@ -653,43 +724,6 @@ defmodule SquidMesh do
 
   defp public_signal_error(reason), do: {:invalid_signal, reason}
 
-  defp journal_initial_context_start_options(workflow, trigger_name, initial_context, overrides) do
-    opts =
-      overrides
-      |> journal_start_options()
-      |> Keyword.put(:initial_context, initial_context)
-
-    with {:ok, idempotency_key} <- schedule_idempotency_key(initial_context) do
-      case idempotency_key do
-        nil ->
-          {:ok, opts}
-
-        idempotency_key ->
-          opts =
-            opts
-            |> Keyword.put(:run_id, schedule_run_id(workflow, trigger_name, idempotency_key))
-            |> Keyword.put(:duplicate_schedule_start, true)
-
-          {:ok, opts}
-      end
-    end
-  end
-
-  defp schedule_idempotency_key(context) when is_map(context) do
-    context
-    |> schedule_context()
-    |> schedule_value(:idempotency_key)
-    |> validate_schedule_idempotency_key()
-  end
-
-  defp validate_schedule_idempotency_key(nil), do: {:ok, nil}
-
-  defp validate_schedule_idempotency_key(key) when is_binary(key), do: {:ok, key}
-
-  defp validate_schedule_idempotency_key(_key) do
-    {:error, {:invalid_option, {:schedule_idempotency_key, :invalid}}}
-  end
-
   defp schedule_context(context) do
     case Map.fetch(context, :schedule) do
       {:ok, schedule} -> schedule
@@ -702,16 +736,6 @@ defmodule SquidMesh do
       {:ok, value} -> value
       :error -> Map.get(schedule, Atom.to_string(key))
     end
-  end
-
-  defp schedule_value(_schedule, _key), do: nil
-
-  defp schedule_run_id(workflow, trigger_name, idempotency_key) do
-    workflow_name = SquidMesh.Workflow.Definition.serialize_workflow(workflow)
-    trigger = SquidMesh.Workflow.Definition.serialize_trigger(trigger_name)
-
-    {:ok, run_id} = ScheduleIdentity.run_id(workflow_name, trigger, idempotency_key)
-    run_id
   end
 
   defp reject_public_start_options(overrides) do

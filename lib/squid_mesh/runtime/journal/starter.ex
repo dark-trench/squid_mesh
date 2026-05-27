@@ -25,6 +25,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   alias SquidMesh.Runtime.Journal.Options
   alias SquidMesh.Runtime.RunCatalogProjection
   alias SquidMesh.Runtime.RunIndexProjection
+  alias SquidMesh.Runtime.Signal
   alias SquidMesh.Runtime.WorkflowAgent
   alias SquidMesh.Runtime.WorkflowAgent.Projection
   alias SquidMesh.Workflow.Definition
@@ -119,7 +120,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
              %{
                run_id: run_id,
                payload: start_signal_payload(opts, workflow, trigger, input),
-               metadata: %{},
+               metadata: start_signal_metadata(opts),
                idempotency_key: start_signal_idempotency_key(opts)
              },
              now
@@ -145,33 +146,68 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   end
 
   defp start_signal_type(opts) do
-    cond do
-      replayed_from_run_id(opts) -> :replay_run
-      schedule_context?(initial_context(opts)) -> :start_cron
-      true -> :start_run
+    case command_signal(opts) do
+      %Signal{type: type} ->
+        type
+
+      nil ->
+        cond do
+          replayed_from_run_id(opts) -> :replay_run
+          schedule_context?(initial_context(opts)) -> :start_cron
+          true -> :start_run
+        end
     end
   end
 
   defp start_signal_idempotency_key(opts) do
-    context = initial_context(opts)
+    case command_signal(opts) do
+      %Signal{idempotency_key: idempotency_key} when is_binary(idempotency_key) ->
+        idempotency_key
 
-    case schedule_idempotency_key(context) do
-      nil -> schedule_signal_id(context)
-      idempotency_key -> idempotency_key
+      _no_signal_key ->
+        context = initial_context(opts)
+
+        case schedule_idempotency_key(context) do
+          nil -> schedule_signal_id(context)
+          idempotency_key -> idempotency_key
+        end
     end
   end
 
   defp start_signal_payload(opts, workflow, trigger, input) do
-    case replayed_from_run_id(opts) do
-      run_id when is_binary(run_id) ->
-        %{run_id: run_id, allow_irreversible: replay_allow_irreversible?(opts)}
+    case command_signal(opts) do
+      %Signal{type: :start_run, payload: %{trigger: nil} = payload} ->
+        Map.put(payload, :trigger, Atom.to_string(Map.fetch!(trigger, :name)))
 
-      _not_replay ->
-        %{
-          workflow: Definition.serialize_workflow(workflow),
-          trigger: Atom.to_string(Map.fetch!(trigger, :name)),
-          input: input
-        }
+      %Signal{payload: payload} ->
+        payload
+
+      nil ->
+        case replayed_from_run_id(opts) do
+          run_id when is_binary(run_id) ->
+            %{run_id: run_id, allow_irreversible: replay_allow_irreversible?(opts)}
+
+          _not_replay ->
+            %{
+              workflow: Definition.serialize_workflow(workflow),
+              trigger: Atom.to_string(Map.fetch!(trigger, :name)),
+              input: input
+            }
+        end
+    end
+  end
+
+  defp start_signal_metadata(opts) do
+    case command_signal(opts) do
+      %Signal{metadata: metadata} -> metadata
+      nil -> %{}
+    end
+  end
+
+  defp command_signal(opts) do
+    case Keyword.get(opts, :command_signal) do
+      %Signal{} = signal -> signal
+      _none -> nil
     end
   end
 
