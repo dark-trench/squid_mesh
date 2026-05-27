@@ -62,6 +62,8 @@ defmodule MinimalHostApp.WorkflowRuns do
 
   @type listing_result :: SquidMesh.ReadModel.Listing.Summary.t()
 
+  alias SquidMesh.Runtime.Signal
+
   @spec start_payment_recovery(payment_recovery_attrs()) ::
           {:ok, run_result()} | {:error, term()}
   def start_payment_recovery(attrs) when is_map(attrs) do
@@ -149,25 +151,34 @@ defmodule MinimalHostApp.WorkflowRuns do
 
   @spec cancel_run(Ecto.UUID.t()) :: {:ok, run_result()} | {:error, term()}
   def cancel_run(run_id) do
-    SquidMesh.cancel_run(run_id)
+    with {:ok, signal} <-
+           Signal.cancel_run(run_id, metadata: %{source: "minimal_host_app.workflow_runs"}) do
+      SquidMesh.apply_signal(signal)
+    end
   end
 
   @spec unblock_run(Ecto.UUID.t()) :: {:ok, run_result()} | {:error, term()}
-  def unblock_run(run_id), do: SquidMesh.unblock_run(run_id)
+  def unblock_run(run_id), do: unblock_run(run_id, %{})
 
   @spec unblock_run(Ecto.UUID.t(), map()) :: {:ok, run_result()} | {:error, term()}
   def unblock_run(run_id, attrs) when is_map(attrs) do
-    SquidMesh.unblock_run(run_id, attrs)
+    with {:ok, signal} <- Signal.resume_run(run_id, attrs) do
+      SquidMesh.apply_signal(signal)
+    end
   end
 
   @spec approve_run(Ecto.UUID.t(), map()) :: {:ok, run_result()} | {:error, term()}
   def approve_run(run_id, attrs) when is_map(attrs) do
-    SquidMesh.approve_run(run_id, attrs)
+    with {:ok, signal} <- Signal.approve_run(run_id, attrs) do
+      SquidMesh.apply_signal(signal)
+    end
   end
 
   @spec reject_run(Ecto.UUID.t(), map()) :: {:ok, run_result()} | {:error, term()}
   def reject_run(run_id, attrs) when is_map(attrs) do
-    SquidMesh.reject_run(run_id, attrs)
+    with {:ok, signal} <- Signal.reject_run(run_id, attrs) do
+      SquidMesh.apply_signal(signal)
+    end
   end
 
   @spec replay_run(Ecto.UUID.t()) :: {:ok, run_result()} | {:error, term()}

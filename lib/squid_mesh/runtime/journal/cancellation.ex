@@ -15,6 +15,7 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
   alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.Journal.CommandReceipt
   alias SquidMesh.Runtime.Journal.Options
+  alias SquidMesh.Runtime.Signal
   alias SquidMesh.Runtime.WorkflowAgent
   alias SquidMesh.Runtime.WorkflowAgent.Projection
 
@@ -46,24 +47,55 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
 
   def cancel(_run_id, _opts), do: {:error, :invalid_run_id}
 
-  defp cancel_or_repair(_storage, _run_id, _now, 0), do: {:error, :conflict}
-
-  defp cancel_or_repair(storage, run_id, %DateTime{} = now, retries_left) do
-    with {:ok, workflow_agent} <- rebuild_workflow_agent(storage, run_id),
-         :ok <- cancellable?(storage, workflow_agent),
-         {:ok, command_receipt} <- cancel_command_receipt(run_id, now),
-         {:ok, terminal_entry} <- run_terminal_entry(run_id, :cancelled, now) do
-      append_cancellation(
-        storage,
-        workflow_agent,
-        [command_receipt, terminal_entry],
-        now,
-        retries_left
+  @doc false
+  @spec apply_signal(Signal.t(), keyword()) ::
+          {:ok, Inspection.Snapshot.t()} | {:error, cancel_error() | {:invalid_signal, term()}}
+  def apply_signal(
+        %Signal{
+          type: :cancel_run,
+          payload: %{run_id: run_id},
+          occurred_at: %DateTime{} = now
+        } = signal,
+        opts
       )
+      when is_binary(run_id) and is_list(opts) do
+    with {:ok, storage} <- journal_storage(opts),
+         {:ok, queue} <- queue(opts),
+         {:ok, _workflow_agent} <-
+           cancel_or_repair(storage, signal_command(run_id, now, signal), @run_append_retries) do
+      Inspection.snapshot(storage, run_id, queue: queue, now: now)
     end
   end
 
-  defp append_cancellation(storage, workflow_agent, entries, now, retries_left)
+  def apply_signal(%Signal{type: :cancel_run}, _opts),
+    do: {:error, {:invalid_signal, :cancel_run}}
+
+  def apply_signal(%Signal{type: type}, _opts), do: {:error, {:unsupported_signal, type}}
+  def apply_signal(_signal, _opts), do: {:error, :invalid_signal}
+
+  defp cancel_or_repair(_storage, _command, 0), do: {:error, :conflict}
+
+  defp cancel_or_repair(
+         storage,
+         %{run_id: run_id, occurred_at: %DateTime{} = now} = command,
+         retries_left
+       ) do
+    with {:ok, workflow_agent} <- rebuild_workflow_agent(storage, run_id) do
+      cancel_or_ignore_duplicate(storage, workflow_agent, command, now, retries_left)
+    end
+  end
+
+  defp cancel_or_repair(storage, run_id, %DateTime{} = now, retries_left) do
+    cancel_or_repair(storage, signal_command(run_id, now, nil), retries_left)
+  end
+
+  defp append_cancellation(
+         storage,
+         workflow_agent,
+         entries,
+         %{occurred_at: %DateTime{} = now} = command,
+         retries_left
+       )
        when is_list(entries) do
     case Journal.append_entries(storage, entries, expected_rev: workflow_agent.state.thread_rev) do
       {:ok, _thread} ->
@@ -75,7 +107,8 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
         end
 
       {:error, :conflict} ->
-        cancel_or_repair(storage, workflow_agent.state.run_id, now, retries_left - 1)
+        retry_command = %{command | run_id: workflow_agent.state.run_id}
+        cancel_or_repair(storage, retry_command, retries_left - 1)
 
       {:error, _reason} = error ->
         error
@@ -92,6 +125,28 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
       {:error, {:invalid_transition, status, :cancelling}}
     else
       linked_children_started?(storage, projection)
+    end
+  end
+
+  defp cancel_or_ignore_duplicate(storage, workflow_agent, command, now, retries_left) do
+    if duplicate_cancel_signal?(workflow_agent, command) do
+      {:ok, workflow_agent}
+    else
+      cancel_workflow_agent(storage, workflow_agent, command, now, retries_left)
+    end
+  end
+
+  defp cancel_workflow_agent(storage, workflow_agent, command, %DateTime{} = now, retries_left) do
+    with :ok <- cancellable?(storage, workflow_agent),
+         {:ok, command_receipt} <- cancel_command_receipt(command),
+         {:ok, terminal_entry} <- run_terminal_entry(command.run_id, :cancelled, now) do
+      append_cancellation(
+        storage,
+        workflow_agent,
+        [command_receipt, terminal_entry],
+        command,
+        retries_left
+      )
     end
   end
 
@@ -125,6 +180,20 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
     {:error, {:invalid_transition, :child_starting, :cancelling}}
   end
 
+  defp duplicate_cancel_signal?(
+         %Agent{agent_module: WorkflowAgent, state: %{projection: %Projection{} = projection}},
+         %{signal: %Signal{idempotency_key: idempotency_key}}
+       )
+       when is_binary(idempotency_key) do
+    Projection.status(projection) == :cancelled and
+      Enum.any?(Projection.command_history(projection), fn command ->
+        Map.get(command, :signal_type) == "cancel_run" and
+          Map.get(command, :idempotency_key) == idempotency_key
+      end)
+  end
+
+  defp duplicate_cancel_signal?(_workflow_agent, _command), do: false
+
   defp child_run_id(child_run) when is_map(child_run) do
     Map.get(child_run, :child_run_id) || Map.get(child_run, "child_run_id")
   end
@@ -147,8 +216,27 @@ defmodule SquidMesh.Runtime.Journal.Cancellation do
     })
   end
 
-  defp cancel_command_receipt(run_id, %DateTime{} = now) do
+  defp cancel_command_receipt(%{signal: %Signal{} = signal}) do
+    run_id = Map.fetch!(signal.payload, :run_id)
+
+    CommandReceipt.new(
+      :cancel_run,
+      %{
+        run_id: run_id,
+        payload: signal.payload,
+        metadata: signal.metadata,
+        idempotency_key: signal.idempotency_key
+      },
+      signal.occurred_at
+    )
+  end
+
+  defp cancel_command_receipt(%{run_id: run_id, occurred_at: %DateTime{} = now}) do
     CommandReceipt.new(:cancel_run, %{run_id: run_id, payload: %{run_id: run_id}}, now)
+  end
+
+  defp signal_command(run_id, %DateTime{} = now, signal) do
+    %{run_id: run_id, occurred_at: now, signal: signal}
   end
 
   defp run_id(run_id) do

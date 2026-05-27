@@ -555,6 +555,13 @@ defmodule MinimalHostApp.Smoke do
           raise "unexpected journal cancellation smoke result"
         end
 
+        unless Enum.map(cancelled_run.command_history, & &1.signal_type) == [
+                 "start_run",
+                 "cancel_run"
+               ] do
+          raise "unexpected journal cancellation command history"
+        end
+
         cancelled_run
       else
         {:error, reason} ->

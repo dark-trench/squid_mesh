@@ -14,11 +14,12 @@ defmodule SquidMesh do
   alias SquidMesh.Runtime.Journal.Cancellation
   alias SquidMesh.Runtime.Journal.ChildStarter
   alias SquidMesh.Runtime.Journal.Executor
-  alias SquidMesh.Runtime.Journal.ManualControl
   alias SquidMesh.Runtime.Journal.Options
   alias SquidMesh.Runtime.Journal.Replay
+  alias SquidMesh.Runtime.Journal.SignalInterpreter
   alias SquidMesh.Runtime.Journal.Starter
   alias SquidMesh.Runtime.ScheduleIdentity
+  alias SquidMesh.Runtime.Signal
 
   @read_models [:read_model]
   @runtimes [:journal]
@@ -400,6 +401,28 @@ defmodule SquidMesh do
   end
 
   @doc """
+  Applies a Squid Mesh-native runtime command signal.
+
+  Host applications can use this when they already normalize control requests
+  into `SquidMesh.Runtime.Signal` envelopes. Public wrapper functions such as
+  `cancel_run/2`, `unblock_run/3`, `approve_run/3`, and `reject_run/3` use the
+  same journal signal interpreter internally.
+  """
+  @spec apply_signal(Signal.t(), keyword()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error, Config.config_error() | term()}
+  def apply_signal(signal, overrides \\ [])
+
+  def apply_signal(%Signal{} = signal, overrides) when is_list(overrides) do
+    with {:ok, :journal} <- runtime(overrides) do
+      SignalInterpreter.apply(signal, journal_control_options(overrides))
+    end
+  end
+
+  def apply_signal(%Signal{}, _overrides), do: {:error, {:invalid_option, {:opts, :invalid}}}
+  def apply_signal(_signal, _overrides), do: {:error, :invalid_signal}
+
+  @doc """
   Resumes a run that is intentionally paused for manual intervention.
 
   This arity uses the configured runtime. By default, it resolves an inspectable
@@ -460,8 +483,12 @@ defmodule SquidMesh do
              | Config.config_error()
              | term()}
   def unblock_run(run_id, attrs, overrides) when is_map(attrs) and is_list(overrides) do
-    with {:ok, :journal} <- runtime(overrides) do
-      ManualControl.resume(run_id, attrs, journal_control_options(overrides))
+    with {:ok, :journal} <- runtime(overrides),
+         {:ok, signal} <- control_signal(:resume_run, run_id, attrs, overrides) do
+      SignalInterpreter.apply(signal, journal_control_options(overrides))
+    else
+      {:error, {:invalid_signal, reason}} -> {:error, public_signal_error(reason)}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -480,8 +507,12 @@ defmodule SquidMesh do
              | Config.config_error()
              | term()}
   def approve_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
-    with {:ok, :journal} <- runtime(overrides) do
-      ManualControl.approve(run_id, attrs, journal_control_options(overrides))
+    with {:ok, :journal} <- runtime(overrides),
+         {:ok, signal} <- control_signal(:approve_run, run_id, attrs, overrides) do
+      SignalInterpreter.apply(signal, journal_control_options(overrides))
+    else
+      {:error, {:invalid_signal, reason}} -> {:error, public_signal_error(reason)}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -500,8 +531,12 @@ defmodule SquidMesh do
              | Config.config_error()
              | term()}
   def reject_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
-    with {:ok, :journal} <- runtime(overrides) do
-      ManualControl.reject(run_id, attrs, journal_control_options(overrides))
+    with {:ok, :journal} <- runtime(overrides),
+         {:ok, signal} <- control_signal(:reject_run, run_id, attrs, overrides) do
+      SignalInterpreter.apply(signal, journal_control_options(overrides))
+    else
+      {:error, {:invalid_signal, reason}} -> {:error, public_signal_error(reason)}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -598,8 +633,54 @@ defmodule SquidMesh do
   end
 
   defp cancel_run_with_runtime(:journal, run_id, overrides) do
-    Cancellation.cancel(run_id, journal_control_options(overrides))
+    case control_signal(:cancel_run, run_id, overrides) do
+      {:ok, signal} ->
+        SignalInterpreter.apply(signal, journal_control_options(overrides))
+
+      {:error, {:invalid_signal, reason}} ->
+        {:error, public_signal_error(reason)}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
+
+  defp control_signal(:cancel_run, run_id, overrides) do
+    with {:ok, signal_opts} <- control_signal_options(overrides) do
+      run_id
+      |> Signal.cancel_run(signal_opts)
+      |> normalize_control_signal_result()
+    end
+  end
+
+  defp control_signal(type, run_id, attrs, overrides) do
+    with {:ok, signal_opts} <- control_signal_options(overrides) do
+      Signal
+      |> apply(type, [run_id, attrs, signal_opts])
+      |> normalize_control_signal_result()
+    end
+  end
+
+  defp control_signal_options(overrides) do
+    case Keyword.fetch(overrides, :now) do
+      {:ok, %DateTime{} = now} -> {:ok, [occurred_at: now]}
+      {:ok, _invalid} -> {:error, {:invalid_option, {:now, :invalid}}}
+      :error -> {:ok, []}
+    end
+  end
+
+  defp normalize_control_signal_result({:ok, %Signal{}} = result), do: result
+
+  defp normalize_control_signal_result({:error, {:invalid_signal, _reason}} = error), do: error
+
+  defp normalize_control_signal_result({:error, reason}), do: {:error, {:invalid_signal, reason}}
+
+  defp public_signal_error({:run_id, :invalid}), do: :invalid_run_id
+
+  defp public_signal_error({:occurred_at, :expected_datetime}),
+    do: {:invalid_option, {:now, :invalid}}
+
+  defp public_signal_error(reason), do: {:invalid_signal, reason}
 
   defp journal_initial_context_start_options(workflow, trigger_name, initial_context, overrides) do
     opts =

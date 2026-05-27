@@ -629,6 +629,14 @@ defmodule MinimalHostApp.WorkflowRunsTest do
         assert cancelled_run.terminal_status == :cancelled
         assert cancelled_run.visible_attempts == []
 
+        assert [
+                 %{signal_type: "start_run"},
+                 %{
+                   signal_type: "cancel_run",
+                   metadata: %{source: "minimal_host_app.workflow_runs"}
+                 }
+               ] = cancelled_run.command_history
+
         assert {:ok, %Snapshot{} = inspected_run} = WorkflowRuns.inspect_run(started_run.run_id)
         assert inspected_run.status == :cancelled
         assert inspected_run.queue == queue
@@ -958,6 +966,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert journal_cancellation.status == :cancelled
     assert journal_cancellation.visible_attempts == []
+
     assert Enum.map(journal_cancellation.command_history, & &1.signal_type) == [
              "start_run",
              "cancel_run"
@@ -967,6 +976,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert journal_replay.replayed_from_run_id
     assert journal_replay.context.notification.channel == "email"
     assert journal_replay.context.gateway_check.status == "retry_required"
+
     assert [%{signal_type: "replay_run", payload: %{run_id: replay_source_run_id}}] =
              journal_replay.command_history
 
@@ -1121,6 +1131,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert run.status == :completed
     assert run.replayed_from_run_id
     assert run.applied_runnable_keys == run.planned_runnable_keys
+
     assert [%{signal_type: "replay_run", payload: %{run_id: replay_source_run_id}}] =
              run.command_history
 

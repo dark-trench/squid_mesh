@@ -16,6 +16,7 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
   alias SquidMesh.Runtime.Journal.CommandReceipt
   alias SquidMesh.Runtime.Journal.Options
   alias SquidMesh.Runtime.ManualAction
+  alias SquidMesh.Runtime.Signal
   alias SquidMesh.Runtime.StepInput
   alias SquidMesh.Runtime.WorkflowAgent
   alias SquidMesh.Runtime.WorkflowAgent.Projection
@@ -79,6 +80,84 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
           {:ok, Inspection.Snapshot.t()} | {:error, control_error()}
   def reject(run_id, attrs, opts \\ []), do: review(run_id, :rejected, attrs, opts)
 
+  @doc false
+  @spec apply_signal(Signal.t(), keyword()) ::
+          {:ok, Inspection.Snapshot.t()} | {:error, control_error() | {:invalid_signal, term()}}
+  def apply_signal(
+        %Signal{
+          type: :resume_run,
+          payload: %{run_id: run_id, attributes: attrs},
+          occurred_at: %DateTime{} = now
+        } = signal,
+        opts
+      )
+      when is_binary(run_id) and is_map(attrs) and is_list(opts) do
+    with :ok <- validate_resume(attrs),
+         {:ok, storage} <- journal_storage(opts),
+         {:ok, queue} <- queue(opts),
+         {:ok, workflow_agent} <-
+           resolve_or_repair(storage, run_id, queue, attrs, signal, @run_append_retries),
+         {:ok, dispatch_agent} <- DispatchAgent.rebuild(storage, queue),
+         {:ok, _schedule_update} <-
+           schedule_pending_dispatches(
+             storage,
+             workflow_agent,
+             dispatch_agent,
+             now,
+             @dispatch_append_retries
+           ) do
+      Inspection.snapshot(storage, run_id, queue: queue, now: now)
+    end
+  end
+
+  def apply_signal(
+        %Signal{
+          type: type,
+          payload: %{run_id: run_id, attributes: attrs},
+          occurred_at: %DateTime{} = now
+        } = signal,
+        opts
+      )
+      when type in [:approve_run, :reject_run] and is_binary(run_id) and is_map(attrs) and
+             is_list(opts) do
+    decision = signal_decision(type)
+
+    with :ok <- validate_review(attrs),
+         {:ok, storage} <- journal_storage(opts),
+         {:ok, queue} <- queue(opts),
+         {:ok, workflow_agent} <-
+           resolve_or_repair_review(
+             storage,
+             run_id,
+             queue,
+             decision,
+             attrs,
+             signal,
+             @run_append_retries
+           ),
+         {:ok, dispatch_agent} <- DispatchAgent.rebuild(storage, queue),
+         {:ok, _schedule_update} <-
+           schedule_pending_dispatches(
+             storage,
+             workflow_agent,
+             dispatch_agent,
+             now,
+             @dispatch_append_retries
+           ) do
+      Inspection.snapshot(storage, run_id, queue: queue, now: now)
+    end
+  end
+
+  def apply_signal(%Signal{}, opts) when not is_list(opts),
+    do: {:error, {:invalid_option, {:opts, :invalid}}}
+
+  def apply_signal(%Signal{type: type}, _opts)
+      when type in [:resume_run, :approve_run, :reject_run],
+      do: {:error, {:invalid_signal, type}}
+
+  def apply_signal(%Signal{type: type}, _opts), do: {:error, {:unsupported_signal, type}}
+  def apply_signal(_signal, _opts), do: {:error, :invalid_signal}
+
   defp review(run_id, decision, attrs, opts)
        when is_binary(run_id) and decision in [:approved, :rejected] and is_map(attrs) and
               is_list(opts) do
@@ -114,10 +193,12 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
 
   defp resolve_or_repair(_storage, _run_id, _queue, _attrs, _now, 0), do: {:error, :conflict}
 
-  defp resolve_or_repair(storage, run_id, queue, attrs, %DateTime{} = now, retries_left) do
+  defp resolve_or_repair(storage, run_id, queue, attrs, command, retries_left) do
+    now = command_occurred_at(command)
+
     with {:ok, workflow_agent} <- rebuild_workflow_agent(storage, run_id),
          {:ok, resolution} <- resolution_target(storage, workflow_agent) do
-      append_resolution(storage, run_id, queue, attrs, now, retries_left, resolution)
+      append_resolution(storage, run_id, queue, attrs, command, now, retries_left, resolution)
     end
   end
 
@@ -130,7 +211,7 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
          queue,
          decision,
          attrs,
-         %DateTime{} = now,
+         command,
          retries_left
        ) do
     with {:ok, workflow_agent} <- rebuild_workflow_agent(storage, run_id),
@@ -141,7 +222,7 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
         queue,
         decision,
         attrs,
-        now,
+        command,
         retries_left,
         resolution
       )
@@ -191,26 +272,31 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
     end
   end
 
-  defp append_resolution(_storage, _run_id, _queue, _attrs, _now, _retries_left, {
+  defp append_resolution(_storage, _run_id, _queue, _attrs, _command, _now, _retries_left, {
          :repair,
          workflow_agent
        }) do
     {:ok, workflow_agent}
   end
 
-  defp append_resolution(storage, run_id, queue, attrs, %DateTime{} = now, retries_left, {
-         :append,
-         workflow_agent,
-         manual_state
-       }) do
+  defp append_resolution(
+         storage,
+         run_id,
+         queue,
+         attrs,
+         command,
+         %DateTime{} = _now,
+         retries_left,
+         {:append, workflow_agent, manual_state}
+       ) do
     with {:ok, entries} <-
-           resolution_entries(workflow_agent, storage, queue, attrs, now, manual_state) do
+           resolution_entries(workflow_agent, storage, queue, attrs, command, manual_state) do
       case Journal.append_entries(storage, entries, expected_rev: workflow_agent.state.thread_rev) do
         {:ok, _thread} ->
           WorkflowAgent.rebuild(storage, run_id)
 
         {:error, :conflict} ->
-          resolve_or_repair(storage, run_id, queue, attrs, now, retries_left - 1)
+          resolve_or_repair(storage, run_id, queue, attrs, command, retries_left - 1)
 
         {:error, _reason} = error ->
           error
@@ -224,7 +310,7 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
          _queue,
          _decision,
          _attrs,
-         _now,
+         _command,
          _retries_left,
          {
            :repair,
@@ -240,10 +326,12 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
          queue,
          decision,
          attrs,
-         %DateTime{} = now,
+         command,
          retries_left,
          {:append, workflow_agent, manual_state}
        ) do
+    now = command_occurred_at(command)
+
     with {:ok, entries} <-
            review_resolution_entries(
              workflow_agent,
@@ -251,6 +339,7 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
              queue,
              decision,
              attrs,
+             command,
              now,
              manual_state
            ) do
@@ -259,7 +348,15 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
           WorkflowAgent.rebuild(storage, run_id)
 
         {:error, :conflict} ->
-          resolve_or_repair_review(storage, run_id, queue, decision, attrs, now, retries_left - 1)
+          resolve_or_repair_review(
+            storage,
+            run_id,
+            queue,
+            decision,
+            attrs,
+            command,
+            retries_left - 1
+          )
 
         {:error, _reason} = error ->
           error
@@ -273,9 +370,11 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
          storage,
          queue,
          attrs,
-         %DateTime{} = now,
+         command,
          manual_state
        ) do
+    now = command_occurred_at(command)
+
     with {:ok, _workflow, definition, step_name} <-
            resolved_pause_definition(storage, workflow_agent, manual_state),
          {:ok, target} <- manual_target(definition, manual_state),
@@ -291,7 +390,7 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
              now
            ),
          {:ok, command_receipt} <-
-           manual_command_receipt(:resume_run, workflow_agent.state.run_id, attrs, now) do
+           manual_command_receipt(:resume_run, workflow_agent.state.run_id, attrs, command) do
       {:ok,
        [
          command_receipt,
@@ -315,6 +414,7 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
          queue,
          decision,
          attrs,
+         command,
          %DateTime{} = now,
          manual_state
        ) do
@@ -337,7 +437,7 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
              review_signal_type(decision),
              workflow_agent.state.run_id,
              attrs,
-             now
+             command
            ) do
       {:ok,
        [
@@ -517,6 +617,24 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
   defp review_signal_type(:approved), do: :approve_run
   defp review_signal_type(:rejected), do: :reject_run
 
+  defp signal_decision(:approve_run), do: :approved
+  defp signal_decision(:reject_run), do: :rejected
+
+  defp manual_command_receipt(_signal_type, run_id, attrs, %Signal{} = signal) do
+    CommandReceipt.new(
+      signal.type,
+      %{
+        run_id: run_id,
+        payload: %{run_id: run_id, attributes: command_attributes(attrs)},
+        metadata: command_metadata(signal, attrs),
+        idempotency_key: signal.idempotency_key,
+        actor: Map.get(attrs, :actor),
+        comment: Map.get(attrs, :comment)
+      },
+      signal.occurred_at
+    )
+  end
+
   defp manual_command_receipt(signal_type, run_id, attrs, %DateTime{} = now) do
     CommandReceipt.new(
       signal_type,
@@ -530,6 +648,15 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
       now
     )
   end
+
+  defp command_occurred_at(%Signal{occurred_at: %DateTime{} = now}), do: now
+  defp command_occurred_at(%DateTime{} = now), do: now
+
+  defp command_metadata(%Signal{metadata: metadata}, _attrs) when map_size(metadata) > 0 do
+    metadata
+  end
+
+  defp command_metadata(%Signal{}, attrs), do: Map.get(attrs, :metadata, %{})
 
   defp command_attributes(attrs) do
     Map.take(attrs, [:actor, :comment])
