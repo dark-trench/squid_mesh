@@ -16,6 +16,7 @@ defmodule MinimalHostApp.Smoke do
   alias SquidMesh.Runtime.Journal.Storage.Ecto, as: JournalStorage
   alias SquidMesh.Runtime.Runner
   alias SquidMesh.Runtime.Signal
+  alias SquidMesh.Runtime.Signal.JidoAdapter
 
   @poll_attempts 20
   @journal_run_attempts 10
@@ -101,6 +102,7 @@ defmodule MinimalHostApp.Smoke do
           journal_replay: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_cron_digest: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           command_signals: map(),
+          jido_command_signals: map(),
           action_registry: SquidMesh.Workflow.Spec.t(),
           editor_spec_graph: map(),
           daily_digest: SquidMesh.ReadModel.Inspection.Snapshot.t()
@@ -121,6 +123,7 @@ defmodule MinimalHostApp.Smoke do
     journal_replay = run_journal_replay!()
     journal_cron_digest = run_journal_cron_digest!()
     command_signals = run_signal_construction!()
+    jido_command_signals = run_jido_signal_adapter!(command_signals)
     existing_daily_digest_run_ids = daily_digest_run_ids()
 
     with :ok <- run_cron_digest(),
@@ -146,6 +149,7 @@ defmodule MinimalHostApp.Smoke do
         journal_replay: journal_replay,
         journal_cron_digest: journal_cron_digest,
         command_signals: command_signals,
+        jido_command_signals: jido_command_signals,
         action_registry: action_registry,
         editor_spec_graph: editor_spec_graph,
         daily_digest: cron_run
@@ -265,6 +269,22 @@ defmodule MinimalHostApp.Smoke do
       {:error, reason} ->
         raise "command signal smoke test failed: #{inspect(reason)}"
     end
+  end
+
+  @doc """
+  Adapts command signals to Jido envelopes from the host-app boundary.
+  """
+  @spec run_jido_signal_adapter!(%{atom() => Signal.t()}) :: %{atom() => Jido.Signal.t()}
+  def run_jido_signal_adapter!(signals) when is_map(signals) do
+    Enum.reduce(signals, %{}, fn {name, signal}, acc ->
+      with {:ok, jido_signal} <- JidoAdapter.to_jido(signal),
+           {:ok, ^signal} <- JidoAdapter.from_jido(jido_signal) do
+        Map.put(acc, name, jido_signal)
+      else
+        {:error, reason} ->
+          raise "Jido command signal adapter smoke test failed: #{inspect(reason)}"
+      end
+    end)
   end
 
   @doc """

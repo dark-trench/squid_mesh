@@ -135,9 +135,10 @@ The runtime is intentionally asymmetric:
 ## Runtime Command Signals
 
 `SquidMesh.Runtime.Signal` is the Squid Mesh-native command envelope for
-runtime requests. These structs sit above backend primitives: a future adapter
-may translate them into `Jido.Signal`, but workflow authors and host apps should
-not need to construct raw Jido signals for normal workflow control.
+runtime requests. These structs sit above backend primitives:
+`SquidMesh.Runtime.Signal.JidoAdapter` can translate them into `Jido.Signal`
+envelopes at the boundary, but workflow authors and host apps should not need
+to construct raw Jido signals for normal workflow control.
 
 | Command type | Stable payload shape | Identity and idempotency |
 | --- | --- | --- |
@@ -152,6 +153,15 @@ not need to construct raw Jido signals for normal workflow control.
 All command signals carry `metadata`, `occurred_at`, and an optional
 `idempotency_key`. Runtime code should adapt these product-level signals at the
 Jido boundary instead of leaking backend signal shapes into public APIs.
+
+The Jido adapter uses CloudEvents-compatible envelopes with source
+`/squid_mesh/runtime/commands`, type names such as
+`squid_mesh.runtime.command.start_run`, and content type
+`application/vnd.squid-mesh.runtime-signal+json`. The envelope `data` holds the
+Squid Mesh command type, payload, metadata, occurrence timestamp, and
+idempotency key. `from_jido/1` accepts only the known Squid Mesh source and
+command types, and maps serialized string command names through an explicit
+whitelist rather than creating atoms from input.
 
 ## Runtime Capability Matrix
 

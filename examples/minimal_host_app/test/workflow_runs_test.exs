@@ -915,6 +915,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              journal_replay: journal_replay,
              journal_cron_digest: journal_cron_digest,
              command_signals: command_signals,
+             jido_command_signals: jido_command_signals,
              action_registry: action_registry,
              editor_spec_graph: editor_spec_graph,
              daily_digest: daily_digest
@@ -981,6 +982,22 @@ defmodule MinimalHostApp.WorkflowRunsTest do
                payload: %{allow_irreversible: true}
              }
            } = command_signals
+
+    assert %{
+             start_run: %Jido.Signal{
+               type: "squid_mesh.runtime.command.start_run",
+               source: "/squid_mesh/runtime/commands"
+             },
+             start_cron: %Jido.Signal{
+               type: "squid_mesh.runtime.command.start_cron",
+               source: "/squid_mesh/runtime/commands"
+             },
+             approve_run: %Jido.Signal{type: "squid_mesh.runtime.command.approve_run"},
+             reject_run: %Jido.Signal{type: "squid_mesh.runtime.command.reject_run"},
+             resume_run: %Jido.Signal{type: "squid_mesh.runtime.command.resume_run"},
+             cancel_run: %Jido.Signal{type: "squid_mesh.runtime.command.cancel_run"},
+             replay_run: %Jido.Signal{type: "squid_mesh.runtime.command.replay_run"}
+           } = jido_command_signals
 
     assert Enum.map(action_registry.steps, &{&1.name, &1.metadata.action}) == [
              {:load_invoice, "payment.load_invoice"},

@@ -62,8 +62,11 @@ Squid Mesh uses Jido as an internal runtime foundation while keeping the public 
 | `Jido.Storage` | Journal and checkpoint persistence boundary. |
 | `Jido.Thread` / `Jido.Thread.Entry` | Durable journal facts for run, dispatch, index, and catalog threads. |
 | `Jido.Exec` | Action execution inside the journal executor. |
+| `Jido.Signal` | Optional boundary envelope for internal Squid Mesh runtime command signals. |
 
 Support code also touches lower-level details such as `Jido.Thread.EntryNormalizer` and validates built-in storage adapters like `Jido.Storage.File` and `Jido.Storage.Redis`. Workflow authors normally do not need to use those primitives directly.
+
+Runtime command signals use `SquidMesh.Runtime.Signal` as the stable Squid Mesh contract. `SquidMesh.Runtime.Signal.JidoAdapter` can convert those structs to and from `Jido.Signal` envelopes for advanced runtime integration, while public callers stay on Squid Mesh APIs.
 
 ## Getting Started
 
