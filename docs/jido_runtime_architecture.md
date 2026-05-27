@@ -157,7 +157,10 @@ Jido boundary instead of leaking backend signal shapes into public APIs.
 Public workflow-control functions normalize caller input into these signals and
 then hand them to the journal signal interpreter. That keeps public callers on
 Squid Mesh concepts while cancellation and manual decisions share one internal
-command path with any future signal-delivery adapter.
+command path with any future signal-delivery adapter. Host apps that already
+normalize commands at their own boundary can call `SquidMesh.apply_signal/2`
+with a `SquidMesh.Runtime.Signal` instead of calling each control wrapper
+directly.
 
 When a command reaches the journal runtime, Squid Mesh records a
 `:run_signal_received` fact in the run thread before the command's lifecycle

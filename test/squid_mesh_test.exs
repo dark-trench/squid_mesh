@@ -4147,6 +4147,56 @@ defmodule SquidMeshTest do
              ]
     end
 
+    test "apply_signal/2 applies public Squid Mesh control signals" do
+      cancelled_at = DateTime.add(@read_model_visible_at, 1, :second)
+
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.start_run(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_public_signal_cancel"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      run_id = started.run_id
+
+      assert {:ok, %Signal{} = signal} =
+               Signal.cancel_run(run_id,
+                 metadata: %{source: "public_signal_test"},
+                 occurred_at: cancelled_at
+               )
+
+      assert {:ok, %Snapshot{} = cancelled} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert cancelled.status == :cancelled
+
+      assert [
+               %{signal_type: "start_run"},
+               %{
+                 signal_type: "cancel_run",
+                 payload: %{run_id: ^run_id},
+                 metadata: %{source: "public_signal_test"},
+                 occurred_at: ^cancelled_at
+               }
+             ] = cancelled.command_history
+    end
+
+    test "apply_signal/2 rejects malformed signal application requests" do
+      assert {:error, :invalid_signal} = SquidMesh.apply_signal(%{})
+
+      assert {:ok, %Signal{} = signal} = Signal.cancel_run(Ecto.UUID.generate())
+
+      assert {:error, {:invalid_option, {:opts, :invalid}}} =
+               SquidMesh.apply_signal(signal, :bad_opts)
+    end
+
     test "cancel_run/2 rejects stale claim completions after journal cancellation" do
       assert {:ok, %Snapshot{} = started} =
                SquidMesh.start_run(

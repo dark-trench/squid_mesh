@@ -401,6 +401,28 @@ defmodule SquidMesh do
   end
 
   @doc """
+  Applies a Squid Mesh-native runtime command signal.
+
+  Host applications can use this when they already normalize control requests
+  into `SquidMesh.Runtime.Signal` envelopes. Public wrapper functions such as
+  `cancel_run/2`, `unblock_run/3`, `approve_run/3`, and `reject_run/3` use the
+  same journal signal interpreter internally.
+  """
+  @spec apply_signal(Signal.t(), keyword()) ::
+          {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
+          | {:error, Config.config_error() | term()}
+  def apply_signal(signal, overrides \\ [])
+
+  def apply_signal(%Signal{} = signal, overrides) when is_list(overrides) do
+    with {:ok, :journal} <- runtime(overrides) do
+      SignalInterpreter.apply(signal, journal_control_options(overrides))
+    end
+  end
+
+  def apply_signal(%Signal{}, _overrides), do: {:error, {:invalid_option, {:opts, :invalid}}}
+  def apply_signal(_signal, _overrides), do: {:error, :invalid_signal}
+
+  @doc """
   Resumes a run that is intentionally paused for manual intervention.
 
   This arity uses the configured runtime. By default, it resolves an inspectable
