@@ -1815,6 +1815,17 @@ defmodule SquidMeshTest do
                    {Jido.Storage.ETS, table: :squid_mesh_journal_cron_bad_key_test},
                  queue: "journal-cron-bad-key-test"
                )
+
+      assert {:ok, %Signal{} = signal} =
+               Signal.start_cron(IdempotentScheduledContextWorkflow, :scheduled_capture, %{})
+
+      assert {:error, {:invalid_option, {:schedule_idempotency_key, :invalid}}} =
+               SignalInterpreter.apply(signal,
+                 journal_storage:
+                   {Jido.Storage.ETS, table: :squid_mesh_journal_cron_empty_key_test},
+                 queue: "journal-cron-empty-key-test",
+                 initial_context: %{schedule: %{idempotency_key: ""}}
+               )
     end
 
     test "journal cron starts return structured option errors" do
@@ -2067,6 +2078,20 @@ defmodule SquidMeshTest do
                %{type: :run_started},
                %{type: :runnables_planned}
              ] = raw_run_entries(snapshot.run_id, @read_model_storage)
+
+      command_history = snapshot.command_history
+      run_entries = raw_run_entries(snapshot.run_id, @read_model_storage)
+
+      assert {:ok, %Snapshot{} = duplicate_snapshot} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert duplicate_snapshot.run_id == snapshot.run_id
+      assert duplicate_snapshot.command_history == command_history
+      assert raw_run_entries(snapshot.run_id, @read_model_storage) == run_entries
     end
 
     test "start/3 starts a default-trigger journal run" do
@@ -4712,6 +4737,20 @@ defmodule SquidMeshTest do
              ] = replay.command_history
 
       assert source_run_id == source.run_id
+
+      command_history = replay.command_history
+      run_entries = raw_run_entries(replay.run_id, @read_model_storage)
+
+      assert {:ok, %Snapshot{} = duplicate_replay} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert duplicate_replay.run_id == replay.run_id
+      assert duplicate_replay.command_history == command_history
+      assert raw_run_entries(replay.run_id, @read_model_storage) == run_entries
     end
 
     test "replay/2 blocks unsafe journal replays unless explicitly allowed" do

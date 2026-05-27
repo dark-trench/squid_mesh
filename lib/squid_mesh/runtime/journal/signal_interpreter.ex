@@ -63,9 +63,17 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreter do
          opts
        )
        when is_binary(run_id) and is_boolean(allow_irreversible) do
-    signal_opts = signal_options(signal, opts)
+    with {:ok, signal_opts} <-
+           command_idempotency_options(
+             signal,
+             "SquidMesh.Runtime.Signal",
+             "replay_run:#{run_id}",
+             opts
+           ) do
+      signal_opts = signal_options(signal, signal_opts)
 
-    Replay.replay(run_id, [allow_irreversible: allow_irreversible], signal_opts)
+      Replay.replay(run_id, [allow_irreversible: allow_irreversible], signal_opts)
+    end
   end
 
   defp replay_from_signal(%Signal{type: type}, _opts), do: {:error, {:invalid_signal, type}}
@@ -87,8 +95,13 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreter do
     end
   end
 
-  defp start_options(%Signal{} = signal, _workflow, _trigger, opts) do
-    {:ok, signal_options(signal, opts)}
+  defp start_options(%Signal{type: :start_run} = signal, workflow, trigger, opts) do
+    workflow_name = Definition.serialize_workflow(workflow)
+    trigger_name = signal_trigger_name(trigger)
+
+    with {:ok, opts} <- command_idempotency_options(signal, workflow_name, trigger_name, opts) do
+      {:ok, signal_options(signal, opts)}
+    end
   end
 
   defp signal_options(%Signal{} = signal, opts) do
@@ -105,19 +118,46 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreter do
       {:ok, idempotency_key} ->
         workflow_name = Definition.serialize_workflow(workflow)
         trigger_name = Definition.serialize_trigger(trigger)
-        {:ok, run_id} = ScheduleIdentity.run_id(workflow_name, trigger_name, idempotency_key)
 
-        opts =
-          opts
-          |> Keyword.put(:run_id, run_id)
-          |> Keyword.put(:duplicate_schedule_start, true)
+        with {:ok, run_id} <-
+               ScheduleIdentity.run_id(workflow_name, trigger_name, idempotency_key) do
+          opts =
+            opts
+            |> Keyword.put(:run_id, run_id)
+            |> Keyword.put(:duplicate_schedule_start, true)
 
-        {:ok, opts}
+          {:ok, opts}
+        end
 
       {:error, _reason} = error ->
         error
     end
   end
+
+  defp command_idempotency_options(%Signal{idempotency_key: nil}, _workflow, _trigger, opts) do
+    {:ok, opts}
+  end
+
+  defp command_idempotency_options(
+         %Signal{idempotency_key: idempotency_key},
+         workflow,
+         trigger,
+         opts
+       )
+       when is_binary(idempotency_key) and idempotency_key != "" do
+    with {:ok, run_id} <- ScheduleIdentity.run_id(workflow, trigger, idempotency_key) do
+      {:ok, Keyword.put(opts, :run_id, run_id)}
+    end
+  end
+
+  defp command_idempotency_options(%Signal{}, _workflow, _trigger, _opts) do
+    {:error, {:invalid_signal, {:idempotency_key, :expected_non_empty_string}}}
+  end
+
+  defp signal_trigger_name(nil), do: "__default__"
+
+  defp signal_trigger_name(trigger) when is_atom(trigger),
+    do: Definition.serialize_trigger(trigger)
 
   defp schedule_idempotency_key(context) when is_map(context) do
     context
@@ -129,7 +169,8 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreter do
   defp schedule_idempotency_key(_context), do: {:ok, nil}
 
   defp validate_schedule_idempotency_key(nil), do: {:ok, nil}
-  defp validate_schedule_idempotency_key(key) when is_binary(key), do: {:ok, key}
+
+  defp validate_schedule_idempotency_key(key) when is_binary(key) and key != "", do: {:ok, key}
 
   defp validate_schedule_idempotency_key(_key) do
     {:error, {:invalid_option, {:schedule_idempotency_key, :invalid}}}
