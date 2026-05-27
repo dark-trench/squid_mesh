@@ -951,21 +951,31 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert journal_run.status == :completed
     assert journal_run.applied_runnable_keys == journal_run.planned_runnable_keys
+    assert [%{signal_type: "start_run"}] = journal_run.command_history
 
     assert journal_recovery.status == :completed
     assert journal_recovery.applied_runnable_keys == journal_recovery.planned_runnable_keys
 
     assert journal_cancellation.status == :cancelled
     assert journal_cancellation.visible_attempts == []
+    assert Enum.map(journal_cancellation.command_history, & &1.signal_type) == [
+             "start_run",
+             "cancel_run"
+           ]
 
     assert journal_replay.status == :completed
     assert journal_replay.replayed_from_run_id
     assert journal_replay.context.notification.channel == "email"
     assert journal_replay.context.gateway_check.status == "retry_required"
+    assert [%{signal_type: "replay_run", payload: %{run_id: replay_source_run_id}}] =
+             journal_replay.command_history
+
+    assert replay_source_run_id == journal_replay.replayed_from_run_id
 
     assert journal_cron_digest.status == :completed
     assert journal_cron_digest.trigger == "daily_digest"
     assert journal_cron_digest.context.schedule.signal_id
+    assert [%{signal_type: "start_cron"}] = journal_cron_digest.command_history
 
     assert %{
              start_run: %SquidMesh.Runtime.Signal{type: :start_run},
@@ -1102,6 +1112,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert run.status == :cancelled
     assert run.terminal?
     assert run.visible_attempts == []
+    assert Enum.map(run.command_history, & &1.signal_type) == ["start_run", "cancel_run"]
   end
 
   test "runs the journal replay smoke path" do
@@ -1110,6 +1121,10 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert run.status == :completed
     assert run.replayed_from_run_id
     assert run.applied_runnable_keys == run.planned_runnable_keys
+    assert [%{signal_type: "replay_run", payload: %{run_id: replay_source_run_id}}] =
+             run.command_history
+
+    assert replay_source_run_id == run.replayed_from_run_id
   end
 
   test "runs the journal cron smoke path" do
@@ -1118,6 +1133,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert run.status == :completed
     assert run.trigger == "daily_digest"
     assert run.context.schedule.signal_id
+    assert [%{signal_type: "start_cron"}] = run.command_history
   end
 
   test "runs the journal cron duplicate smoke path" do

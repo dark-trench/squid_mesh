@@ -13,6 +13,7 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.DispatchProtocol.Entry
   alias SquidMesh.Runtime.Journal
+  alias SquidMesh.Runtime.Journal.CommandReceipt
   alias SquidMesh.Runtime.Journal.Options
   alias SquidMesh.Runtime.ManualAction
   alias SquidMesh.Runtime.StepInput
@@ -288,9 +289,12 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
              manual_input(manual_state, projection),
              queue,
              now
-           ) do
+           ),
+         {:ok, command_receipt} <-
+           manual_command_receipt(:resume_run, workflow_agent.state.run_id, attrs, now) do
       {:ok,
        [
+         command_receipt,
          manual_step_resolved_entry!(
            workflow_agent.state.run_id,
            step_name,
@@ -327,9 +331,17 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
              manual_input(manual_state, projection),
              queue,
              now
+           ),
+         {:ok, command_receipt} <-
+           manual_command_receipt(
+             review_signal_type(decision),
+             workflow_agent.state.run_id,
+             attrs,
+             now
            ) do
       {:ok,
        [
+         command_receipt,
          manual_step_resolved_entry!(
            workflow_agent.state.run_id,
            step_name,
@@ -501,6 +513,27 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
 
   defp decision_target_key(:approved), do: :ok
   defp decision_target_key(:rejected), do: :error
+
+  defp review_signal_type(:approved), do: :approve_run
+  defp review_signal_type(:rejected), do: :reject_run
+
+  defp manual_command_receipt(signal_type, run_id, attrs, %DateTime{} = now) do
+    CommandReceipt.new(
+      signal_type,
+      %{
+        run_id: run_id,
+        payload: %{run_id: run_id, attributes: command_attributes(attrs)},
+        metadata: Map.get(attrs, :metadata, %{}),
+        actor: Map.get(attrs, :actor),
+        comment: Map.get(attrs, :comment)
+      },
+      now
+    )
+  end
+
+  defp command_attributes(attrs) do
+    Map.take(attrs, [:actor, :comment])
+  end
 
   defp map_review_output(attrs, decision, output_key, %DateTime{} = now) do
     review_output =

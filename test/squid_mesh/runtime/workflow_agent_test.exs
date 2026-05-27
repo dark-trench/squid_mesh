@@ -55,6 +55,66 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
     assert WorkflowAgent.applied_runnable_keys(agent) == MapSet.new()
   end
 
+  test "projects runtime command receipts from durable run entries" do
+    projection =
+      Projection.rebuild([
+        workflow_entry(:run_signal_received, %{
+          run_id: @run_id,
+          signal_type: "start_run",
+          payload: %{
+            workflow: @workflow,
+            trigger: "manual",
+            input: %{"account_id" => "acct_123"}
+          },
+          metadata: %{request_id: "req_123"},
+          occurred_at: @started_at
+        }),
+        workflow_entry(:run_started, %{
+          run_id: @run_id,
+          workflow: @workflow
+        })
+      ])
+
+    assert Projection.command_history(projection) == [
+             %{
+               signal_type: "start_run",
+               payload: %{
+                 workflow: @workflow,
+                 trigger: "manual",
+                 input: %{"account_id" => "acct_123"}
+               },
+               metadata: %{request_id: "req_123"},
+               occurred_at: @started_at
+             }
+           ]
+  end
+
+  test "rebuilds a receipt-only run thread without applying workflow state" do
+    assert {:ok, run_signal_received} =
+             DispatchProtocol.new_entry(:run_signal_received, %{
+               run_id: @run_id,
+               signal_type: "cancel_run",
+               payload: %{run_id: @run_id},
+               metadata: %{request_id: "req_123"},
+               occurred_at: @started_at
+             })
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [run_signal_received])
+    assert {:ok, agent} = WorkflowAgent.rebuild(@storage, @run_id)
+
+    assert agent.state.workflow == nil
+    assert WorkflowAgent.status(agent) == :new
+
+    assert Projection.command_history(agent.state.projection) == [
+             %{
+               signal_type: "cancel_run",
+               payload: %{run_id: @run_id},
+               metadata: %{request_id: "req_123"},
+               occurred_at: @started_at
+             }
+           ]
+  end
+
   test "rebuilds parent and child run lineage from durable run entries" do
     child_run_id = "child_run_123"
 

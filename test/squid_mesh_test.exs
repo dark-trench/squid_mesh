@@ -1403,6 +1403,18 @@ defmodule SquidMeshTest do
       assert started.context.schedule.trigger_name == "scheduled_capture"
       assert started.context.schedule.intended_window.start_at == "2026-05-15T09:00:00Z"
 
+      assert [
+               %{
+                 signal_type: "start_cron",
+                 idempotency_key: "journal_signal_123",
+                 payload: %{
+                   workflow: "Elixir.SquidMeshTest.ScheduledContextWorkflow",
+                   trigger: "scheduled_capture",
+                   input: %{}
+                 }
+               }
+             ] = started.command_history
+
       assert {:ok, %Snapshot{} = completed} =
                SquidMesh.execute_next(
                  owner_id: "journal-cron-test",
@@ -1452,6 +1464,24 @@ defmodule SquidMeshTest do
                )
 
       assert summary.workflow == Atom.to_string(IdempotentScheduledContextWorkflow)
+
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.inspect_run(summary.run_id,
+                 runtime: :journal,
+                 read_model: :read_model,
+                 journal_storage: storage,
+                 queue: queue,
+                 now: started_at
+               )
+
+      assert [
+               %{
+                 signal_type: "start_cron",
+                 idempotency_key: idempotency_key
+               }
+             ] = started.command_history
+
+      assert idempotency_key == started.context.schedule.idempotency_key
     end
 
     test "duplicate journal cron starts survive queue changes for the same schedule identity" do
@@ -1895,6 +1925,20 @@ defmodule SquidMeshTest do
       assert [%{runnable_key: runnable_key, step: "check_gateway", status: :available}] =
                snapshot.visible_attempts
 
+      assert [
+               %{type: :run_signal_received, data: signal_receipt},
+               %{type: :run_started},
+               %{type: :runnables_planned}
+             ] = raw_run_entries(snapshot.run_id, @read_model_storage)
+
+      assert signal_receipt.signal_type == "start_run"
+
+      assert signal_receipt.payload == %{
+               workflow: Atom.to_string(PaymentRecoveryWorkflow),
+               trigger: "gateway_recovery",
+               input: %{account_id: "acct_123"}
+             }
+
       assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
                SquidMesh.inspect_run_graph(snapshot.run_id,
                  read_model: :read_model,
@@ -1914,7 +1958,7 @@ defmodule SquidMeshTest do
       assert edges["check_gateway:ok:complete"].status == :pending
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, snapshot.run_id})
+               load_read_model_run_entries(snapshot.run_id)
 
       assert Enum.map(run_entries, & &1.type) == [:run_started, :runnables_planned]
 
@@ -1990,7 +2034,7 @@ defmodule SquidMeshTest do
       assert diagnostic.evidence.definition_version == "2026-05-26.payment-recovery-v2"
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, snapshot.run_id})
+               load_read_model_run_entries(snapshot.run_id)
 
       assert %{definition_version: "2026-05-26.payment-recovery-v2"} =
                run_entries
@@ -2170,7 +2214,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, parent_entries} =
-               Journal.load_entries(@read_model_storage, {:run, parent.run_id})
+               load_read_model_run_entries(parent.run_id)
 
       assert 1 ==
                Enum.count(parent_entries, &(&1.type == :child_run_started))
@@ -2578,7 +2622,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, parent_entries_before} =
-               Journal.load_entries(@read_model_storage, {:run, parent.run_id})
+               load_read_model_run_entries(parent.run_id)
 
       refute Enum.any?(parent_entries_before, &(&1.type == :child_run_started))
 
@@ -2761,7 +2805,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, parent_entries} =
-               Journal.load_entries(@read_model_storage, {:run, parent.run_id})
+               load_read_model_run_entries(parent.run_id)
 
       assert 1 == Enum.count(parent_entries, &(&1.type == :child_run_started))
     end
@@ -3592,7 +3636,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, parent_entries} =
-               Journal.load_entries(@read_model_storage, {:run, parent.run_id})
+               load_read_model_run_entries(parent.run_id)
 
       refute Enum.any?(parent_entries, &(&1.type == :child_run_started))
     end
@@ -4033,6 +4077,13 @@ defmodule SquidMeshTest do
       assert cancelled.terminal_status == :cancelled
       assert cancelled.visible_attempts == []
 
+      assert [
+               %{signal_type: "start_run"},
+               %{signal_type: "cancel_run", payload: %{run_id: cancelled_run_id}}
+             ] = cancelled.command_history
+
+      assert cancelled_run_id == started.run_id
+
       assert {:ok, :none} =
                execute_journal_next(
                  runtime: :journal,
@@ -4218,6 +4269,15 @@ defmodule SquidMeshTest do
       assert replay.workflow == source.workflow
       assert replay.status == :running
       assert replay.input == %{account_id: "acct_replay"}
+
+      assert [
+               %{
+                 signal_type: "replay_run",
+                 payload: %{run_id: replayed_from_run_id, allow_irreversible: false}
+               }
+             ] = replay.command_history
+
+      assert replayed_from_run_id == source.run_id
 
       assert [%{step: "check_gateway", input: %{account_id: "acct_replay"}}] =
                replay.visible_attempts
@@ -4427,7 +4487,7 @@ defmodule SquidMeshTest do
       assert %{status: :retry_scheduled, runnable_key: retry_runnable_key} =
                Enum.find(retry_scheduled.attempts, &(&1.attempt_number == 2))
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, source.run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(source.run_id)
 
       retry_runnable =
         Enum.find_value(run_entries, fn
@@ -4884,7 +4944,7 @@ defmodule SquidMeshTest do
       assert completed_snapshot.terminal_status == :completed
       assert completed_snapshot.visible_attempts == []
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -4967,7 +5027,7 @@ defmodule SquidMeshTest do
       assert completed_snapshot.terminal?
       assert completed_snapshot.terminal_status == :completed
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -5060,7 +5120,7 @@ defmodule SquidMeshTest do
                  now: @read_model_visible_at
                )
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -5112,7 +5172,11 @@ defmodule SquidMeshTest do
       assert {:ok, %Snapshot{} = resumed_snapshot} =
                SquidMesh.unblock_run(
                  run_id,
-                 %{actor: "ops_123", comment: "resume requested"},
+                 %{
+                   actor: "ops_123",
+                   comment: "resume requested",
+                   metadata: %{access_token: "secret", reason: "qa"}
+                 },
                  runtime: :journal,
                  journal_storage: @read_model_storage,
                  queue: @read_model_queue,
@@ -5127,6 +5191,23 @@ defmodule SquidMeshTest do
       assert [
                %{step: "record_delivery", status: :available, input: %{account_id: "acct_123"}}
              ] = resumed_snapshot.visible_attempts
+
+      assert Enum.any?(resumed_snapshot.command_history, fn
+               %{
+                 signal_type: "resume_run",
+                 actor: "ops_123",
+                 comment: "resume requested",
+                 payload: %{
+                   run_id: command_run_id,
+                   attributes: %{actor: "ops_123", comment: "resume requested"}
+                 },
+                 metadata: %{access_token: "[REDACTED]", reason: "qa"}
+               } ->
+                 command_run_id == run_id
+
+               _command ->
+                 false
+             end)
 
       assert {:ok, %SquidMesh.Runs.GraphInspection{} = graph} =
                SquidMesh.inspect_run_graph(run_id,
@@ -5146,7 +5227,7 @@ defmodule SquidMeshTest do
       assert graph_nodes["record_delivery"].status == :pending
       assert graph_nodes["record_delivery"].current?
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -5167,6 +5248,7 @@ defmodule SquidMeshTest do
                    "event" => "resumed",
                    "actor" => "ops_123",
                    "comment" => "resume requested",
+                   "metadata" => %{access_token: "secret", reason: "qa"},
                    "at" => ^resumed_at_iso
                  }
                }
@@ -5186,6 +5268,12 @@ defmodule SquidMeshTest do
                %{step: "record_delivery", status: :available, input: %{account_id: "acct_123"}}
              ] = replayed_resume_snapshot.visible_attempts
 
+      assert 1 ==
+               Enum.count(replayed_resume_snapshot.command_history, fn
+                 %{signal_type: "resume_run"} -> true
+                 _command -> false
+               end)
+
       assert {:ok, %Snapshot{} = completed_snapshot} =
                execute_journal_next(
                  runtime: :journal,
@@ -5202,7 +5290,7 @@ defmodule SquidMeshTest do
       assert completed_snapshot.terminal?
 
       assert {:ok, replayed_run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, run_id})
+               load_read_model_run_entries(run_id)
 
       assert Enum.count(replayed_run_entries, &(&1.type == :manual_step_resolved)) == 1
     end
@@ -5271,7 +5359,7 @@ defmodule SquidMeshTest do
                  now: @read_model_visible_at
                )
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
       refute Enum.any?(run_entries, &(&1.type == :manual_step_resolved))
     end
 
@@ -5349,7 +5437,20 @@ defmodule SquidMeshTest do
                }
              ] = approved_snapshot.visible_attempts
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert Enum.any?(approved_snapshot.command_history, fn
+               %{
+                 signal_type: "approve_run",
+                 actor: "ops_123",
+                 comment: "approved",
+                 payload: %{run_id: command_run_id}
+               } ->
+                 command_run_id == run_id
+
+               _command ->
+                 false
+             end)
+
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -5512,7 +5613,20 @@ defmodule SquidMeshTest do
                }
              ] = rejected_snapshot.visible_attempts
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert Enum.any?(rejected_snapshot.command_history, fn
+               %{
+                 signal_type: "reject_run",
+                 actor: "ops_456",
+                 comment: "rejected",
+                 payload: %{run_id: command_run_id}
+               } ->
+                 command_run_id == run_id
+
+               _command ->
+                 false
+             end)
+
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
       assert Enum.count(run_entries, &(&1.type == :manual_step_resolved)) == 1
       assert Enum.at(run_entries, 4).data.action == "rejected"
     end
@@ -5599,7 +5713,7 @@ defmodule SquidMeshTest do
                }
              ] = approved_snapshot.visible_attempts
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
       assert Enum.count(run_entries, &(&1.type == :manual_step_resolved)) == 1
 
       assert {:ok, dispatch_entries} =
@@ -5651,7 +5765,7 @@ defmodule SquidMeshTest do
                  now: terminal_at
                )
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
       refute Enum.any?(run_entries, &(&1.type == :manual_step_resolved))
     end
 
@@ -5765,7 +5879,7 @@ defmodule SquidMeshTest do
                %{step: "record_delivery", status: :available, input: %{account_id: "acct_123"}}
              ] = resumed_snapshot.visible_attempts
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
       assert Enum.count(run_entries, &(&1.type == :manual_step_resolved)) == 1
 
       assert {:ok, dispatch_entries} =
@@ -5817,7 +5931,7 @@ defmodule SquidMeshTest do
                  now: terminal_at
                )
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
       refute Enum.any?(run_entries, &(&1.type == :manual_step_resolved))
     end
 
@@ -5885,7 +5999,7 @@ defmodule SquidMeshTest do
                }
              }
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -5906,7 +6020,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, replayed_run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, run_id})
+               load_read_model_run_entries(run_id)
 
       assert Enum.count(replayed_run_entries, &(&1.type == :manual_step_paused)) == 1
     end
@@ -5976,7 +6090,7 @@ defmodule SquidMeshTest do
                }
              }
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -6048,7 +6162,7 @@ defmodule SquidMeshTest do
       assert recovered_snapshot.visible_attempts == []
       assert recovered_snapshot.next_visible_at == delayed_at
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
 
       assert [_wait_runnable, delayed_runnable] =
                run_entries
@@ -6161,7 +6275,7 @@ defmodule SquidMeshTest do
                invoice: %{id: "inv_456", status: "open"}
              }
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
 
       assert [delayed_runnable] =
                run_entries
@@ -6254,7 +6368,7 @@ defmodule SquidMeshTest do
       assert recovered_snapshot.visible_attempts == []
       assert recovered_snapshot.next_visible_at == delayed_at
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
 
       assert [delayed_runnable] =
                run_entries
@@ -6337,7 +6451,7 @@ defmodule SquidMeshTest do
       assert delayed_snapshot.visible_attempts == []
       assert delayed_snapshot.next_visible_at == delayed_at
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
 
       assert [wait_applied] =
                Enum.filter(
@@ -6418,7 +6532,7 @@ defmodule SquidMeshTest do
                "send_email"
              ]
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
 
       assert [delayed_runnable] =
                run_entries
@@ -6657,7 +6771,7 @@ defmodule SquidMeshTest do
 
       assert duplicate_snapshot.run_id == run_id
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
       assert Enum.map(run_entries, & &1.type) == [:run_started, :runnables_planned]
 
       assert {:ok, dispatch_entries} =
@@ -6850,7 +6964,7 @@ defmodule SquidMeshTest do
              ] = executed_snapshot.attempts
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+               load_read_model_run_entries(started_snapshot.run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -7041,7 +7155,7 @@ defmodule SquidMeshTest do
       assert successor_input.routing == %{decision: "auto"}
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+               load_read_model_run_entries(started_snapshot.run_id)
 
       assert %{
                transition: %{
@@ -7156,7 +7270,7 @@ defmodule SquidMeshTest do
       assert completed_snapshot.status == :completed
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+               load_read_model_run_entries(started_snapshot.run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -7222,7 +7336,7 @@ defmodule SquidMeshTest do
       end
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+               load_read_model_run_entries(started_snapshot.run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -7356,7 +7470,7 @@ defmodule SquidMeshTest do
              ] = failed_snapshot.attempts
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+               load_read_model_run_entries(started_snapshot.run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -7456,7 +7570,7 @@ defmodule SquidMeshTest do
                }
              ] = snapshot.attempts
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -7547,7 +7661,7 @@ defmodule SquidMeshTest do
              }
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+               load_read_model_run_entries(started_snapshot.run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -7586,7 +7700,7 @@ defmodule SquidMeshTest do
       assert snapshot.visible_attempts == []
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, snapshot.run_id})
+               load_read_model_run_entries(snapshot.run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -7695,7 +7809,7 @@ defmodule SquidMeshTest do
       assert recovered_snapshot.applied_runnable_keys == started_snapshot.planned_runnable_keys
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+               load_read_model_run_entries(started_snapshot.run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -7757,7 +7871,7 @@ defmodule SquidMeshTest do
                )
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+               load_read_model_run_entries(started_snapshot.run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -7821,7 +7935,7 @@ defmodule SquidMeshTest do
       assert recovered_snapshot.reason == :terminal
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+               load_read_model_run_entries(started_snapshot.run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -8088,7 +8202,7 @@ defmodule SquidMeshTest do
       assert completed_snapshot.reason == :terminal
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+               load_read_model_run_entries(started_snapshot.run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -8163,7 +8277,7 @@ defmodule SquidMeshTest do
       end
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+               load_read_model_run_entries(started_snapshot.run_id)
 
       assert Enum.count(run_entries, &(&1.type == :runnable_applied)) == 1
 
@@ -8247,7 +8361,7 @@ defmodule SquidMeshTest do
                }
              ] = snapshot.attempts
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
       assert Enum.map(run_entries, & &1.type) == [:run_started, :runnables_planned, :run_terminal]
 
       assert {:ok, dispatch_entries} =
@@ -8487,7 +8601,7 @@ defmodule SquidMeshTest do
       assert snapshot.status == :failed
       assert snapshot.reason == :terminal
 
-      assert {:ok, run_entries} = Journal.load_entries(@read_model_storage, {:run, run_id})
+      assert {:ok, run_entries} = load_read_model_run_entries(run_id)
       assert Enum.map(run_entries, & &1.type) == [:run_started, :runnables_planned, :run_terminal]
     end
 
@@ -8623,7 +8737,7 @@ defmodule SquidMeshTest do
              ] = executed_snapshot.attempts
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+               load_read_model_run_entries(started_snapshot.run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -8718,7 +8832,7 @@ defmodule SquidMeshTest do
              ]
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+               load_read_model_run_entries(started_snapshot.run_id)
 
       assert Enum.map(run_entries, & &1.type) == [
                :run_started,
@@ -8814,7 +8928,7 @@ defmodule SquidMeshTest do
       end
 
       assert {:ok, run_entries} =
-               Journal.load_entries(@read_model_storage, {:run, started_snapshot.run_id})
+               load_read_model_run_entries(started_snapshot.run_id)
 
       retry_plan_count =
         Enum.count(run_entries, fn
@@ -9502,6 +9616,21 @@ defmodule SquidMeshTest do
         select: event.event
       )
     )
+  end
+
+  defp run_entries(run_id, storage) do
+    run_id
+    |> raw_run_entries(storage)
+    |> Enum.reject(&(&1.type == :run_signal_received))
+  end
+
+  defp load_read_model_run_entries(run_id) do
+    {:ok, run_entries(run_id, @read_model_storage)}
+  end
+
+  defp raw_run_entries(run_id, storage) do
+    assert {:ok, entries} = Journal.load_entries(storage, {:run, run_id})
+    entries
   end
 
   defp journal_start_runnable(run_id, account_id \\ "acct_123") do

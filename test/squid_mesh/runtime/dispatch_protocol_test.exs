@@ -157,6 +157,24 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
     assert resolved_entry.data.result == %{actor: "ops_123"}
   end
 
+  test "normalizes runtime command receipt entries on the run thread" do
+    assert {:ok, entry} =
+             DispatchProtocol.new_entry(:run_signal_received, %{
+               run_id: @run_id,
+               signal_type: :approve_run,
+               payload: %{run_id: @run_id, attributes: %{actor: "ops_123"}},
+               metadata: %{request_id: "req_123", access_token: "secret"},
+               idempotency_key: "approve:#{@run_id}",
+               occurred_at: @started_at
+             })
+
+    assert entry.thread == {:run, @run_id}
+    assert entry.data.signal_type == "approve_run"
+    assert entry.data.payload == %{run_id: @run_id, attributes: %{actor: "ops_123"}}
+    assert entry.data.metadata == %{request_id: "req_123", access_token: "[REDACTED]"}
+    assert entry.data.idempotency_key == "approve:#{@run_id}"
+  end
+
   test "rejects required fields with nil values" do
     assert {:error, {:missing_fields, [:visible_at]}} =
              DispatchProtocol.new_entry(
