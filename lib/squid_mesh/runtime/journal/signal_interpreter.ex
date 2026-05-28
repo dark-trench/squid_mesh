@@ -111,7 +111,7 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreter do
              trigger,
              Keyword.put(opts, :initial_context, schedule_context)
            ) do
-      {:ok, %{}, start_opts}
+      {:ok, input, start_opts}
     end
   end
 

@@ -1055,6 +1055,11 @@ defmodule SquidMeshTest do
     workflow do
       trigger :scheduled_capture do
         cron "@hourly", timezone: "Etc/UTC", idempotency: :return_existing_run
+
+        payload do
+          field :signal_id, :string, required: false
+          field :intended_window, :map, required: false
+        end
       end
 
       step :capture_schedule, ScheduledContextWorkflow.CaptureSchedule
@@ -4578,7 +4583,7 @@ defmodule SquidMeshTest do
       assert duplicate.command_history == started.command_history
     end
 
-    test "starter ignores unsupported command signal types when deriving start history" do
+    test "starter rejects unsupported command signal types before writing history" do
       run_id = Ecto.UUID.generate()
       occurred_at = DateTime.add(@read_model_started_at, 1, :second)
 
@@ -4590,7 +4595,7 @@ defmodule SquidMeshTest do
         occurred_at: occurred_at
       }
 
-      assert {:ok, %Snapshot{} = started} =
+      assert {:error, {:unsupported_command_signal, :cancel_run}} =
                SquidMesh.Runtime.Journal.Starter.start_run(
                  PaymentRecoveryWorkflow,
                  :gateway_recovery,
@@ -4603,20 +4608,7 @@ defmodule SquidMeshTest do
                  command_signal: invalid_command_signal
                )
 
-      assert [
-               %{
-                 signal_type: "start_run",
-                 payload: %{
-                   workflow: workflow,
-                   trigger: "gateway_recovery",
-                   input: %{account_id: "acct_invalid_command_signal_type"}
-                 },
-                 metadata: %{},
-                 occurred_at: ^occurred_at
-               }
-             ] = started.command_history
-
-      assert workflow == Atom.to_string(PaymentRecoveryWorkflow)
+      assert {:error, :not_found} = Journal.load_entries(@read_model_storage, {:run, run_id})
     end
 
     test "apply_signal/2 starts default-trigger runtime signals idempotently" do
@@ -4734,10 +4726,10 @@ defmodule SquidMeshTest do
       occurred_at = DateTime.add(@read_model_started_at, 2, :second)
 
       input = %{
-        "signal_id" => "cron-signal-1",
-        "intended_window" => %{
-          "start_at" => "2026-05-15T09:00:00Z",
-          "end_at" => "2026-05-15T10:00:00Z"
+        signal_id: "cron-signal-1",
+        intended_window: %{
+          start_at: "2026-05-15T09:00:00Z",
+          end_at: "2026-05-15T10:00:00Z"
         }
       }
 
@@ -4758,6 +4750,7 @@ defmodule SquidMeshTest do
                )
 
       assert started.trigger == "scheduled_capture"
+      assert started.input == input
       assert started.context.schedule.signal_id == "cron-signal-1"
       assert started.context.schedule.idempotency_key == "cron-signal-1"
 

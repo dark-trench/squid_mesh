@@ -53,7 +53,8 @@ defmodule SquidMesh.Runtime.Journal.Starter do
           | {:error, start_error()}
   def start_run(workflow, trigger_name, payload, opts)
       when is_atom(workflow) and is_map(payload) and is_list(opts) do
-    with {:ok, storage} <- journal_storage(opts),
+    with :ok <- validate_command_signal(opts),
+         {:ok, storage} <- journal_storage(opts),
          {:ok, queue} <- queue(opts),
          {:ok, now} <- now(opts),
          {:ok, definition} <- Definition.load(workflow),
@@ -204,6 +205,22 @@ defmodule SquidMesh.Runtime.Journal.Starter do
     case Keyword.get(opts, :command_signal) do
       %Signal{} = signal -> signal
       _none -> nil
+    end
+  end
+
+  defp validate_command_signal(opts) do
+    case Keyword.fetch(opts, :command_signal) do
+      :error ->
+        :ok
+
+      {:ok, %Signal{type: type}} when type in [:start_run, :start_cron, :replay_run] ->
+        :ok
+
+      {:ok, %Signal{type: type}} ->
+        {:error, {:unsupported_command_signal, type}}
+
+      {:ok, invalid} ->
+        {:error, {:invalid_option, {:command_signal, invalid}}}
     end
   end
 

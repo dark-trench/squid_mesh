@@ -34,6 +34,15 @@ defmodule SquidMesh.Runtime.DispatchNotifier do
     end
   end
 
+  def notify_attempt_scheduled(notifier, _attempt, _opts) when not is_atom(notifier),
+    do: {:error, {:invalid_notifier, notifier}}
+
+  def notify_attempt_scheduled(_notifier, attempt, _opts) when not is_map(attempt),
+    do: {:error, {:invalid_attempt, attempt}}
+
+  def notify_attempt_scheduled(_notifier, _attempt, opts) when not is_list(opts),
+    do: {:error, {:invalid_option, {:opts, :invalid}}}
+
   defp safe_notify_attempt_scheduled(notifier, attempt, opts) do
     notifier.notify_attempt_scheduled(attempt, opts)
   rescue

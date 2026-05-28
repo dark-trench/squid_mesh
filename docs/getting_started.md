@@ -109,8 +109,8 @@ Manual triggers start through the public API:
 Inspection keeps explicit names such as `inspect_run/2` and
 `inspect_run_graph/2` rather than adding an `inspect/2` alias.
 
-Public start, replay, and control helpers use concise names: `start/*`,
-`resume/*`, `approve/*`, `reject/*`, `cancel/*`, and `replay/*`.
+Public start, replay, and control helpers use concise names: `start/3`,
+`resume/3`, `approve/3`, `reject/3`, `cancel/2`, and `replay/2`.
 `SquidMesh.Runtime.Signal` constructors keep run-suffixed names because those
 names describe persisted command intent.
 

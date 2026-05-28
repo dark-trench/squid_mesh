@@ -48,4 +48,15 @@ defmodule SquidMesh.Runtime.DispatchNotifierTest do
     assert {:error, {:notifier_throw, ThrowingNotifier, {:throw, :notifier_failed}}} =
              DispatchNotifier.notify_attempt_scheduled(ThrowingNotifier, @attempt, [])
   end
+
+  test "returns structured errors for invalid notifier arguments" do
+    assert {:error, {:invalid_notifier, "notifier"}} =
+             DispatchNotifier.notify_attempt_scheduled("notifier", @attempt, [])
+
+    assert {:error, {:invalid_attempt, :attempt}} =
+             DispatchNotifier.notify_attempt_scheduled(DispatchNotifier.Noop, :attempt, [])
+
+    assert {:error, {:invalid_option, {:opts, :invalid}}} =
+             DispatchNotifier.notify_attempt_scheduled(DispatchNotifier.Noop, @attempt, :opts)
+  end
 end
