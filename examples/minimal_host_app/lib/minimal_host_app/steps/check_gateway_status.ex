@@ -16,7 +16,7 @@ defmodule MinimalHostApp.Steps.CheckGatewayStatus do
 
   @impl true
   @spec run(map(), SquidMesh.Step.Context.t()) :: {:ok, map()} | {:retry, map()}
-  def run(%{invoice: invoice, gateway_url: gateway_url}, _context) do
+  def run(%{invoice: invoice, gateway_url: gateway_url}, context) do
     case SquidMesh.Tools.invoke(SquidMesh.Tools.HTTP, %{method: :get, url: gateway_url}) do
       {:ok, result} ->
         {:ok,
@@ -24,12 +24,21 @@ defmodule MinimalHostApp.Steps.CheckGatewayStatus do
            gateway_check: %{
              status: result.payload.body,
              invoice_id: invoice.id,
-             status_code: result.payload.status
+             status_code: result.payload.status,
+             attempt: attempt_metadata(context)
            }
          }}
 
       {:error, error} ->
-        {:retry, SquidMesh.Tools.Error.to_map(error)}
+        {:retry,
+         Map.put(SquidMesh.Tools.Error.to_map(error), :attempt, attempt_metadata(context))}
     end
+  end
+
+  defp attempt_metadata(context) do
+    %{
+      idempotency_key: context.idempotency_key,
+      claim_id: context.claim_id
+    }
   end
 end

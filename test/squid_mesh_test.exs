@@ -4393,6 +4393,290 @@ defmodule SquidMeshTest do
              ] = cancelled.command_history
     end
 
+    test "public control helpers forward signal metadata and idempotency keys" do
+      occurred_at = DateTime.add(@read_model_visible_at, 1, :second)
+
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.start(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_public_cancel_metadata"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = cancelled} =
+               SquidMesh.cancel(started.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 metadata: %{source: "ops_api"},
+                 idempotency_key: "public-cancel-helper-1",
+                 now: occurred_at
+               )
+
+      assert [
+               %{signal_type: "start_run"},
+               %{
+                 signal_type: "cancel_run",
+                 metadata: %{source: "ops_api"},
+                 idempotency_key: "public-cancel-helper-1",
+                 occurred_at: ^occurred_at
+               }
+             ] = cancelled.command_history
+    end
+
+    test "apply_signal/2 starts runs from runtime signals idempotently" do
+      occurred_at = DateTime.add(@read_model_started_at, 1, :second)
+
+      assert {:ok, %Signal{} = signal} =
+               Signal.start_run(
+                 PaymentRecoveryWorkflow,
+                 :gateway_recovery,
+                 %{account_id: "acct_start_signal"},
+                 metadata: %{source: "agent_router"},
+                 idempotency_key: "start-signal-1",
+                 occurred_at: occurred_at
+               )
+
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert started.workflow == Atom.to_string(PaymentRecoveryWorkflow)
+      assert started.trigger == "gateway_recovery"
+      assert started.input == %{account_id: "acct_start_signal"}
+
+      assert [
+               %{
+                 signal_type: "start_run",
+                 metadata: %{source: "agent_router"},
+                 idempotency_key: "start-signal-1",
+                 occurred_at: ^occurred_at
+               }
+             ] = started.command_history
+
+      assert {:ok, %Snapshot{} = duplicate} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert duplicate.run_id == started.run_id
+      assert duplicate.command_history == started.command_history
+    end
+
+    test "apply_signal/2 starts default-trigger runtime signals idempotently" do
+      assert {:ok, %Signal{} = signal} =
+               Signal.start_run(
+                 PaymentRecoveryWorkflow,
+                 nil,
+                 %{account_id: "acct_default_start_signal"},
+                 idempotency_key: "default-start-signal-1",
+                 occurred_at: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert started.trigger == "gateway_recovery"
+
+      assert {:ok, %Snapshot{} = duplicate} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert duplicate.run_id == started.run_id
+      assert duplicate.command_history == started.command_history
+    end
+
+    test "apply_signal/2 treats nil and explicit default triggers as the same idempotent start" do
+      assert {:ok, %Signal{} = default_signal} =
+               Signal.start_run(
+                 PaymentRecoveryWorkflow,
+                 nil,
+                 %{account_id: "acct_default_start_alias"},
+                 idempotency_key: "default-start-signal-alias",
+                 occurred_at: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.apply_signal(default_signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:ok, %Signal{} = explicit_signal} =
+               Signal.start_run(
+                 PaymentRecoveryWorkflow,
+                 :gateway_recovery,
+                 %{account_id: "acct_default_start_alias"},
+                 idempotency_key: "default-start-signal-alias",
+                 occurred_at: DateTime.add(@read_model_started_at, 1, :second)
+               )
+
+      assert {:ok, %Snapshot{} = duplicate} =
+               SquidMesh.apply_signal(explicit_signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert duplicate.run_id == started.run_id
+      assert duplicate.command_history == started.command_history
+    end
+
+    test "apply_signal/2 rejects duplicate start idempotency keys with different payloads" do
+      assert {:ok, %Signal{} = signal} =
+               Signal.start_run(
+                 PaymentRecoveryWorkflow,
+                 :gateway_recovery,
+                 %{account_id: "acct_start_signal_original"},
+                 idempotency_key: "start-signal-conflict",
+                 occurred_at: @read_model_started_at
+               )
+
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:ok, %Signal{} = conflicting_signal} =
+               Signal.start_run(
+                 PaymentRecoveryWorkflow,
+                 :gateway_recovery,
+                 %{account_id: "acct_start_signal_conflict"},
+                 idempotency_key: "start-signal-conflict",
+                 occurred_at: DateTime.add(@read_model_started_at, 1, :second)
+               )
+
+      assert {:error, :conflict} =
+               SquidMesh.apply_signal(conflicting_signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert {:ok, inspected} =
+               SquidMesh.inspect_run(started.run_id,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 include_history: true
+               )
+
+      assert inspected.command_history == started.command_history
+    end
+
+    test "apply_signal/2 starts cron runs from runtime signals idempotently" do
+      occurred_at = DateTime.add(@read_model_started_at, 2, :second)
+
+      input = %{
+        "signal_id" => "cron-signal-1",
+        "intended_window" => %{
+          "start_at" => "2026-05-15T09:00:00Z",
+          "end_at" => "2026-05-15T10:00:00Z"
+        }
+      }
+
+      assert {:ok, %Signal{} = signal} =
+               Signal.start_cron(
+                 IdempotentScheduledContextWorkflow,
+                 :scheduled_capture,
+                 input,
+                 metadata: %{source: "jido_scheduler"},
+                 occurred_at: occurred_at
+               )
+
+      assert {:ok, %Snapshot{} = started} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert started.trigger == "scheduled_capture"
+      assert started.context.schedule.signal_id == "cron-signal-1"
+      assert started.context.schedule.idempotency_key == "cron-signal-1"
+
+      assert [
+               %{
+                 signal_type: "start_cron",
+                 metadata: %{source: "jido_scheduler"},
+                 idempotency_key: "cron-signal-1",
+                 occurred_at: ^occurred_at
+               }
+             ] = started.command_history
+
+      assert {:ok, %Snapshot{} = duplicate} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert duplicate.run_id == started.run_id
+      assert duplicate.command_history == started.command_history
+    end
+
+    test "apply_signal/2 replays runs from runtime signals" do
+      assert {:ok, %Snapshot{} = source} =
+               SquidMesh.start(
+                 PaymentRecoveryWorkflow,
+                 %{account_id: "acct_replay_signal"},
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue,
+                 now: @read_model_started_at
+               )
+
+      occurred_at = DateTime.add(@read_model_started_at, 3, :second)
+
+      assert {:ok, %Signal{} = signal} =
+               Signal.replay_run(source.run_id,
+                 metadata: %{source: "agent_router"},
+                 idempotency_key: "replay-signal-1",
+                 occurred_at: occurred_at
+               )
+
+      assert {:ok, %Snapshot{} = replayed} =
+               SquidMesh.apply_signal(signal,
+                 runtime: :journal,
+                 journal_storage: @read_model_storage,
+                 queue: @read_model_queue
+               )
+
+      assert replayed.run_id != source.run_id
+      assert replayed.replayed_from_run_id == source.run_id
+      assert replayed.input == source.input
+
+      assert [
+               %{
+                 signal_type: "replay_run",
+                 metadata: %{source: "agent_router"},
+                 idempotency_key: "replay-signal-1",
+                 occurred_at: ^occurred_at,
+                 payload: %{run_id: replayed_from_run_id, allow_irreversible: false}
+               }
+             ] = replayed.command_history
+
+      assert replayed_from_run_id == source.run_id
+    end
+
     test "manual control signals are idempotent for duplicate delivery" do
       manual_signal_cases = [
         {:resume_run, PauseWorkflow, :resume_run, "resume-signal-duplicate-1", :running},
@@ -4457,6 +4741,25 @@ defmodule SquidMeshTest do
 
         assert duplicate.status == expected_status
         assert duplicate.command_history == command_history_before
+        assert raw_run_entries(run_id, @read_model_storage) == run_entries_before
+
+        assert {:ok, %Signal{} = distinct_signal} =
+                 apply(Signal, signal_type, [
+                   run_id,
+                   attrs,
+                   [
+                     metadata: %{source: "ops_console"},
+                     idempotency_key: "#{idempotency_key}-distinct",
+                     occurred_at: DateTime.add(occurred_at, 1, :second)
+                   ]
+                 ])
+
+        assert {:error, {:invalid_transition, _status, :running}} =
+                 SignalInterpreter.apply(distinct_signal,
+                   journal_storage: @read_model_storage,
+                   queue: @read_model_queue
+                 )
+
         assert raw_run_entries(run_id, @read_model_storage) == run_entries_before
       end
     end

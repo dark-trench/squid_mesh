@@ -11,6 +11,8 @@ defmodule MinimalHostApp.WorkflowRunsTest do
   alias Oban.Job
   alias SquidMesh.ReadModel.Inspection.Snapshot
   alias SquidMesh.ReadModel.Listing.Summary
+  alias SquidMesh.Runtime.Signal
+  alias SquidMesh.Runtime.Signal.JidoAdapter
 
   defmodule InvalidRecurringIdempotentCronWorkflow do
     use SquidMesh.Workflow
@@ -252,6 +254,17 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              invoice_id: "inv_456",
              status: "credit_issued"
            }
+
+    assert %{
+             idempotency_key: _idempotency_key,
+             claim_id: _claim_id
+           } =
+             failed_attempt =
+             Enum.find(history_run.attempts, fn attempt ->
+               attempt.step == "check_gateway_status" and attempt.status == :failed
+             end)
+
+    refute Map.has_key?(failed_attempt, :claim_token)
 
     assert [
              {"load_invoice", :completed, true, 1},
@@ -749,6 +762,55 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert completed_run.context.approval.comment == "approved"
 
     assert completed_history.manual_state == nil
+
+    assert [
+             %{signal_type: "start_run"},
+             %{
+               signal_type: "approve_run",
+               payload: %{
+                 run_id: approved_run_id,
+                 attributes: %{actor: "ops_123", comment: "approved"}
+               },
+               metadata: %{ticket: "SUP-123"},
+               actor: "ops_123",
+               comment: "approved"
+             }
+           ] = completed_history.command_history
+
+    assert approved_run_id == run.run_id
+  end
+
+  test "resumes a manual pause workflow through the host boundary" do
+    assert {:ok, run} = WorkflowRuns.start_manual_pause(%{account_id: "acct_pause_123"})
+
+    assert {:ok, %Snapshot{status: :paused}} =
+             SquidMesh.execute_next(owner_id: "minimal-host-app-resume-test")
+
+    assert {:ok, paused_run} = WorkflowRuns.inspect_run(run.run_id, include_history: true)
+
+    assert paused_run.status == :paused
+    assert paused_run.manual_state.step == "wait_for_resume"
+
+    assert {:ok, resumed_run} = WorkflowRuns.resume(run.run_id, %{actor: "ops_resume"})
+
+    assert resumed_run.status == :running
+    assert [%{step: "record_resume", status: :available}] = resumed_run.visible_attempts
+
+    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.run_id)
+    assert {:ok, completed_history} = WorkflowRuns.inspect_run(run.run_id, include_history: true)
+
+    assert completed_run.status == :completed
+    assert completed_history.manual_state == nil
+
+    assert [
+             %{signal_type: "start_run"},
+             %{
+               signal_type: "resume_run",
+               payload: %{run_id: resumed_run_id, attributes: %{actor: "ops_resume"}}
+             }
+           ] = completed_history.command_history
+
+    assert resumed_run_id == run.run_id
   end
 
   test "runs the daily digest workflow through its manual trigger" do
@@ -905,6 +967,63 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert completed_run.context.approval.comment == "rejected"
 
     assert completed_history.manual_state == nil
+
+    assert [
+             %{signal_type: "start_run"},
+             %{
+               signal_type: "reject_run",
+               payload: %{
+                 run_id: rejected_run_id,
+                 attributes: %{actor: "ops_456", comment: "rejected"}
+               }
+             }
+           ] = completed_history.command_history
+
+    assert rejected_run_id == run.run_id
+  end
+
+  test "applies inbound Jido command signals to real runs through Squid Mesh signals" do
+    assert {:ok, run} = WorkflowRuns.start_cancellable_wait(%{account_id: "acct_jido_cancel"})
+
+    assert [%{step: "wait_for_cancellation", status: :available}] = run.visible_attempts
+
+    assert {:ok, signal} =
+             Signal.cancel_run(run.run_id,
+               metadata: %{source: "jido_router_test"},
+               idempotency_key: "minimal-host-app:jido-cancel:#{run.run_id}"
+             )
+
+    assert {:ok, jido_signal} = JidoAdapter.to_jido(signal)
+    assert {:ok, inbound_signal} = JidoAdapter.from_jido(jido_signal)
+
+    assert {:ok, cancelled_run} = SquidMesh.apply_signal(inbound_signal)
+
+    assert cancelled_run.status == :cancelled
+    assert cancelled_run.visible_attempts == []
+
+    command_history_before = cancelled_run.command_history
+
+    assert {:ok, duplicate_cancelled_run} = SquidMesh.apply_signal(inbound_signal)
+
+    assert duplicate_cancelled_run.command_history == command_history_before
+
+    assert [
+             %{signal_type: "start_run"},
+             %{
+               signal_type: "cancel_run",
+               metadata: %{source: "jido_router_test"},
+               idempotency_key: "minimal-host-app:jido-cancel:" <> _
+             }
+           ] = cancelled_run.command_history
+
+    assert {:ok, invalid_jido_signal} =
+             Jido.Signal.new("squid_mesh.runtime.command.cancel_run", %{},
+               source: "/squid_mesh/runtime/commands",
+               subject: run.run_id
+             )
+
+    assert {:error, {:invalid_signal_adapter, {:data, :missing_signal_payload}}} =
+             JidoAdapter.from_jido(invalid_jido_signal)
   end
 
   test "runs the documented smoke path" do
@@ -933,6 +1052,9 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert payment_recovery.status == :completed
     assert payment_recovery.context.notification.channel == "email"
     assert payment_recovery.context.gateway_check.status == "retry_required"
+    assert payment_recovery.context.gateway_check.attempt.idempotency_key
+    assert payment_recovery.context.gateway_check.attempt.claim_id
+    refute Map.has_key?(payment_recovery.context.gateway_check.attempt, :claim_token)
 
     assert dependency_recovery.status == :completed
     assert dependency_recovery.context.notification.channel == "email"

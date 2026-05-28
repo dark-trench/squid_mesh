@@ -31,6 +31,10 @@ defmodule MinimalHostApp.WorkflowRuns do
           required(:account_id) => String.t()
         }
 
+  @type manual_pause_attrs :: %{
+          required(:account_id) => String.t()
+        }
+
   @type manual_digest_attrs :: %{
           required(:channel) => String.t(),
           required(:digest_date) => String.t()
@@ -92,6 +96,12 @@ defmodule MinimalHostApp.WorkflowRuns do
           {:ok, run_result()} | {:error, term()}
   def start_manual_approval(attrs) when is_map(attrs) do
     SquidMesh.start(MinimalHostApp.Workflows.ManualApproval, :manual_approval, attrs)
+  end
+
+  @spec start_manual_pause(manual_pause_attrs()) ::
+          {:ok, run_result()} | {:error, term()}
+  def start_manual_pause(attrs) when is_map(attrs) do
+    SquidMesh.start(MinimalHostApp.Workflows.ManualPause, :manual_pause, attrs)
   end
 
   @spec start_manual_digest(manual_digest_attrs()) ::

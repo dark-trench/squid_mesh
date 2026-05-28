@@ -158,12 +158,16 @@ signal path is first-class inside Squid Mesh; raw `Jido.Signal` is the interop
 envelope, not a replacement for the Squid Mesh signal taxonomy.
 
 Public workflow-control functions normalize caller input into these signals and
-then hand them to the journal signal interpreter. That keeps public callers on
-Squid Mesh concepts while cancellation and manual decisions share one internal
-command path with any future signal-delivery adapter. Host apps that already
-normalize commands at their own boundary can call `SquidMesh.apply_signal/2`
-with a `SquidMesh.Runtime.Signal` instead of calling each control function
-directly.
+then hand them to the journal signal interpreter. `SquidMesh.apply_signal/2`
+uses the same path for starts, cron starts, replays, cancellation, and manual
+decisions. That keeps public callers on Squid Mesh concepts while host apps that
+already normalize commands at their own boundary can pass a
+`SquidMesh.Runtime.Signal` directly. The named helpers remain the ergonomic API
+for ordinary application code; `apply_signal/2` is the envelope API for agents,
+routers, schedulers, webhooks, and Jido interop boundaries.
+
+Workflow definitions are authored with the Squid Mesh DSL. Runtime signals
+start, replay, cancel, or resolve runs of those definitions.
 
 When a command reaches the journal runtime, Squid Mesh records a
 `:run_signal_received` fact in the run thread before the command's lifecycle
@@ -176,9 +180,8 @@ persisted.
 The command receipt and command application facts are appended together with one
 thread revision fence. That keeps the journal as the source of truth and avoids a
 crash window where inspection could see a command receipt without the matching
-workflow-state change. Duplicate commands keep their existing semantics: cron
-duplicates and already-applied manual resolutions return the existing run state
-without appending another receipt.
+workflow-state change. Duplicate commands keep their existing semantics only
+when the same idempotency key is reused; a different key is a distinct command.
 
 Inspection exposes the projected command receipts through
 `Snapshot.command_history`, ordered by receipt time. This is the lightweight

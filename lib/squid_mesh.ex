@@ -397,10 +397,15 @@ defmodule SquidMesh do
   @doc """
   Applies a Squid Mesh-native runtime command signal.
 
-  Host applications can use this when they already normalize control requests
-  into `SquidMesh.Runtime.Signal` envelopes. Public control functions such as
-  `cancel/2`, `resume/3`, `approve/3`, and `reject/3` use the same journal
-  signal interpreter internally.
+  Use the named helpers such as `start/3`, `cancel/2`, `resume/3`,
+  `approve/3`, `reject/3`, and `replay/2` for ordinary application calls. Use
+  `apply_signal/2` when an agent, router, webhook, scheduler, or Jido interop
+  boundary has already normalized a request into a
+  `SquidMesh.Runtime.Signal` envelope.
+
+  The envelope API applies the same runtime commands for starts, cron starts,
+  replays, cancellation, and manual decisions while preserving signal metadata,
+  occurrence time, and idempotency keys in the journal command history.
   """
   @spec apply_signal(Signal.t(), keyword()) ::
           {:ok, SquidMesh.ReadModel.Inspection.Snapshot.t()}
@@ -633,10 +638,38 @@ defmodule SquidMesh do
   end
 
   defp control_signal_options(overrides) do
+    with {:ok, opts} <- control_signal_occurred_at(overrides),
+         {:ok, opts} <- control_signal_metadata(overrides, opts) do
+      control_signal_idempotency_key(overrides, opts)
+    end
+  end
+
+  defp control_signal_occurred_at(overrides) do
     case Keyword.fetch(overrides, :now) do
       {:ok, %DateTime{} = now} -> {:ok, [occurred_at: now]}
       {:ok, _invalid} -> {:error, {:invalid_option, {:now, :invalid}}}
       :error -> {:ok, []}
+    end
+  end
+
+  defp control_signal_metadata(overrides, opts) do
+    case Keyword.fetch(overrides, :metadata) do
+      {:ok, metadata} when is_map(metadata) -> {:ok, Keyword.put(opts, :metadata, metadata)}
+      {:ok, _invalid} -> {:error, {:invalid_option, {:metadata, :invalid}}}
+      :error -> {:ok, opts}
+    end
+  end
+
+  defp control_signal_idempotency_key(overrides, opts) do
+    case Keyword.fetch(overrides, :idempotency_key) do
+      {:ok, idempotency_key} when is_binary(idempotency_key) and idempotency_key != "" ->
+        {:ok, Keyword.put(opts, :idempotency_key, idempotency_key)}
+
+      {:ok, _invalid} ->
+        {:error, {:invalid_option, {:idempotency_key, :invalid}}}
+
+      :error ->
+        {:ok, opts}
     end
   end
 

@@ -7,6 +7,8 @@ This example shows how an application can:
 - configure Squid Mesh with its own `Repo`
 - expose workflow operations through an application-facing module
 - pause and resume a human-in-the-loop workflow through that boundary
+- apply Squid Mesh runtime command signals, including Jido envelope interop,
+  through real host-app runs
 - activate cron workflows through a host-owned scheduler plugin
 - run repeatable smoke, resilience, and bounded soak paths during development
 
@@ -156,6 +158,11 @@ transition :check_gateway_status,
 
 transition :check_gateway_status, on: :ok, to: :issue_gateway_credit
 ```
+
+The gateway check step also copies the durable step-context metadata into its
+output under `gateway_check.attempt`. That gives the sample app a concrete
+example of using native Squid Mesh context fields such as `idempotency_key` and
+`claim_id` from an ordinary step module.
 
 The saga checkout workflow demonstrates reversible side effects:
 

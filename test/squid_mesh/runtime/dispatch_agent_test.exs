@@ -108,7 +108,14 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
                notifier_opts: [test_pid: self()]
              )
 
-    assert_receive {:attempt_wakeup, %{runnable_key: @runnable_key, queue: "default"}}
+    assert_receive {:attempt_wakeup, attempt}
+
+    assert attempt == %{
+             run_id: @run_id,
+             runnable_key: @runnable_key,
+             queue: "default",
+             visible_at: @visible_at
+           }
 
     assert scheduled_agent.state.thread_rev == 2
 
@@ -147,6 +154,35 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
 
     assert {:ok, [scheduled_entry]} = Journal.load_entries(@storage, {:dispatch, "default"})
     assert scheduled_entry.type == :attempt_scheduled
+  end
+
+  test "uses parent run id for wakeup attempts when planned runnable omits run id" do
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    runnable_without_run_id = Map.delete(planned_runnable(), :run_id)
+
+    assert {:ok, %{agent: scheduled_agent, runnables: [%{runnable_key: @runnable_key}]}} =
+             DispatchAgent.schedule_attempts(
+               @storage,
+               agent,
+               @run_id,
+               [runnable_without_run_id],
+               now: @visible_at,
+               notifier: TestNotifier,
+               notifier_opts: [test_pid: self()]
+             )
+
+    assert_receive {:attempt_wakeup,
+                    %{
+                      run_id: @run_id,
+                      runnable_key: @runnable_key,
+                      queue: "default",
+                      visible_at: @visible_at
+                    }}
+
+    assert [
+             %{runnable_key: @runnable_key, status: :available, wakeup_emitted?: true}
+           ] = DispatchAgent.visible_attempts(scheduled_agent, @visible_at)
   end
 
   test "records known run ids idempotently on the dispatch queue" do

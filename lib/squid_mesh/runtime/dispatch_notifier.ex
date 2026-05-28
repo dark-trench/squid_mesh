@@ -21,10 +21,16 @@ defmodule SquidMesh.Runtime.DispatchNotifier do
   @spec notify_attempt_scheduled(module(), attempt(), keyword()) :: :ok | {:error, term()}
   def notify_attempt_scheduled(notifier, attempt, opts)
       when is_atom(notifier) and is_map(attempt) and is_list(opts) do
-    if function_exported?(notifier, :notify_attempt_scheduled, 2) do
-      notifier.notify_attempt_scheduled(attempt, opts)
-    else
-      {:error, {:invalid_notifier, notifier}}
+    case Code.ensure_loaded(notifier) do
+      {:module, ^notifier} ->
+        if function_exported?(notifier, :notify_attempt_scheduled, 2) do
+          notifier.notify_attempt_scheduled(attempt, opts)
+        else
+          {:error, {:invalid_notifier, notifier}}
+        end
+
+      {:error, _reason} ->
+        {:error, {:invalid_notifier, notifier}}
     end
   end
 end

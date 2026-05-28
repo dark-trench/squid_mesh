@@ -25,6 +25,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   alias SquidMesh.Runtime.Journal.Options
   alias SquidMesh.Runtime.RunCatalogProjection
   alias SquidMesh.Runtime.RunIndexProjection
+  alias SquidMesh.Runtime.Signal
   alias SquidMesh.Runtime.WorkflowAgent
   alias SquidMesh.Runtime.WorkflowAgent.Projection
   alias SquidMesh.Workflow.Definition
@@ -119,7 +120,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
              %{
                run_id: run_id,
                payload: start_signal_payload(opts, workflow, trigger, input),
-               metadata: %{},
+               metadata: start_signal_metadata(opts),
                idempotency_key: start_signal_idempotency_key(opts)
              },
              now
@@ -145,35 +146,62 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   end
 
   defp start_signal_type(opts) do
-    cond do
-      replayed_from_run_id(opts) -> :replay_run
-      schedule_context?(initial_context(opts)) -> :start_cron
-      true -> :start_run
+    case start_signal(opts) do
+      %Signal{type: type} ->
+        type
+
+      _other ->
+        cond do
+          replayed_from_run_id(opts) -> :replay_run
+          schedule_context?(initial_context(opts)) -> :start_cron
+          true -> :start_run
+        end
     end
   end
 
   defp start_signal_idempotency_key(opts) do
-    context = initial_context(opts)
+    case start_signal(opts) do
+      %Signal{idempotency_key: idempotency_key} ->
+        idempotency_key
 
-    case schedule_idempotency_key(context) do
-      nil -> schedule_signal_id(context)
-      idempotency_key -> idempotency_key
+      _other ->
+        context = initial_context(opts)
+
+        case schedule_idempotency_key(context) do
+          nil -> schedule_signal_id(context)
+          idempotency_key -> idempotency_key
+        end
     end
   end
 
   defp start_signal_payload(opts, workflow, trigger, input) do
-    case replayed_from_run_id(opts) do
-      run_id when is_binary(run_id) ->
-        %{run_id: run_id, allow_irreversible: replay_allow_irreversible?(opts)}
+    case start_signal(opts) do
+      %Signal{payload: payload} ->
+        payload
 
-      _not_replay ->
-        %{
-          workflow: Definition.serialize_workflow(workflow),
-          trigger: Atom.to_string(Map.fetch!(trigger, :name)),
-          input: input
-        }
+      _other ->
+        case replayed_from_run_id(opts) do
+          run_id when is_binary(run_id) ->
+            %{run_id: run_id, allow_irreversible: replay_allow_irreversible?(opts)}
+
+          _not_replay ->
+            %{
+              workflow: Definition.serialize_workflow(workflow),
+              trigger: Atom.to_string(Map.fetch!(trigger, :name)),
+              input: input
+            }
+        end
     end
   end
+
+  defp start_signal_metadata(opts) do
+    case start_signal(opts) do
+      %Signal{metadata: metadata} -> metadata
+      _other -> %{}
+    end
+  end
+
+  defp start_signal(opts), do: Keyword.get(opts, :start_signal)
 
   defp replay_allow_irreversible?(opts), do: Keyword.get(opts, :allow_irreversible) == true
 
@@ -558,8 +586,13 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   defp validate_existing_schedule_start(workflow_agent, workflow, opts) do
     existing_workflow = workflow_agent.state.workflow
     expected_workflow = Definition.serialize_workflow(workflow)
-    expected_idempotency_key = schedule_idempotency_key(initial_context(opts))
-    existing_idempotency_key = existing_schedule_idempotency_key(workflow_agent)
+
+    expected_idempotency_key =
+      schedule_idempotency_key(initial_context(opts)) || start_signal_idempotency_key(opts)
+
+    existing_idempotency_key =
+      existing_schedule_idempotency_key(workflow_agent) ||
+        existing_start_signal_idempotency_key(workflow_agent, start_signal_type(opts))
 
     cond do
       existing_workflow != expected_workflow ->
@@ -569,6 +602,9 @@ defmodule SquidMesh.Runtime.Journal.Starter do
         {:error, :conflict}
 
       existing_idempotency_key != expected_idempotency_key ->
+        {:error, :conflict}
+
+      not equivalent_start_signal_payload?(workflow_agent, workflow, opts) ->
         {:error, :conflict}
 
       true ->
@@ -586,6 +622,129 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   end
 
   defp existing_schedule_idempotency_key(_workflow_agent), do: nil
+
+  defp existing_start_signal_idempotency_key(
+         %{state: %{projection: %Projection{} = projection}},
+         signal_type
+       )
+       when is_atom(signal_type) do
+    serialized_signal_type = Atom.to_string(signal_type)
+
+    projection
+    |> Projection.command_history()
+    |> Enum.find_value(fn
+      %{signal_type: ^serialized_signal_type, idempotency_key: idempotency_key}
+      when is_binary(idempotency_key) ->
+        idempotency_key
+
+      _command ->
+        false
+    end)
+  end
+
+  defp existing_start_signal_idempotency_key(_workflow_agent, _signal_type), do: nil
+
+  defp equivalent_start_signal_payload?(workflow_agent, workflow, opts) do
+    case start_signal(opts) do
+      %Signal{type: type, idempotency_key: idempotency_key, payload: payload}
+      when is_atom(type) and is_binary(idempotency_key) ->
+        existing_start_signal_payload_matches?(
+          workflow_agent,
+          workflow,
+          Atom.to_string(type),
+          idempotency_key,
+          payload
+        )
+
+      _other ->
+        true
+    end
+  end
+
+  defp existing_start_signal_payload_matches?(
+         %{state: %{projection: %Projection{} = projection}},
+         workflow,
+         signal_type,
+         idempotency_key,
+         payload
+       ) do
+    with {:ok, expected_payload} <- canonical_start_signal_payload(signal_type, payload, workflow),
+         {:ok, existing_payload} <-
+           existing_start_signal_payload(projection, signal_type, idempotency_key, workflow) do
+      existing_payload == expected_payload
+    else
+      _missing_or_invalid -> false
+    end
+  end
+
+  defp existing_start_signal_payload_matches?(
+         _workflow_agent,
+         _workflow,
+         _signal_type,
+         _idempotency_key,
+         _payload
+       ),
+       do: false
+
+  defp existing_start_signal_payload(projection, signal_type, idempotency_key, workflow) do
+    projection
+    |> Projection.command_history()
+    |> Enum.find_value(fn
+      %{
+        signal_type: ^signal_type,
+        idempotency_key: ^idempotency_key,
+        payload: existing_payload
+      } ->
+        canonical_start_signal_payload(signal_type, existing_payload, workflow)
+
+      _command ->
+        nil
+    end) || :error
+  end
+
+  defp canonical_start_signal_payload("start_run", payload, workflow) when is_map(payload) do
+    with {:ok, trigger} <- canonical_start_run_trigger(payload_value(payload, :trigger), workflow) do
+      {:ok,
+       %{
+         workflow: payload_value(payload, :workflow),
+         trigger: trigger,
+         input: payload_value(payload, :input)
+       }}
+    end
+  end
+
+  defp canonical_start_signal_payload("start_cron", payload, _workflow) when is_map(payload) do
+    {:ok,
+     %{
+       workflow: payload_value(payload, :workflow),
+       trigger: payload_value(payload, :trigger),
+       input: payload_value(payload, :input)
+     }}
+  end
+
+  defp canonical_start_signal_payload(_signal_type, payload, _workflow) when is_map(payload),
+    do: {:ok, payload}
+
+  defp canonical_start_signal_payload(_signal_type, _payload, _workflow), do: :error
+
+  defp canonical_start_run_trigger(nil, workflow) do
+    with {:ok, definition} <- Definition.load(workflow) do
+      {:ok, Atom.to_string(Definition.default_trigger(definition))}
+    end
+  end
+
+  defp canonical_start_run_trigger(trigger, _workflow) when is_binary(trigger), do: {:ok, trigger}
+  defp canonical_start_run_trigger(_trigger, _workflow), do: :error
+
+  defp payload_value(payload, key) when is_map(payload) and is_atom(key) do
+    string_key = Atom.to_string(key)
+
+    cond do
+      Map.has_key?(payload, key) -> Map.fetch!(payload, key)
+      Map.has_key?(payload, string_key) -> Map.fetch!(payload, string_key)
+      true -> nil
+    end
+  end
 
   defp schedule_idempotency_key(context) when is_map(context) do
     context

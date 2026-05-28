@@ -207,7 +207,7 @@ defmodule SquidMesh.Runtime.DispatchAgent do
          {:ok, notifier, notifier_opts} <- notifier_options(opts),
          {:ok, entries, scheduled_runnables} <-
            schedule_entries(projection, queue, run_id, runnables, now) do
-      wakeup = %{notifier: notifier, notifier_opts: notifier_opts, now: now}
+      wakeup = %{run_id: run_id, notifier: notifier, notifier_opts: notifier_opts, now: now}
 
       persist_dispatch_entries(
         storage,
@@ -643,7 +643,12 @@ defmodule SquidMesh.Runtime.DispatchAgent do
          thread_rev,
          entries,
          scheduled_runnables,
-         %{notifier: notifier, notifier_opts: notifier_opts, now: %DateTime{} = now}
+         %{
+           run_id: run_id,
+           notifier: notifier,
+           notifier_opts: notifier_opts,
+           now: %DateTime{} = now
+         }
        ) do
     with {:ok, thread} <- Journal.append_entries(storage, entries, expected_rev: thread_rev) do
       scheduled_agent = apply_dispatch_entries(agent, projection, entries, thread.rev)
@@ -651,6 +656,7 @@ defmodule SquidMesh.Runtime.DispatchAgent do
       emit_live_wakeups(
         storage,
         scheduled_agent,
+        run_id,
         scheduled_runnables,
         notifier,
         notifier_opts,
@@ -662,12 +668,13 @@ defmodule SquidMesh.Runtime.DispatchAgent do
   defp emit_live_wakeups(
          storage,
          %Agent{} = agent,
+         run_id,
          scheduled_runnables,
          notifier,
          notifier_opts,
          %DateTime{} = now
        )
-       when is_atom(notifier) and not is_nil(notifier) do
+       when is_binary(run_id) and is_atom(notifier) and not is_nil(notifier) do
     result =
       Enum.reduce_while(scheduled_runnables, {:ok, agent, []}, fn runnable,
                                                                   {:ok, current_agent,
@@ -675,6 +682,7 @@ defmodule SquidMesh.Runtime.DispatchAgent do
         case notify_scheduled_attempt(
                storage,
                current_agent,
+               run_id,
                runnable,
                notifier,
                notifier_opts,
@@ -697,6 +705,7 @@ defmodule SquidMesh.Runtime.DispatchAgent do
   defp emit_live_wakeups(
          _storage,
          %Agent{} = agent,
+         _run_id,
          scheduled_runnables,
          nil,
          _notifier_opts,
@@ -708,12 +717,14 @@ defmodule SquidMesh.Runtime.DispatchAgent do
   defp notify_scheduled_attempt(
          storage,
          %Agent{} = agent,
+         run_id,
          runnable,
          notifier,
          notifier_opts,
          %DateTime{} = now
-       ) do
-    attempt = wakeup_attempt(agent.state.queue, runnable)
+       )
+       when is_binary(run_id) do
+    attempt = wakeup_attempt(agent.state.queue, run_id, runnable)
 
     case DispatchNotifier.notify_attempt_scheduled(notifier, attempt, notifier_opts) do
       :ok ->
@@ -746,9 +757,9 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     end
   end
 
-  defp wakeup_attempt(queue, runnable) do
+  defp wakeup_attempt(queue, run_id, runnable) do
     %{
-      run_id: runnable_value(runnable, :run_id),
+      run_id: runnable_value(runnable, :run_id) || run_id,
       runnable_key: runnable_key(runnable),
       queue: runnable_value(runnable, :queue) || queue,
       visible_at: runnable_value(runnable, :visible_at)

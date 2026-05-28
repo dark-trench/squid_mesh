@@ -387,10 +387,17 @@ alias SquidMesh.Runtime.Signal
 {:ok, approved_run} = SquidMesh.apply_signal(signal)
 ```
 
-The same pattern applies to `Signal.resume_run/3`, `Signal.reject_run/3`, and
-`Signal.cancel_run/2`. Reusing an idempotency key makes duplicate command
-delivery return the already-applied run state without appending another command
-receipt.
+The same pattern applies to `Signal.start_run/4`, `Signal.start_cron/4`,
+`Signal.replay_run/2`, `Signal.resume_run/3`, `Signal.reject_run/3`, and
+`Signal.cancel_run/2`. Keep using the named helpers such as `SquidMesh.start/3`
+and `SquidMesh.cancel/2` for ordinary application calls; use
+`SquidMesh.apply_signal/2` when an agent, router, webhook, scheduler, or Jido
+interop boundary has already produced a signal envelope. Reusing an idempotency
+key makes duplicate command delivery return the already-applied run state
+without appending another command receipt.
+
+Workflow definitions are authored with the Squid Mesh DSL. Runtime signals
+start, replay, cancel, or resolve runs of those definitions.
 
 Approval steps persist their resolved `:ok` and `:error` targets along with output-mapping metadata, so paused review flows survive deploys and restarts without semantic drift.
 
