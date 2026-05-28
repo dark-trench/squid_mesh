@@ -835,9 +835,8 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
     end
   end
 
-  defp manual_resolution_recorded?(storage, run_id, action, %Signal{}) when is_atom(action) do
-    manual_resolution_recorded?(storage, run_id, action, nil)
-  end
+  defp manual_resolution_recorded?(_storage, _run_id, action, %Signal{}) when is_atom(action),
+    do: false
 
   defp manual_resolution_recorded?(storage, run_id, action, _command) when is_atom(action) do
     serialized_action = Atom.to_string(action)

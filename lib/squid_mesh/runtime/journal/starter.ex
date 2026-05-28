@@ -146,25 +146,21 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   end
 
   defp start_signal_type(opts) do
-    case start_signal(opts) do
+    case start_command_signal(opts) do
       %Signal{type: type} ->
         type
 
-      _other ->
-        cond do
-          replayed_from_run_id(opts) -> :replay_run
-          schedule_context?(initial_context(opts)) -> :start_cron
-          true -> :start_run
-        end
+      nil ->
+        derived_start_signal_type(opts)
     end
   end
 
   defp start_signal_idempotency_key(opts) do
-    case start_signal(opts) do
-      %Signal{idempotency_key: idempotency_key} ->
+    case start_command_signal(opts) do
+      %Signal{idempotency_key: idempotency_key} when is_binary(idempotency_key) ->
         idempotency_key
 
-      _other ->
+      _no_signal_key ->
         context = initial_context(opts)
 
         case schedule_idempotency_key(context) do
@@ -175,11 +171,14 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   end
 
   defp start_signal_payload(opts, workflow, trigger, input) do
-    case start_signal(opts) do
+    case start_command_signal(opts) do
+      %Signal{type: :start_run, payload: %{trigger: nil} = payload} ->
+        Map.put(payload, :trigger, Atom.to_string(Map.fetch!(trigger, :name)))
+
       %Signal{payload: payload} ->
         payload
 
-      _other ->
+      nil ->
         case replayed_from_run_id(opts) do
           run_id when is_binary(run_id) ->
             %{run_id: run_id, allow_irreversible: replay_allow_irreversible?(opts)}
@@ -195,13 +194,33 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   end
 
   defp start_signal_metadata(opts) do
-    case start_signal(opts) do
+    case start_command_signal(opts) do
       %Signal{metadata: metadata} -> metadata
-      _other -> %{}
+      nil -> %{}
     end
   end
 
-  defp start_signal(opts), do: Keyword.get(opts, :start_signal)
+  defp command_signal(opts) do
+    case Keyword.get(opts, :command_signal) do
+      %Signal{} = signal -> signal
+      _none -> nil
+    end
+  end
+
+  defp start_command_signal(opts) do
+    case command_signal(opts) do
+      %Signal{type: type} = signal when type in [:start_run, :start_cron, :replay_run] -> signal
+      _unsupported_or_missing -> nil
+    end
+  end
+
+  defp derived_start_signal_type(opts) do
+    cond do
+      replayed_from_run_id(opts) -> :replay_run
+      schedule_context?(initial_context(opts)) -> :start_cron
+      true -> :start_run
+    end
+  end
 
   defp replay_allow_irreversible?(opts), do: Keyword.get(opts, :allow_irreversible) == true
 
@@ -645,9 +664,9 @@ defmodule SquidMesh.Runtime.Journal.Starter do
   defp existing_start_signal_idempotency_key(_workflow_agent, _signal_type), do: nil
 
   defp equivalent_start_signal_payload?(workflow_agent, workflow, opts) do
-    case start_signal(opts) do
+    case start_command_signal(opts) do
       %Signal{type: type, idempotency_key: idempotency_key, payload: payload}
-      when is_atom(type) and is_binary(idempotency_key) ->
+      when type in [:start_run, :start_cron, :replay_run] and is_binary(idempotency_key) ->
         existing_start_signal_payload_matches?(
           workflow_agent,
           workflow,
@@ -656,7 +675,7 @@ defmodule SquidMesh.Runtime.Journal.Starter do
           payload
         )
 
-      _other ->
+      _no_command_signal ->
         true
     end
   end

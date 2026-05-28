@@ -24,7 +24,7 @@ defmodule SquidMesh.Runtime.DispatchNotifier do
     case Code.ensure_loaded(notifier) do
       {:module, ^notifier} ->
         if function_exported?(notifier, :notify_attempt_scheduled, 2) do
-          notifier.notify_attempt_scheduled(attempt, opts)
+          safe_notify_attempt_scheduled(notifier, attempt, opts)
         else
           {:error, {:invalid_notifier, notifier}}
         end
@@ -32,6 +32,14 @@ defmodule SquidMesh.Runtime.DispatchNotifier do
       {:error, _reason} ->
         {:error, {:invalid_notifier, notifier}}
     end
+  end
+
+  defp safe_notify_attempt_scheduled(notifier, attempt, opts) do
+    notifier.notify_attempt_scheduled(attempt, opts)
+  rescue
+    exception -> {:error, {:notifier_exception, notifier, exception}}
+  catch
+    kind, reason -> {:error, {:notifier_throw, notifier, {kind, reason}}}
   end
 end
 

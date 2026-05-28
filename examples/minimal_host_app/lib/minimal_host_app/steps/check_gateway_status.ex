@@ -31,7 +31,9 @@ defmodule MinimalHostApp.Steps.CheckGatewayStatus do
 
       {:error, error} ->
         {:retry,
-         Map.put(SquidMesh.Tools.Error.to_map(error), :attempt, attempt_metadata(context))}
+         Map.put(SquidMesh.Tools.Error.to_map(error), :gateway_check, %{
+           attempt: attempt_metadata(context)
+         })}
     end
   end
 

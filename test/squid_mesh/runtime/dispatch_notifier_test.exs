@@ -3,6 +3,20 @@ defmodule SquidMesh.Runtime.DispatchNotifierTest do
 
   alias SquidMesh.Runtime.DispatchNotifier
 
+  defmodule RaisingNotifier do
+    @behaviour DispatchNotifier
+
+    @impl DispatchNotifier
+    def notify_attempt_scheduled(_attempt, _opts), do: raise("notifier failed")
+  end
+
+  defmodule ThrowingNotifier do
+    @behaviour DispatchNotifier
+
+    @impl DispatchNotifier
+    def notify_attempt_scheduled(_attempt, _opts), do: throw(:notifier_failed)
+  end
+
   @attempt %{
     run_id: "run_123",
     runnable_key: "run_123:charge_card:1",
@@ -22,5 +36,16 @@ defmodule SquidMesh.Runtime.DispatchNotifierTest do
                @attempt,
                []
              )
+  end
+
+  test "returns a structured error when notifier raises" do
+    assert {:error,
+            {:notifier_exception, RaisingNotifier, %RuntimeError{message: "notifier failed"}}} =
+             DispatchNotifier.notify_attempt_scheduled(RaisingNotifier, @attempt, [])
+  end
+
+  test "returns a structured error when notifier throws" do
+    assert {:error, {:notifier_throw, ThrowingNotifier, {:throw, :notifier_failed}}} =
+             DispatchNotifier.notify_attempt_scheduled(ThrowingNotifier, @attempt, [])
   end
 end

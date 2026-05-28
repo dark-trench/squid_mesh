@@ -100,6 +100,10 @@ defmodule MinimalHostApp.Smoke do
           journal_recovery: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_cancellation: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           journal_replay: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          journal_command_signals: %{
+            start: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+            replay: SquidMesh.ReadModel.Inspection.Snapshot.t()
+          },
           journal_cron_digest: SquidMesh.ReadModel.Inspection.Snapshot.t(),
           command_signals: map(),
           jido_command_signals: map(),
@@ -121,6 +125,7 @@ defmodule MinimalHostApp.Smoke do
     journal_recovery = run_journal_recovery!()
     journal_cancellation = run_journal_cancellation!()
     journal_replay = run_journal_replay!()
+    journal_command_signals = run_journal_command_signals!()
     journal_cron_digest = run_journal_cron_digest!()
     command_signals = run_signal_construction!()
     jido_command_signals = run_jido_signal_adapter!(command_signals)
@@ -147,6 +152,7 @@ defmodule MinimalHostApp.Smoke do
         journal_recovery: journal_recovery,
         journal_cancellation: journal_cancellation,
         journal_replay: journal_replay,
+        journal_command_signals: journal_command_signals,
         journal_cron_digest: journal_cron_digest,
         command_signals: command_signals,
         jido_command_signals: jido_command_signals,
@@ -630,6 +636,75 @@ defmodule MinimalHostApp.Smoke do
     after
       RuntimeHarness.stop_gateway_server(server_pid)
     end
+  end
+
+  @doc """
+  Starts and replays journal runs through Squid Mesh command signals.
+  """
+  @spec run_journal_command_signals!() :: %{
+          start: SquidMesh.ReadModel.Inspection.Snapshot.t(),
+          replay: SquidMesh.ReadModel.Inspection.Snapshot.t()
+        }
+  def run_journal_command_signals! do
+    RuntimeHarness.ensure_runtime_started()
+    queue = journal_run_queue()
+
+    attrs = %{
+      account_id: "acct_journal_signal_demo",
+      invoice_id: "inv_journal_signal_demo",
+      attempt_id: "attempt_journal_signal_demo"
+    }
+
+    with_journal_runtime_config(queue, fn ->
+      with {:ok, start_signal} <-
+             Signal.start_run(
+               MinimalHostApp.Workflows.DependencyRecovery,
+               :dependency_recovery,
+               attrs,
+               metadata: %{source: "minimal_host_app_smoke"},
+               idempotency_key: "minimal-host-app:journal-signal:start"
+             ),
+           {:ok, started_run} <- SquidMesh.apply_signal(start_signal),
+           {:ok, completed_start} <- drain_journal_run(started_run.run_id, @journal_run_attempts),
+           {:ok, replay_signal} <-
+             Signal.replay_run(
+               completed_start.run_id,
+               metadata: %{source: "minimal_host_app_smoke"},
+               idempotency_key: "minimal-host-app:journal-signal:replay"
+             ),
+           {:ok, replayed_run} <- SquidMesh.apply_signal(replay_signal),
+           {:ok, completed_replay} <-
+             drain_journal_run(replayed_run.run_id, @journal_run_attempts) do
+        unless completed_start.status == :completed and completed_replay.status == :completed do
+          raise "unexpected journal command signal smoke result"
+        end
+
+        unless completed_replay.replayed_from_run_id == completed_start.run_id do
+          raise "unexpected journal command signal replay lineage"
+        end
+
+        case completed_start.command_history do
+          [%{signal_type: "start_run", metadata: %{source: "minimal_host_app_smoke"}}] ->
+            :ok
+
+          _other ->
+            raise "unexpected journal start command signal history"
+        end
+
+        case completed_replay.command_history do
+          [%{signal_type: "replay_run", metadata: %{source: "minimal_host_app_smoke"}}] ->
+            :ok
+
+          _other ->
+            raise "unexpected journal replay command signal history"
+        end
+
+        %{start: completed_start, replay: completed_replay}
+      else
+        {:error, reason} ->
+          raise "journal command signal smoke test failed: #{inspect(reason)}"
+      end
+    end)
   end
 
   @doc """

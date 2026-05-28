@@ -8,25 +8,17 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreterTest do
 
   @run_id "3c82d86d-31a6-4d57-9e41-4f5c95125be6"
 
-  test "rejects unsupported runtime command signals" do
-    signal = %Signal{
-      type: :unknown_runtime_command,
-      payload: %{},
-      metadata: %{},
-      occurred_at: DateTime.utc_now()
-    }
+  test "validates malformed supported runtime command signals" do
+    for type <- [:start_run, :start_cron, :replay_run] do
+      signal = %Signal{
+        type: type,
+        payload: %{},
+        metadata: %{},
+        occurred_at: DateTime.utc_now()
+      }
 
-    assert {:error, {:unsupported_signal, :unknown_runtime_command}} =
-             SignalInterpreter.apply(signal, [])
-  end
-
-  test "rejects malformed interpreter inputs" do
-    assert {:ok, %Signal{} = signal} = Signal.cancel_run(@run_id)
-
-    assert {:error, {:invalid_option, {:opts, :invalid}}} =
-             SignalInterpreter.apply(signal, :bad_opts)
-
-    assert {:error, :invalid_signal} = SignalInterpreter.apply(%{}, [])
+      assert {:error, {:invalid_signal, ^type}} = SignalInterpreter.apply(signal, [])
+    end
   end
 
   test "rejects malformed start command signals without raising" do
@@ -39,20 +31,42 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreterTest do
           },
           %Signal{
             type: :start_run,
-            payload: %{workflow: "Elixir.BadWorkflow", trigger: "manual"},
+            payload: %{workflow: :bad_workflow, trigger: "manual", input: %{}},
             metadata: %{},
             occurred_at: DateTime.utc_now()
           },
           %Signal{
             type: :start_cron,
-            payload: %{workflow: "Elixir.BadWorkflow", trigger: nil, input: %{}},
+            payload: %{workflow: :bad_workflow, trigger: nil, input: %{}},
             metadata: %{},
             occurred_at: DateTime.utc_now()
           }
         ] do
       signal_type = signal.type
+
       assert {:error, {:invalid_signal, ^signal_type}} = SignalInterpreter.apply(signal, [])
     end
+  end
+
+  test "rejects unsupported runtime command signals" do
+    signal = %Signal{
+      type: :unknown_command,
+      payload: %{},
+      metadata: %{},
+      occurred_at: DateTime.utc_now()
+    }
+
+    assert {:error, {:unsupported_signal, :unknown_command}} =
+             SignalInterpreter.apply(signal, [])
+  end
+
+  test "rejects malformed interpreter inputs" do
+    assert {:ok, %Signal{} = signal} = Signal.cancel_run(@run_id)
+
+    assert {:error, {:invalid_option, {:opts, :invalid}}} =
+             SignalInterpreter.apply(signal, :bad_opts)
+
+    assert {:error, :invalid_signal} = SignalInterpreter.apply(%{}, [])
   end
 
   test "journal control modules reject unsupported or malformed direct signals" do

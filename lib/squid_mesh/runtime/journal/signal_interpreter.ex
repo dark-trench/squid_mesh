@@ -11,19 +11,17 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreter do
   alias SquidMesh.Workflow.Definition
 
   @manual_signal_types [:approve_run, :reject_run, :resume_run]
+  @start_signal_types [:start_run, :start_cron]
 
   @doc false
   @spec apply(Signal.t(), keyword()) :: {:ok, term()} | {:error, term()}
-  def apply(%Signal{type: :start_run} = signal, opts) when is_list(opts) do
-    apply_start_run(signal, opts)
-  end
-
-  def apply(%Signal{type: :start_cron} = signal, opts) when is_list(opts) do
-    apply_start_cron(signal, opts)
+  def apply(%Signal{type: type} = signal, opts)
+      when type in @start_signal_types and is_list(opts) do
+    start_from_signal(signal, opts)
   end
 
   def apply(%Signal{type: :replay_run} = signal, opts) when is_list(opts) do
-    apply_replay_run(signal, opts)
+    replay_from_signal(signal, opts)
   end
 
   def apply(%Signal{type: :cancel_run} = signal, opts) when is_list(opts) do
@@ -41,145 +39,191 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreter do
   def apply(%Signal{}, _opts), do: {:error, {:invalid_option, {:opts, :invalid}}}
   def apply(_signal, _opts), do: {:error, :invalid_signal}
 
-  defp apply_start_run(%Signal{payload: payload} = signal, opts) do
-    with {:ok, workflow_name} <- payload_string(payload, :workflow, :start_run),
-         {:ok, trigger_name} <- payload_optional_string(payload, :trigger, :start_run),
-         {:ok, input} <- payload_map(payload, :input, :start_run),
-         {:ok, workflow, definition} <- Definition.load_serialized(workflow_name),
-         {:ok, trigger} <- deserialize_trigger(definition, trigger_name),
-         {:ok, idempotency_trigger_name} <- idempotency_trigger_name(definition, trigger),
-         start_opts <- start_options(opts, signal, workflow_name, idempotency_trigger_name) do
-      workflow
-      |> Starter.start_run(trigger, input, start_opts)
-      |> normalize_start_result()
+  defp start_from_signal(
+         %Signal{
+           type: type,
+           payload: %{workflow: workflow_name, trigger: trigger_name, input: input}
+         } = signal,
+         opts
+       )
+       when is_binary(workflow_name) and is_map(input) do
+    with {:ok, workflow, definition} <- Definition.load_serialized(workflow_name),
+         {:ok, trigger} <- signal_trigger(definition, trigger_name, type),
+         {:ok, start_input, start_opts} <-
+           start_arguments(signal, workflow, definition, trigger, input, opts) do
+      start_result(Starter.start_run(workflow, trigger, start_input, start_opts))
     end
   end
 
-  defp apply_start_cron(%Signal{payload: payload} = signal, opts) do
-    with {:ok, workflow_name} <- payload_string(payload, :workflow, :start_cron),
-         {:ok, trigger_name} <- payload_string(payload, :trigger, :start_cron),
-         {:ok, input} <- payload_map(payload, :input, :start_cron),
-         {:ok, workflow, definition} <- Definition.load_serialized(workflow_name),
-         {:ok, trigger} <- deserialize_trigger(definition, trigger_name),
+  defp start_from_signal(%Signal{type: type}, _opts), do: {:error, {:invalid_signal, type}}
+
+  defp replay_from_signal(
+         %Signal{
+           type: :replay_run,
+           payload: %{run_id: run_id, allow_irreversible: allow_irreversible}
+         } = signal,
+         opts
+       )
+       when is_binary(run_id) and is_boolean(allow_irreversible) do
+    with {:ok, signal_opts} <-
+           command_idempotency_options(
+             signal,
+             "SquidMesh.Runtime.Signal",
+             "replay_run:#{run_id}",
+             opts
+           ) do
+      signal_opts = signal_options(signal, signal_opts)
+
+      Replay.replay(run_id, [allow_irreversible: allow_irreversible], signal_opts)
+    end
+  end
+
+  defp replay_from_signal(%Signal{type: type}, _opts), do: {:error, {:invalid_signal, type}}
+
+  defp signal_trigger(definition, nil, :start_run),
+    do: {:ok, Definition.default_trigger(definition)}
+
+  defp signal_trigger(definition, trigger_name, type) when is_binary(trigger_name) do
+    case Definition.deserialize_trigger(definition, trigger_name) do
+      trigger when is_atom(trigger) -> {:ok, trigger}
+      _invalid -> {:error, {:invalid_signal, type}}
+    end
+  end
+
+  defp signal_trigger(_definition, _trigger_name, type), do: {:error, {:invalid_signal, type}}
+
+  defp start_arguments(
+         %Signal{type: :start_cron} = signal,
+         workflow,
+         definition,
+         trigger,
+         input,
+         opts
+       ) do
+    with {:ok, _validated_opts} <- start_options(signal, workflow, trigger, opts),
          {:ok, trigger_definition} <- Definition.trigger(definition, trigger),
          {:ok, schedule_context} <-
            ScheduleMetadata.cron_context(workflow, trigger_definition, input),
-         start_opts <-
-           opts
-           |> Keyword.put(:initial_context, schedule_context)
-           |> start_options(signal, workflow_name, trigger_name) do
-      workflow
-      |> Starter.start_run(trigger, %{}, start_opts)
-      |> normalize_start_result()
+         {:ok, start_opts} <-
+           start_options(
+             signal,
+             workflow,
+             trigger,
+             Keyword.put(opts, :initial_context, schedule_context)
+           ) do
+      {:ok, %{}, start_opts}
     end
   end
 
-  defp apply_replay_run(%Signal{payload: payload} = signal, opts) do
-    with {:ok, run_id} <- payload_string(payload, :run_id, :replay_run),
-         {:ok, allow_irreversible} <- payload_boolean(payload, :allow_irreversible, :replay_run) do
-      run_id
-      |> Replay.replay(
-        [allow_irreversible: allow_irreversible],
-        replay_options(opts, signal, run_id)
-      )
-      |> normalize_start_result()
+  defp start_arguments(signal, workflow, _definition, trigger, input, opts) do
+    with {:ok, start_opts} <- start_options(signal, workflow, trigger, opts) do
+      {:ok, input, start_opts}
     end
   end
 
-  defp payload_string(payload, key, signal_type) when is_map(payload) and is_atom(key) do
-    case payload_value(payload, key) do
-      value when is_binary(value) and value != "" -> {:ok, value}
-      _invalid -> {:error, {:invalid_signal, signal_type}}
+  defp start_options(%Signal{type: :start_cron} = signal, workflow, trigger, opts) do
+    with {:ok, opts} <- cron_idempotency_options(workflow, trigger, opts) do
+      {:ok, signal_options(signal, opts)}
     end
   end
 
-  defp payload_string(_payload, _key, signal_type), do: {:error, {:invalid_signal, signal_type}}
+  defp start_options(%Signal{type: :start_run} = signal, workflow, trigger, opts) do
+    workflow_name = Definition.serialize_workflow(workflow)
+    trigger_name = signal_trigger_name(trigger)
 
-  defp payload_optional_string(payload, key, signal_type) when is_map(payload) and is_atom(key) do
-    case payload_value(payload, key) do
-      nil -> {:ok, nil}
-      value when is_binary(value) and value != "" -> {:ok, value}
-      _invalid -> {:error, {:invalid_signal, signal_type}}
+    with {:ok, opts} <- command_idempotency_options(signal, workflow_name, trigger_name, opts) do
+      {:ok, signal_options(signal, opts)}
     end
   end
 
-  defp payload_optional_string(_payload, _key, signal_type),
-    do: {:error, {:invalid_signal, signal_type}}
+  defp start_result({:ok, {:duplicate_schedule_start, snapshot}}), do: {:ok, snapshot}
+  defp start_result(result), do: result
 
-  defp payload_map(payload, key, signal_type) when is_map(payload) and is_atom(key) do
-    case payload_value(payload, key) do
-      value when is_map(value) -> {:ok, value}
-      _invalid -> {:error, {:invalid_signal, signal_type}}
-    end
-  end
-
-  defp payload_map(_payload, _key, signal_type), do: {:error, {:invalid_signal, signal_type}}
-
-  defp payload_boolean(payload, key, signal_type) when is_map(payload) and is_atom(key) do
-    case payload_value(payload, key) do
-      value when is_boolean(value) -> {:ok, value}
-      _invalid -> {:error, {:invalid_signal, signal_type}}
-    end
-  end
-
-  defp payload_boolean(_payload, _key, signal_type),
-    do: {:error, {:invalid_signal, signal_type}}
-
-  defp payload_value(payload, key) do
-    string_key = Atom.to_string(key)
-
-    cond do
-      Map.has_key?(payload, key) -> Map.fetch!(payload, key)
-      Map.has_key?(payload, string_key) -> Map.fetch!(payload, string_key)
-      true -> nil
-    end
-  end
-
-  defp deserialize_trigger(_definition, nil), do: {:ok, nil}
-
-  defp deserialize_trigger(definition, trigger_name) when is_binary(trigger_name) do
-    case Definition.deserialize_trigger(definition, trigger_name) do
-      trigger when is_atom(trigger) -> {:ok, trigger}
-      invalid -> {:error, {:invalid_trigger, invalid}}
-    end
-  end
-
-  defp idempotency_trigger_name(definition, nil) do
-    idempotency_trigger_name(definition, Definition.default_trigger(definition))
-  end
-
-  defp idempotency_trigger_name(_definition, trigger) when is_atom(trigger),
-    do: {:ok, Atom.to_string(trigger)}
-
-  defp start_options(opts, %Signal{} = signal, workflow_name, trigger_name) do
+  defp signal_options(%Signal{} = signal, opts) do
     opts
     |> Keyword.put(:now, signal.occurred_at)
-    |> Keyword.put(:start_signal, signal)
-    |> put_idempotent_run_id(workflow_name, trigger_name, signal.idempotency_key)
+    |> Keyword.put(:command_signal, signal)
   end
 
-  defp replay_options(opts, %Signal{} = signal, source_run_id) do
-    opts
-    |> Keyword.put(:now, signal.occurred_at)
-    |> Keyword.put(:start_signal, signal)
-    |> put_idempotent_run_id("replay", source_run_id, signal.idempotency_key)
-  end
+  defp cron_idempotency_options(workflow, trigger, opts) do
+    case schedule_idempotency_key(Keyword.get(opts, :initial_context, %{})) do
+      {:ok, nil} ->
+        {:ok, opts}
 
-  defp put_idempotent_run_id(opts, workflow_name, trigger_name, idempotency_key)
-       when is_binary(workflow_name) and is_binary(trigger_name) and is_binary(idempotency_key) do
-    case ScheduleIdentity.run_id(workflow_name, trigger_name, idempotency_key) do
-      {:ok, run_id} ->
-        opts
-        |> Keyword.put(:run_id, run_id)
-        |> Keyword.put(:duplicate_schedule_start, true)
+      {:ok, idempotency_key} ->
+        workflow_name = Definition.serialize_workflow(workflow)
+        trigger_name = Definition.serialize_trigger(trigger)
 
-      {:error, _reason} ->
-        opts
+        with {:ok, run_id} <-
+               ScheduleIdentity.run_id(workflow_name, trigger_name, idempotency_key) do
+          opts =
+            opts
+            |> Keyword.put(:run_id, run_id)
+            |> Keyword.put(:duplicate_schedule_start, true)
+
+          {:ok, opts}
+        end
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
-  defp put_idempotent_run_id(opts, _workflow_name, _trigger_name, _idempotency_key), do: opts
+  defp command_idempotency_options(%Signal{idempotency_key: nil}, _workflow, _trigger, opts) do
+    {:ok, opts}
+  end
 
-  defp normalize_start_result({:ok, {:duplicate_schedule_start, snapshot}}), do: {:ok, snapshot}
-  defp normalize_start_result(result), do: result
+  defp command_idempotency_options(
+         %Signal{idempotency_key: idempotency_key},
+         workflow,
+         trigger,
+         opts
+       )
+       when is_binary(idempotency_key) and idempotency_key != "" do
+    with {:ok, run_id} <- ScheduleIdentity.run_id(workflow, trigger, idempotency_key) do
+      {:ok, Keyword.put(opts, :run_id, run_id)}
+    end
+  end
+
+  defp command_idempotency_options(%Signal{}, _workflow, _trigger, _opts) do
+    {:error, {:invalid_signal, {:idempotency_key, :expected_non_empty_string}}}
+  end
+
+  defp signal_trigger_name(nil), do: "__default__"
+
+  defp signal_trigger_name(trigger) when is_atom(trigger),
+    do: Definition.serialize_trigger(trigger)
+
+  defp schedule_idempotency_key(context) when is_map(context) do
+    context
+    |> schedule_context()
+    |> schedule_value(:idempotency_key)
+    |> validate_schedule_idempotency_key()
+  end
+
+  defp schedule_idempotency_key(_context), do: {:ok, nil}
+
+  defp validate_schedule_idempotency_key(nil), do: {:ok, nil}
+
+  defp validate_schedule_idempotency_key(key) when is_binary(key) and key != "", do: {:ok, key}
+
+  defp validate_schedule_idempotency_key(_key) do
+    {:error, {:invalid_option, {:schedule_idempotency_key, :invalid}}}
+  end
+
+  defp schedule_context(context) do
+    case Map.fetch(context, :schedule) do
+      {:ok, schedule} -> schedule
+      :error -> Map.get(context, "schedule", %{})
+    end
+  end
+
+  defp schedule_value(schedule, key) when is_map(schedule) do
+    case Map.fetch(schedule, key) do
+      {:ok, value} -> value
+      :error -> Map.get(schedule, Atom.to_string(key))
+    end
+  end
+
+  defp schedule_value(_schedule, _key), do: nil
 end

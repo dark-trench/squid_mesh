@@ -57,7 +57,7 @@ defmodule MinimalHostApp.Steps.CheckGatewayStatusTest do
     assert error.retryable? == true
     assert error.details.status == 503
 
-    assert error.attempt == %{
+    assert error.gateway_check.attempt == %{
              idempotency_key: "run_123:check_gateway_status:attempt_789",
              claim_id: "claim_123"
            }

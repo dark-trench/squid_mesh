@@ -323,12 +323,10 @@ Inspection APIs keep explicit names such as `inspect_run/2`,
 `inspect_run_graph/2`, and `explain_run/2` to avoid confusion with Elixir's
 `inspect/2`.
 
-Breaking API note: public start and control functions now use only the concise
-names. Replace `start_run/*` with `start/*`, `unblock_run/*` with `resume/*`,
-and `approve_run/*`, `reject_run/*`, `cancel_run/*`, and `replay_run/*` with
-`approve/*`, `reject/*`, `cancel/*`, and `replay/*`. Runtime signal constructors
-such as `Signal.approve_run/3` keep their run-suffixed names because those names
-describe persisted command intent.
+Public start, replay, and control helpers use concise names: `start/*`,
+`resume/*`, `approve/*`, `reject/*`, `cancel/*`, and `replay/*`. Runtime signal
+constructors such as `Signal.approve_run/3` keep run-suffixed names because
+those names describe persisted command intent.
 
 Inspect a run with its full step history, audit events, and approval history:
 
