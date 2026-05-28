@@ -21,6 +21,33 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreterTest do
     end
   end
 
+  test "rejects malformed start command signals without raising" do
+    for signal <- [
+          %Signal{
+            type: :start_run,
+            payload: nil,
+            metadata: %{},
+            occurred_at: DateTime.utc_now()
+          },
+          %Signal{
+            type: :start_run,
+            payload: %{workflow: :bad_workflow, trigger: "manual", input: %{}},
+            metadata: %{},
+            occurred_at: DateTime.utc_now()
+          },
+          %Signal{
+            type: :start_cron,
+            payload: %{workflow: :bad_workflow, trigger: nil, input: %{}},
+            metadata: %{},
+            occurred_at: DateTime.utc_now()
+          }
+        ] do
+      signal_type = signal.type
+
+      assert {:error, {:invalid_signal, ^signal_type}} = SignalInterpreter.apply(signal, [])
+    end
+  end
+
   test "rejects unsupported runtime command signals" do
     signal = %Signal{
       type: :unknown_command,

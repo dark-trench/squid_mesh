@@ -70,6 +70,22 @@ transition :check_gateway_status,
 transition :check_gateway_status, on: :ok, to: :issue_gateway_credit
 ```
 
+The gateway check step also copies the durable step-context metadata into its
+output under `gateway_check.attempt`, so the Bedrock example demonstrates the
+same native context fields as the minimal host app while keeping delivery and
+leasing behind the host-owned Bedrock adapter.
+
+The `BedrockMinimalHostApp.WorkflowRuns` boundary also demonstrates runtime
+control signals: host code builds `SquidMesh.Runtime.Signal` values for
+cancel/resume/approve/reject commands and applies them through
+`SquidMesh.apply_signal/2`. The example tests cover cancellation and manual
+control signals that reach run history, plus a missing-run signal target.
+
+`BedrockMinimalHostApp.RuntimeSignals` is the concrete Jido-facing signal
+boundary. It accepts inbound `Jido.Signal` envelopes, converts them with
+`SquidMesh.Runtime.Signal.JidoAdapter`, and applies the resulting Squid Mesh
+runtime command.
+
 The example intentionally does not include another job backend. That keeps the
 adapter boundary clear while the spike evaluates Bedrock as the host-owned
 delivery and leasing layer for Jido-native Squid Mesh execution.

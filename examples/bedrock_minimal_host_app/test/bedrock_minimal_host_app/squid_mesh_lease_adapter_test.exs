@@ -5,6 +5,7 @@ defmodule BedrockMinimalHostApp.SquidMeshLeaseAdapterTest do
   alias BedrockMinimalHostApp.Jobs.SquidMeshPayload
   alias BedrockMinimalHostApp.JobQueue
   alias BedrockMinimalHostApp.Repo
+  alias BedrockMinimalHostApp.RuntimeSignals
   alias BedrockMinimalHostApp.SquidMeshLeaseAdapter
   alias BedrockMinimalHostApp.WorkflowRuns
   alias BedrockMinimalHostApp.Workflows.DailyDigest
@@ -125,6 +126,176 @@ defmodule BedrockMinimalHostApp.SquidMeshLeaseAdapterTest do
     assert {:ok, inspected_run} = WorkflowRuns.inspect_run(run.run_id)
     assert inspected_run.status == :completed
     assert inspected_run.context.digest_delivery.channel == "ops"
+  end
+
+  test "applies cancellation through the example app signal boundary" do
+    queue = "bedrock-signal-cancel-#{System.unique_integer([:positive])}"
+
+    with_squid_mesh_queue(queue, fn ->
+      assert {:ok, started_run} =
+               WorkflowRuns.start_cancellable_wait(%{account_id: "acct_bedrock_signal_cancel"})
+
+      assert started_run.queue == queue
+      assert started_run.status == :running
+      assert [%{step: "wait_for_cancellation", status: :available}] = started_run.visible_attempts
+
+      assert {:ok, signal} =
+               SquidMesh.Runtime.Signal.cancel_run(started_run.run_id,
+                 metadata: %{source: "bedrock_minimal_host_app.runtime_signals"},
+                 idempotency_key: "bedrock-runtime-signal:cancel:#{started_run.run_id}"
+               )
+
+      assert {:ok, jido_signal} = RuntimeSignals.to_jido(signal)
+      assert {:ok, cancelled_run} = RuntimeSignals.apply(jido_signal)
+
+      assert cancelled_run.run_id == started_run.run_id
+      assert cancelled_run.queue == queue
+      assert cancelled_run.status == :cancelled
+      assert cancelled_run.terminal?
+      assert cancelled_run.visible_attempts == []
+
+      assert [
+               %{signal_type: "start_run"},
+               %{
+                 signal_type: "cancel_run",
+                 metadata: %{source: "bedrock_minimal_host_app.runtime_signals"},
+                 idempotency_key: "bedrock-runtime-signal:cancel:" <> _
+               }
+             ] = cancelled_run.command_history
+    end)
+  end
+
+  test "applies manual control signals through the example app boundary" do
+    queue = "bedrock-signal-manual-#{System.unique_integer([:positive])}"
+
+    with_squid_mesh_queue(queue, fn ->
+      assert {:ok, approval_run} =
+               WorkflowRuns.start_manual_approval(%{account_id: "acct_bedrock_approve"})
+
+      assert {:ok, %SquidMesh.ReadModel.Inspection.Snapshot{status: :paused}} =
+               SquidMesh.execute_next(owner_id: "bedrock-manual-approve-test")
+
+      assert {:ok, approved_run} =
+               WorkflowRuns.approve(approval_run.run_id, %{actor: "ops_bedrock"})
+
+      assert [
+               %{signal_type: "start_run"},
+               %{signal_type: "approve_run", payload: %{run_id: approved_run_id}}
+             ] = approved_run.command_history
+
+      assert approved_run_id == approval_run.run_id
+
+      assert {:ok, %SquidMesh.ReadModel.Inspection.Snapshot{status: :completed}} =
+               SquidMesh.execute_next(owner_id: "bedrock-manual-approve-complete-test")
+
+      assert {:ok, rejection_run} =
+               WorkflowRuns.start_manual_approval(%{account_id: "acct_bedrock_reject"})
+
+      assert {:ok, %SquidMesh.ReadModel.Inspection.Snapshot{status: :paused}} =
+               SquidMesh.execute_next(owner_id: "bedrock-manual-reject-test")
+
+      assert {:ok, rejected_run} =
+               WorkflowRuns.reject(rejection_run.run_id, %{actor: "ops_bedrock"})
+
+      assert [
+               %{signal_type: "start_run"},
+               %{signal_type: "reject_run", payload: %{run_id: rejected_run_id}}
+             ] = rejected_run.command_history
+
+      assert rejected_run_id == rejection_run.run_id
+
+      assert {:ok, %SquidMesh.ReadModel.Inspection.Snapshot{status: :completed}} =
+               SquidMesh.execute_next(owner_id: "bedrock-manual-reject-complete-test")
+
+      assert {:ok, pause_run} =
+               WorkflowRuns.start_manual_pause(%{account_id: "acct_bedrock_resume"})
+
+      assert {:ok, %SquidMesh.ReadModel.Inspection.Snapshot{status: :paused}} =
+               SquidMesh.execute_next(owner_id: "bedrock-manual-resume-test")
+
+      assert {:ok, resumed_run} =
+               WorkflowRuns.resume(pause_run.run_id, %{actor: "ops_bedrock"})
+
+      assert [
+               %{signal_type: "start_run"},
+               %{signal_type: "resume_run", payload: %{run_id: resumed_run_id}}
+             ] = resumed_run.command_history
+
+      assert resumed_run_id == pause_run.run_id
+    end)
+  end
+
+  test "returns a structured error when the signal target run is missing" do
+    assert {:error, :not_found} = WorkflowRuns.cancel(Ecto.UUID.generate())
+  end
+
+  test "executes payment recovery through a Bedrock lease with runtime attempt metadata",
+       %{queue: queue} do
+    bypass = Bypass.open()
+
+    Bypass.expect_once(bypass, "GET", "/gateway", fn conn ->
+      Plug.Conn.resp(conn, 200, "retry_required")
+    end)
+
+    with_squid_mesh_queue(queue, fn ->
+      assert {:ok, started_run} =
+               WorkflowRuns.start_payment_recovery(%{
+                 account_id: "acct_bedrock_payment",
+                 invoice_id: "inv_bedrock_payment",
+                 attempt_id: "attempt_bedrock_payment",
+                 gateway_url: "http://localhost:#{bypass.port}/gateway"
+               })
+
+      assert {:ok, _item_id} = JobQueue.enqueue(queue, "squid_mesh:payload", drain_payload(queue))
+      assert {:ok, [claim]} = SquidMeshLeaseAdapter.claim(%{}, queue, "worker_payment", [])
+
+      assert :ok = SquidMeshPayload.perform(claim.payload, %{})
+      assert :ok = SquidMeshLeaseAdapter.complete(%{}, claim, [])
+
+      assert {:ok, completed_run} = WorkflowRuns.inspect_run(started_run.run_id)
+      assert completed_run.status == :completed
+      assert completed_run.context.gateway_check.status == "retry_required"
+      assert completed_run.context.gateway_check.attempt.idempotency_key
+      assert completed_run.context.gateway_check.attempt.claim_id
+      refute Map.has_key?(completed_run.context.gateway_check.attempt, :claim_token)
+    end)
+  end
+
+  test "keeps Bedrock payment recovery retry errors inspectable with attempt metadata",
+       %{queue: queue} do
+    bypass = Bypass.open()
+
+    Bypass.expect(bypass, "GET", "/gateway", fn conn ->
+      Plug.Conn.resp(conn, 503, "gateway_unavailable")
+    end)
+
+    with_squid_mesh_queue(queue, fn ->
+      assert {:ok, started_run} =
+               WorkflowRuns.start_payment_recovery(%{
+                 account_id: "acct_bedrock_payment_retry",
+                 invoice_id: "inv_bedrock_payment_retry",
+                 attempt_id: "attempt_bedrock_payment_retry",
+                 gateway_url: "http://localhost:#{bypass.port}/gateway"
+               })
+
+      Application.put_env(:bedrock_minimal_host_app, SquidMeshPayload, max_journal_attempts: 2)
+
+      assert {:ok, _item_id} = JobQueue.enqueue(queue, "squid_mesh:payload", drain_payload(queue))
+      assert {:ok, [claim]} = SquidMeshLeaseAdapter.claim(%{}, queue, "worker_payment_retry", [])
+
+      assert {:error, :journal_drain_limit_exceeded} =
+               SquidMeshPayload.perform(claim.payload, %{})
+
+      assert {:ok, retrying_run} = WorkflowRuns.inspect_run(started_run.run_id)
+
+      assert %{idempotency_key: _idempotency_key, claim_id: _claim_id} =
+               failed_attempt =
+               Enum.find(retrying_run.attempts, fn attempt ->
+                 attempt.step == "check_gateway_status" and attempt.status == :failed
+               end)
+
+      refute Map.has_key?(failed_attempt, :claim_token)
+    end)
   end
 
   test "executes a nested journal workflow through a Bedrock lease and drains child retry separately",
@@ -330,5 +501,22 @@ defmodule BedrockMinimalHostApp.SquidMeshLeaseAdapterTest do
     Repo.delete_all("squid_mesh_journal_entries")
     Repo.delete_all("squid_mesh_journal_checkpoints")
     Repo.delete_all("squid_mesh_journal_threads")
+  end
+
+  defp drain_payload(queue), do: %{"kind" => "drain", "queue" => queue}
+
+  defp with_squid_mesh_queue(queue, fun) when is_function(fun, 0) do
+    original_queue = Application.get_env(:squid_mesh, :queue)
+    Application.put_env(:squid_mesh, :queue, queue)
+
+    try do
+      fun.()
+    after
+      if is_nil(original_queue) do
+        Application.delete_env(:squid_mesh, :queue)
+      else
+        Application.put_env(:squid_mesh, :queue, original_queue)
+      end
+    end
   end
 end

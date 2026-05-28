@@ -6,6 +6,7 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreter do
   alias SquidMesh.Runtime.Journal.Replay
   alias SquidMesh.Runtime.Journal.Starter
   alias SquidMesh.Runtime.ScheduleIdentity
+  alias SquidMesh.Runtime.ScheduleMetadata
   alias SquidMesh.Runtime.Signal
   alias SquidMesh.Workflow.Definition
 
@@ -48,8 +49,9 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreter do
        when is_binary(workflow_name) and is_map(input) do
     with {:ok, workflow, definition} <- Definition.load_serialized(workflow_name),
          {:ok, trigger} <- signal_trigger(definition, trigger_name, type),
-         {:ok, start_opts} <- start_options(signal, workflow, trigger, opts) do
-      Starter.start_run(workflow, trigger, input, start_opts)
+         {:ok, start_input, start_opts} <-
+           start_arguments(signal, workflow, definition, trigger, input, opts) do
+      start_result(Starter.start_run(workflow, trigger, start_input, start_opts))
     end
   end
 
@@ -78,7 +80,8 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreter do
 
   defp replay_from_signal(%Signal{type: type}, _opts), do: {:error, {:invalid_signal, type}}
 
-  defp signal_trigger(_definition, nil, :start_run), do: {:ok, nil}
+  defp signal_trigger(definition, nil, :start_run),
+    do: {:ok, Definition.default_trigger(definition)}
 
   defp signal_trigger(definition, trigger_name, type) when is_binary(trigger_name) do
     case Definition.deserialize_trigger(definition, trigger_name) do
@@ -88,6 +91,35 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreter do
   end
 
   defp signal_trigger(_definition, _trigger_name, type), do: {:error, {:invalid_signal, type}}
+
+  defp start_arguments(
+         %Signal{type: :start_cron} = signal,
+         workflow,
+         definition,
+         trigger,
+         input,
+         opts
+       ) do
+    with {:ok, _validated_opts} <- start_options(signal, workflow, trigger, opts),
+         {:ok, trigger_definition} <- Definition.trigger(definition, trigger),
+         {:ok, schedule_context} <-
+           ScheduleMetadata.cron_context(workflow, trigger_definition, input),
+         {:ok, start_opts} <-
+           start_options(
+             signal,
+             workflow,
+             trigger,
+             Keyword.put(opts, :initial_context, schedule_context)
+           ) do
+      {:ok, input, start_opts}
+    end
+  end
+
+  defp start_arguments(signal, workflow, _definition, trigger, input, opts) do
+    with {:ok, start_opts} <- start_options(signal, workflow, trigger, opts) do
+      {:ok, input, start_opts}
+    end
+  end
 
   defp start_options(%Signal{type: :start_cron} = signal, workflow, trigger, opts) do
     with {:ok, opts} <- cron_idempotency_options(workflow, trigger, opts) do
@@ -103,6 +135,9 @@ defmodule SquidMesh.Runtime.Journal.SignalInterpreter do
       {:ok, signal_options(signal, opts)}
     end
   end
+
+  defp start_result({:ok, {:duplicate_schedule_start, snapshot}}), do: {:ok, snapshot}
+  defp start_result(result), do: result
 
   defp signal_options(%Signal{} = signal, opts) do
     opts

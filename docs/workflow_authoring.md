@@ -513,8 +513,14 @@ end
 - `workflow`
 - `step`
 - `runnable_key`
+- `idempotency_key`
+- `claim_id`
 - `attempt`
 - `state`, which includes the original payload merged with accumulated run context
+
+`idempotency_key` and `claim_id` are stable, safe attempt identifiers for action
+idempotency and reconciliation. Squid Mesh does not expose raw claim tokens in
+step context.
 
 Native steps may return:
 
@@ -528,8 +534,9 @@ native step's returned map under that key after the step returns. The
 mapping is applied.
 
 Raw `Jido.Action` modules remain supported for advanced interop. They execute
-through the same journal-backed runtime, but applications should prefer `use
-SquidMesh.Step` for the common authoring path.
+through the same journal-backed runtime and receive the same safe context map,
+including `idempotency_key` and `claim_id` but not claim tokens. Applications
+should prefer `use SquidMesh.Step` for the common authoring path.
 
 ## Child Workflow Runs
 

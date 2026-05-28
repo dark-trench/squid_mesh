@@ -163,7 +163,7 @@ defmodule SquidMesh.Runtime.Journal.Executor do
        when is_list(opts) do
     case executable_step(storage, workflow_agent, attempt) do
       {:ok, workflow, definition, step_name, step} ->
-        context = step_context(workflow_agent, attempt, workflow, step_name)
+        context = step_context(workflow_agent, attempt, workflow, step_name, claim_id)
         finished_at = lifecycle_time(opts, claim_now)
         runtime = %{storage: storage, queue: queue, now: finished_at}
 
@@ -1861,13 +1861,15 @@ defmodule SquidMesh.Runtime.Journal.Executor do
     Map.get(data, key) || Map.get(data, Atom.to_string(key))
   end
 
-  defp step_context(workflow_agent, %ActionAttempt{} = attempt, workflow, step_name) do
+  defp step_context(workflow_agent, %ActionAttempt{} = attempt, workflow, step_name, claim_id) do
     %{
       run_id: attempt.run_id,
       workflow: workflow,
       step: step_name,
       attempt: attempt.attempt_number,
       runnable_key: attempt.runnable_key,
+      idempotency_key: attempt.idempotency_key,
+      claim_id: claim_id,
       state:
         workflow_agent
         |> applied_result_context()

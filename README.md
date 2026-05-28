@@ -59,7 +59,7 @@ The written guide follows the same path in a little more detail: installation, o
 
 ## Jido Primitive Boundary
 
-Squid Mesh uses Jido as an internal runtime foundation while keeping the public workflow API focused on Squid Mesh concepts. Production runtime code uses five main Jido primitive families:
+Squid Mesh uses Jido as an internal runtime foundation while keeping the public workflow API focused on Squid Mesh concepts. Production runtime code uses these main Jido primitive families:
 
 | Jido primitive | Squid Mesh use |
 | --- | --- |
@@ -68,11 +68,11 @@ Squid Mesh uses Jido as an internal runtime foundation while keeping the public 
 | `Jido.Storage` | Journal and checkpoint persistence boundary. |
 | `Jido.Thread` / `Jido.Thread.Entry` | Durable journal facts for run, dispatch, index, and catalog threads. |
 | `Jido.Exec` | Action execution inside the journal executor. |
-| `Jido.Signal` | Optional boundary envelope for internal Squid Mesh runtime command signals. |
+| `Jido.Signal` | Interop envelope for Squid Mesh runtime signals when agents or other Jido primitives need to exchange commands/events. |
 
 Support code also touches lower-level details such as `Jido.Thread.EntryNormalizer` and validates built-in storage adapters like `Jido.Storage.File` and `Jido.Storage.Redis`. Workflow authors normally do not need to use those primitives directly.
 
-Runtime command signals use `SquidMesh.Runtime.Signal` as the stable Squid Mesh contract. `SquidMesh.Runtime.Signal.JidoAdapter` can convert those structs to and from `Jido.Signal` envelopes for advanced runtime integration, while public callers stay on Squid Mesh APIs.
+Runtime command signals use `SquidMesh.Runtime.Signal` as the stable Squid Mesh contract. Signals are the natural internal command/event shape for runtime control; `SquidMesh.Runtime.Signal.JidoAdapter` converts those structs to and from `Jido.Signal` envelopes when agents or other Jido primitives need to participate, while public callers can stay on Squid Mesh APIs.
 
 Journal-backed runtime commands are also persisted as run-thread command
 receipts before their lifecycle facts. `SquidMesh.inspect_run/2` exposes those
@@ -147,13 +147,9 @@ Finally, start one supervised worker loop. See [Host App Integration](docs/host_
 
 ## Workflows
 
-Workflows are Elixir modules. A trigger declares the entrypoint and validates
-the payload before the run is persisted. Steps declare their inputs, outputs,
-retry policy, and compensation behavior. Transitions wire them together.
+Workflows are Elixir modules. A trigger declares the entrypoint and validates the payload before the run is persisted. Steps declare their inputs, outputs, retry policy, and compensation behaviour. Transitions wire them together.
 
-The Ring Errand workflow combines payload validation, an approval gate, mapped
-step inputs, conditional routing, retry policy, compensation, recovery routing,
-and an irreversible terminal action.
+The Ring Errand below is the canonical example — a quest with manual gates, approval flows, conditional routing, retries, saga compensation, and irreversible steps:
 
 ```elixir
 defmodule MiddleEarth.Workflows.RingErrand do
@@ -166,26 +162,52 @@ defmodule MiddleEarth.Workflows.RingErrand do
       payload do
         field :bearer, :string, default: "Frodo"
         field :ring_id, :string
-        field :preferred_route, :string, default: "moria"
+        field :snack_count, :integer, default: 11
+        field :panic_level, :float, required: false
+        field :eagle_backup?, :boolean, default: false
+        field :fellowship, :list, default: ["Sam"]
+        field :map_marks, :map, default: %{}
+
+        field :route_preferences, :map,
+          default: %{
+            preferred_route: "moria",
+            risk_tolerance: "heroic"
+          }
+
+        field :mood, :atom, default: :peckish
+        field :started_on, :string, default: {:today, :iso8601}
       end
     end
 
     step :pack_lembas, Hobbiton.Steps.PackLembas,
-      input: [:bearer],
-      output: :provisions
+      input: [:snack_count],
+      output: :provisions,
+      transaction: :repo
+
+    step :announce_departure, :log,
+      message: "Leaving the Shire with suspicious jewelry",
+      level: :info
+
+    step :wait_for_gandalf, :wait,
+      duration: 5_000
+
+    step :hide_at_prancing_pony, :pause
 
     approval_step :council_vote,
       output: :council
 
     step :choose_path, Rivendell.Steps.ChoosePath,
       input: [
-        preferred_route: [:preferred_route],
-        council_decision: [:council, :decision]
+        bearer: [:bearer],
+        council_decision: [:council, :decision],
+        preferred_route: [:route_preferences, :preferred_route],
+        risk_tolerance: [:route_preferences, :risk_tolerance]
       ],
       output: :route
 
     step :cross_moria, Fellowship.Steps.CrossMoria,
-      input: [:bearer, :provisions, :route],
+      input: [:bearer, :provisions, :council, :route],
+      output: :moria,
       retry: [
         max_attempts: 3,
         backoff: [type: :exponential, min: 1_000, max: 10_000]
@@ -194,15 +216,20 @@ defmodule MiddleEarth.Workflows.RingErrand do
     step :reserve_eagle, Eagles.Steps.ReserveRide,
       compensate: Eagles.Steps.CancelRide
 
+    step :insult_sauron, Gondor.Steps.InsultSauron,
+      compensatable: false
+
     step :toss_ring, Mordor.Steps.TossRing,
-      input: [:ring_id],
       irreversible: true
 
-    step :return_home, Hobbiton.Steps.ReturnHome
+    step :walk_home_awkwardly, Hobbiton.Steps.WalkHomeAwkwardly
 
-    transition :pack_lembas, on: :ok, to: :council_vote
+    transition :pack_lembas, on: :ok, to: :announce_departure
+    transition :announce_departure, on: :ok, to: :wait_for_gandalf
+    transition :wait_for_gandalf, on: :ok, to: :hide_at_prancing_pony
+    transition :hide_at_prancing_pony, on: :ok, to: :council_vote
     transition :council_vote, on: :ok, to: :choose_path
-    transition :council_vote, on: :error, to: :return_home
+    transition :council_vote, on: :error, to: :walk_home_awkwardly
 
     transition :choose_path,
       on: :ok,
@@ -211,21 +238,16 @@ defmodule MiddleEarth.Workflows.RingErrand do
 
     transition :choose_path, on: :ok, to: :cross_moria
     transition :cross_moria, on: :ok, to: :reserve_eagle
-    transition :cross_moria, on: :error, to: :return_home, recovery: :undo
-    transition :reserve_eagle, on: :ok, to: :toss_ring
+    transition :cross_moria, on: :error, to: :walk_home_awkwardly, recovery: :undo
+    transition :reserve_eagle, on: :ok, to: :insult_sauron
+    transition :insult_sauron, on: :ok, to: :toss_ring
     transition :toss_ring, on: :ok, to: :complete
-    transition :return_home, on: :ok, to: :complete
+    transition :walk_home_awkwardly, on: :ok, to: :complete
   end
 end
 ```
 
-Pause steps, richer payload shapes, built-in log/wait steps, and
-dependency-based execution are introduced below and expanded in
-[Workflow Authoring](docs/workflow_authoring.md) and
-[Reference Workflows](docs/reference_workflows.md).
-
-Cron-triggered workflows follow the same shape, with scheduling and activation
-remaining host-owned:
+Cron-triggered workflows follow the same shape, with scheduling and activation remaining host-owned:
 
 ```elixir
 defmodule Gondor.Workflows.BeaconWatch do
@@ -301,12 +323,10 @@ Inspection APIs keep explicit names such as `inspect_run/2`,
 `inspect_run_graph/2`, and `explain_run/2` to avoid confusion with Elixir's
 `inspect/2`.
 
-Breaking API note: public start, replay, and control functions now use only the
-concise names. Replace `start_run/*` with `start/*`, `unblock_run/*` with
-`resume/*`, and `approve_run/*`, `reject_run/*`, `cancel_run/*`, and
-`replay_run/*` with `approve/*`, `reject/*`, `cancel/*`, and `replay/*`.
-Runtime signal constructors such as `Signal.approve_run/3` keep their
-run-suffixed names because those names describe persisted command intent.
+Public start, replay, and control helpers use concise names: `start/3`,
+`resume/3`, `approve/3`, `reject/3`, `cancel/2`, and `replay/2`. Runtime signal
+constructors such as `Signal.approve_run/3` keep run-suffixed names because
+those names describe persisted command intent.
 
 Inspect a run with its full step history, audit events, and approval history:
 
@@ -349,9 +369,9 @@ SquidMesh.approve(run.run_id, %{actor: "elrond", note: "approved by council"})
 SquidMesh.reject(run.run_id, %{actor: "elrond", note: "too much singing"})
 ```
 
-Host apps that already normalize runtime commands at their own boundary can
+Host apps that already normalize operator commands at their own boundary can
 build explicit runtime signals and apply them through the same journal
-interpreter used by the public start, replay, and control functions:
+interpreter used by the public control functions:
 
 ```elixir
 alias SquidMesh.Runtime.Signal
@@ -366,10 +386,16 @@ alias SquidMesh.Runtime.Signal
 ```
 
 The same pattern applies to `Signal.start_run/4`, `Signal.start_cron/4`,
-`Signal.resume_run/3`, `Signal.reject_run/3`, `Signal.cancel_run/2`, and
-`Signal.replay_run/2`. Reusing an idempotency key makes duplicate command
-delivery return the already-applied run state without appending another command
-receipt.
+`Signal.replay_run/2`, `Signal.resume_run/3`, `Signal.reject_run/3`, and
+`Signal.cancel_run/2`. Keep using the named helpers such as `SquidMesh.start/3`
+and `SquidMesh.cancel/2` for ordinary application calls; use
+`SquidMesh.apply_signal/2` when an agent, router, webhook, scheduler, or Jido
+interop boundary has already produced a signal envelope. Reusing an idempotency
+key makes duplicate command delivery return the already-applied run state
+without appending another command receipt.
+
+Workflow definitions are authored with the Squid Mesh DSL. Runtime signals
+start, replay, cancel, or resolve runs of those definitions.
 
 Approval steps persist their resolved `:ok` and `:error` targets along with output-mapping metadata, so paused review flows survive deploys and restarts without semantic drift.
 

@@ -121,9 +121,17 @@ defmodule SquidMesh.Runtime.Signal.JidoAdapter do
     end
   end
 
-  defp transport_payload(type, payload) when type in [:start_run, :start_cron] do
+  defp transport_payload(:start_run, payload) do
     with {:ok, workflow} <- fetch_string(payload, :workflow),
          {:ok, trigger} <- fetch_string_or_nil(payload, :trigger),
+         {:ok, input} <- fetch_map(payload, :input) do
+      {:ok, %{"workflow" => workflow, "trigger" => trigger, "input" => input}}
+    end
+  end
+
+  defp transport_payload(:start_cron, payload) do
+    with {:ok, workflow} <- fetch_string(payload, :workflow),
+         {:ok, trigger} <- fetch_string(payload, :trigger),
          {:ok, input} <- fetch_map(payload, :input) do
       {:ok, %{"workflow" => workflow, "trigger" => trigger, "input" => input}}
     end
@@ -177,9 +185,17 @@ defmodule SquidMesh.Runtime.Signal.JidoAdapter do
     end
   end
 
-  defp normalize_payload(type, payload) when type in @start_commands do
+  defp normalize_payload(:start_run, payload) do
     with {:ok, workflow} <- fetch_string(payload, :workflow),
          {:ok, trigger} <- fetch_string_or_nil(payload, :trigger),
+         {:ok, input} <- fetch_map(payload, :input) do
+      {:ok, %{workflow: workflow, trigger: trigger, input: input}}
+    end
+  end
+
+  defp normalize_payload(:start_cron, payload) do
+    with {:ok, workflow} <- fetch_string(payload, :workflow),
+         {:ok, trigger} <- fetch_string(payload, :trigger),
          {:ok, input} <- fetch_map(payload, :input) do
       {:ok, %{workflow: workflow, trigger: trigger, input: input}}
     end

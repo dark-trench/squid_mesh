@@ -13,6 +13,7 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     default_plugins: false
 
   alias Jido.Agent
+  alias SquidMesh.Runtime.DispatchNotifier
   alias SquidMesh.Runtime.DispatchProtocol
   alias SquidMesh.Runtime.DispatchProtocol.ActionAttempt
   alias SquidMesh.Runtime.DispatchProtocol.Projection
@@ -203,15 +204,19 @@ defmodule SquidMesh.Runtime.DispatchAgent do
       when is_binary(queue) and is_binary(run_id) and is_list(runnables) and
              is_integer(thread_rev) and thread_rev >= 0 and is_list(opts) do
     with {:ok, now} <- lifecycle_now(opts),
+         {:ok, notifier, notifier_opts} <- notifier_options(opts),
          {:ok, entries, scheduled_runnables} <-
            schedule_entries(projection, queue, run_id, runnables, now) do
+      wakeup = %{run_id: run_id, notifier: notifier, notifier_opts: notifier_opts, now: now}
+
       persist_dispatch_entries(
         storage,
         agent,
         projection,
         thread_rev,
         entries,
-        scheduled_runnables
+        scheduled_runnables,
+        wakeup
       )
     end
   end
@@ -625,7 +630,8 @@ defmodule SquidMesh.Runtime.DispatchAgent do
          %Projection{},
          _thread_rev,
          [],
-         []
+         [],
+         _wakeup
        ) do
     {:ok, %{agent: agent, runnables: []}}
   end
@@ -636,15 +642,128 @@ defmodule SquidMesh.Runtime.DispatchAgent do
          %Projection{} = projection,
          thread_rev,
          entries,
-         scheduled_runnables
+         scheduled_runnables,
+         %{
+           run_id: run_id,
+           notifier: notifier,
+           notifier_opts: notifier_opts,
+           now: %DateTime{} = now
+         }
        ) do
     with {:ok, thread} <- Journal.append_entries(storage, entries, expected_rev: thread_rev) do
-      {:ok,
-       %{
-         agent: apply_dispatch_entries(agent, projection, entries, thread.rev),
-         runnables: scheduled_runnables
-       }}
+      scheduled_agent = apply_dispatch_entries(agent, projection, entries, thread.rev)
+
+      emit_live_wakeups(
+        storage,
+        scheduled_agent,
+        run_id,
+        scheduled_runnables,
+        notifier,
+        notifier_opts,
+        now
+      )
     end
+  end
+
+  defp emit_live_wakeups(
+         storage,
+         %Agent{} = agent,
+         run_id,
+         scheduled_runnables,
+         notifier,
+         notifier_opts,
+         %DateTime{} = now
+       )
+       when is_binary(run_id) and is_atom(notifier) and not is_nil(notifier) do
+    result =
+      Enum.reduce_while(scheduled_runnables, {:ok, agent, []}, fn runnable,
+                                                                  {:ok, current_agent,
+                                                                   notified_runnables} ->
+        case notify_scheduled_attempt(
+               storage,
+               current_agent,
+               run_id,
+               runnable,
+               notifier,
+               notifier_opts,
+               now
+             ) do
+          {:ok, next_agent} ->
+            {:cont, {:ok, next_agent, [runnable | notified_runnables]}}
+
+          {:ignored, current_agent} ->
+            {:cont, {:ok, current_agent, notified_runnables}}
+        end
+      end)
+
+    case result do
+      {:ok, notified_agent, _notified_runnables} ->
+        {:ok, %{agent: notified_agent, runnables: scheduled_runnables}}
+    end
+  end
+
+  defp emit_live_wakeups(
+         _storage,
+         %Agent{} = agent,
+         _run_id,
+         scheduled_runnables,
+         nil,
+         _notifier_opts,
+         %DateTime{}
+       ) do
+    {:ok, %{agent: agent, runnables: scheduled_runnables}}
+  end
+
+  defp notify_scheduled_attempt(
+         storage,
+         %Agent{} = agent,
+         run_id,
+         runnable,
+         notifier,
+         notifier_opts,
+         %DateTime{} = now
+       )
+       when is_binary(run_id) do
+    attempt = wakeup_attempt(agent.state.queue, run_id, runnable)
+
+    case DispatchNotifier.notify_attempt_scheduled(notifier, attempt, notifier_opts) do
+      :ok ->
+        append_live_wakeup(storage, agent, attempt, now)
+
+      {:error, _reason} ->
+        {:ignored, agent}
+    end
+  end
+
+  defp append_live_wakeup(storage, %Agent{} = agent, attempt, %DateTime{} = now) do
+    with {:ok, wakeup_entry} <-
+           DispatchProtocol.new_entry(:live_wakeup_emitted, %{
+             run_id: Map.fetch!(attempt, :run_id),
+             runnable_key: Map.fetch!(attempt, :runnable_key),
+             queue: Map.fetch!(attempt, :queue),
+             occurred_at: now
+           }),
+         {:ok, next_agent} <-
+           persist_dispatch_entry(
+             storage,
+             agent,
+             agent.state.projection,
+             agent.state.thread_rev,
+             wakeup_entry
+           ) do
+      {:ok, next_agent}
+    else
+      {:error, _reason} -> {:ignored, agent}
+    end
+  end
+
+  defp wakeup_attempt(queue, run_id, runnable) do
+    %{
+      run_id: runnable_value(runnable, :run_id) || run_id,
+      runnable_key: runnable_key(runnable),
+      queue: runnable_value(runnable, :queue) || queue,
+      visible_at: runnable_value(runnable, :visible_at)
+    }
   end
 
   defp persist_claim(
@@ -798,6 +917,25 @@ defmodule SquidMesh.Runtime.DispatchAgent do
       {:ok, now}
     else
       {:error, {:invalid_option, :now}}
+    end
+  end
+
+  defp notifier_options(opts) do
+    notifier = Keyword.get(opts, :notifier)
+    notifier_opts = Keyword.get(opts, :notifier_opts, [])
+
+    cond do
+      is_nil(notifier) ->
+        {:ok, nil, notifier_opts}
+
+      not is_atom(notifier) ->
+        {:error, {:invalid_option, :notifier}}
+
+      not is_list(notifier_opts) ->
+        {:error, {:invalid_option, :notifier_opts}}
+
+      true ->
+        {:ok, notifier, notifier_opts}
     end
   end
 

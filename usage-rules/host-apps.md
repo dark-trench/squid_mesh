@@ -34,6 +34,17 @@
   triggers.
 - Do not deliver step or compensation payloads through `Runner.perform/2`.
 
+## Runtime Commands
+
+- Host API and operator boundaries may build `SquidMesh.Runtime.Signal` values
+  and pass them to `SquidMesh.apply_signal/2`.
+- Attach host-owned metadata and idempotency keys for externally delivered
+  commands so duplicate delivery and operator audit history are explicit.
+- Assert `command_history` in integration tests for cancel, resume, approval,
+  rejection, replay, and scheduler-driven starts.
+- Convert to raw `Jido.Signal` only through `SquidMesh.Runtime.Signal.JidoAdapter`
+  when integrating with Jido agents, signal routers, or other Jido primitives.
+
 ## Bedrock
 
 - Use Bedrock when the host needs durable backend delivery, delayed visibility,

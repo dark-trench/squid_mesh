@@ -33,6 +33,20 @@
   repairable journal operation; stale parent contexts and terminal parent runs
   must be rejected at the boundary.
 
+## Runtime Command Signals
+
+- Treat `SquidMesh.Runtime.Signal` as the Squid Mesh-native command envelope for
+  runtime control.
+- Public control APIs and `SquidMesh.apply_signal/2` must apply signals through
+  the journal runtime, including starts, cron starts, replays, cancellation, and
+  manual controls.
+- Use `SquidMesh.Runtime.Signal.JidoAdapter` only at the Jido interop boundary
+  for agents, routers, or other Jido primitives. Do not leak raw `Jido.Signal`
+  into normal workflow authoring.
+- Preserve `:run_signal_received` command history for applied commands.
+- Reusing an idempotency key means duplicate delivery. A different idempotency
+  key is a different command and must not be silently collapsed.
+
 ## Storage
 
 - Keep `SquidMesh.Runtime.Journal.Storage` as the Squid Mesh-owned storage

@@ -31,6 +31,9 @@
 - Return `{:error, reason}` for terminal failure governed by workflow routing.
 - Return `{:retry, reason}` or `{:retry, reason, opts}` for retryable failure.
 - Keep side-effect idempotency inside the step or host domain boundary.
+- Use `context.idempotency_key` and `context.claim_id` for external
+  reconciliation and action idempotency. Never expose or persist claim tokens in
+  step output, logs, or host-facing errors.
 - Use raw `Jido.Action` modules only for explicit interop.
 
 ## Data Mapping

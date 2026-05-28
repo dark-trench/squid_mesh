@@ -223,9 +223,15 @@ defmodule SquidMesh.Runtime.AgentRecoveryTest do
     for suffix <- [:checkpoints, :threads, :thread_meta] do
       table = table_name(suffix)
 
-      if :ets.whereis(table) != :undefined do
-        :ets.delete(table)
-      end
+      delete_table(table)
     end
+  end
+
+  defp delete_table(table) do
+    if :ets.whereis(table) != :undefined do
+      :ets.delete(table)
+    end
+  rescue
+    ArgumentError -> :ok
   end
 end

@@ -126,6 +126,13 @@ projection can still rediscover the visible attempt after restart. Duplicate
 runnable intent entries are idempotent when their scheduled fields match;
 conflicting entries for the same `runnable_key` are anomalies.
 
+`SquidMesh.Runtime.DispatchNotifier` is the live wakeup boundary. Dispatch
+scheduling first appends `:attempt_scheduled`; only after that commit succeeds
+may a configured notifier emit a live hint to a worker, agent, signal router, or
+other host-owned delivery surface. Successful notifications append
+`:live_wakeup_emitted` to the dispatch thread. Notification failures do not roll
+back scheduling because durable dispatch state remains authoritative.
+
 If a crash happens after the workflow run thread records planned runnables but
 before the dispatch thread records matching `attempt_scheduled` entries, rebuilt
 agents can recover through

@@ -150,6 +150,28 @@ defmodule SquidMesh.Runtime.Signal.JidoAdapterTest do
              JidoAdapter.from_jido(jido_signal)
   end
 
+  test "rejects inbound cron command signals without a trigger" do
+    data = %{
+      "type" => "start_cron",
+      "payload" => %{
+        "workflow" => "Elixir.SquidMesh.Runtime.Signal.JidoAdapterTest.CheckoutWorkflow",
+        "trigger" => nil,
+        "input" => %{}
+      },
+      "metadata" => %{},
+      "occurred_at" => "2026-05-26T12:00:00Z"
+    }
+
+    assert {:ok, jido_signal} =
+             Jido.Signal.new("squid_mesh.runtime.command.start_cron", data,
+               source: "/squid_mesh/runtime/commands",
+               subject: "Elixir.SquidMesh.Runtime.Signal.JidoAdapterTest.CheckoutWorkflow"
+             )
+
+    assert {:error, {:invalid_signal_adapter, {:trigger, :expected_non_empty_string}}} =
+             JidoAdapter.from_jido(jido_signal)
+  end
+
   test "rejects inbound run command signals with malformed run ids" do
     invalid_cases = [
       {"squid_mesh.runtime.command.approve_run", "approve_run",

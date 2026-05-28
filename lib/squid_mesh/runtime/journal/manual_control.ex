@@ -197,7 +197,7 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
     now = command_occurred_at(command)
 
     with {:ok, workflow_agent} <- rebuild_workflow_agent(storage, run_id),
-         {:ok, resolution} <- resolution_target(storage, workflow_agent) do
+         {:ok, resolution} <- resolution_target(storage, workflow_agent, command) do
       append_resolution(storage, run_id, queue, attrs, command, now, retries_left, resolution)
     end
   end
@@ -215,7 +215,7 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
          retries_left
        ) do
     with {:ok, workflow_agent} <- rebuild_workflow_agent(storage, run_id),
-         {:ok, resolution} <- review_resolution_target(storage, workflow_agent, decision) do
+         {:ok, resolution} <- review_resolution_target(storage, workflow_agent, decision, command) do
       append_review_resolution(
         storage,
         run_id,
@@ -232,14 +232,15 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
   defp resolution_target(
          storage,
          %Agent{agent_module: WorkflowAgent, state: %{projection: %Projection{} = projection}} =
-           workflow_agent
+           workflow_agent,
+         command
        ) do
     case active_pause_state(projection) do
       {:ok, manual_state} ->
         {:ok, {:append, workflow_agent, manual_state}}
 
       {:error, {:invalid_transition, status, :running}} when status != :paused ->
-        if resumed_pause_recorded?(storage, workflow_agent.state.run_id) do
+        if resumed_pause_recorded?(storage, workflow_agent.state.run_id, command) do
           {:ok, {:repair, workflow_agent}}
         else
           {:error, {:invalid_transition, status, :running}}
@@ -254,14 +255,15 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
          storage,
          %Agent{agent_module: WorkflowAgent, state: %{projection: %Projection{} = projection}} =
            workflow_agent,
-         decision
+         decision,
+         command
        ) do
     case active_approval_state(projection) do
       {:ok, manual_state} ->
         {:ok, {:append, workflow_agent, manual_state}}
 
       {:error, {:invalid_transition, status, :running}} when status != :paused ->
-        if manual_resolution_recorded?(storage, workflow_agent.state.run_id, decision) do
+        if manual_resolution_recorded?(storage, workflow_agent.state.run_id, decision, command) do
           {:ok, {:repair, workflow_agent}}
         else
           {:error, {:invalid_transition, status, :running}}
@@ -794,11 +796,49 @@ defmodule SquidMesh.Runtime.Journal.ManualControl do
     end
   end
 
-  defp resumed_pause_recorded?(storage, run_id) do
-    manual_resolution_recorded?(storage, run_id, :resumed)
+  defp resumed_pause_recorded?(storage, run_id, command) do
+    manual_resolution_recorded?(storage, run_id, :resumed, command)
   end
 
-  defp manual_resolution_recorded?(storage, run_id, action) when is_atom(action) do
+  defp manual_resolution_recorded?(storage, run_id, action, %Signal{
+         type: signal_type,
+         idempotency_key: idempotency_key
+       })
+       when is_atom(action) and is_binary(idempotency_key) do
+    serialized_action = Atom.to_string(action)
+    serialized_signal_type = Atom.to_string(signal_type)
+
+    case Journal.load_entries(storage, {:run, run_id}) do
+      {:ok, entries} ->
+        action_recorded? =
+          Enum.any?(entries, fn
+            %{type: :manual_step_resolved, data: %{action: ^serialized_action}} -> true
+            _entry -> false
+          end)
+
+        command_recorded? =
+          Enum.any?(entries, fn
+            %{
+              type: :run_signal_received,
+              data: %{signal_type: ^serialized_signal_type, idempotency_key: ^idempotency_key}
+            } ->
+              true
+
+            _entry ->
+              false
+          end)
+
+        action_recorded? and command_recorded?
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
+  defp manual_resolution_recorded?(_storage, _run_id, action, %Signal{}) when is_atom(action),
+    do: false
+
+  defp manual_resolution_recorded?(storage, run_id, action, _command) when is_atom(action) do
     serialized_action = Atom.to_string(action)
 
     case Journal.load_entries(storage, {:run, run_id}) do
