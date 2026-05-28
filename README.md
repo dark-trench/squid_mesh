@@ -122,7 +122,7 @@ Configure the repo and default queue:
 
 ```elixir
 config :squid_mesh,
-  repo: MiddleEarth.Repo,
+  repo: Acme.Repo,
   queue: "default"
 ```
 
@@ -149,100 +149,89 @@ Finally, start one supervised worker loop. See [Host App Integration](docs/host_
 
 Workflows are Elixir modules. A trigger declares the entrypoint and validates the payload before the run is persisted. Steps declare their inputs, outputs, retry policy, and compensation behaviour. Transitions wire them together.
 
-The Ring Errand below is the canonical example — a quest with manual gates, approval flows, conditional routing, retries, saga compensation, and irreversible steps:
+A compact order fulfillment workflow combines manual gates, approval flows, conditional routing, retries, saga compensation, irreversible steps, and built-in adapters:
 
 ```elixir
-defmodule MiddleEarth.Workflows.RingErrand do
+defmodule Acme.Workflows.OrderFulfillment do
   use SquidMesh.Workflow
 
   workflow do
-    trigger :leave_shire do
+    trigger :checkout_submitted do
       manual()
 
       payload do
-        field :bearer, :string, default: "Frodo"
-        field :ring_id, :string
-        field :snack_count, :integer, default: 11
-        field :panic_level, :float, required: false
-        field :eagle_backup?, :boolean, default: false
-        field :fellowship, :list, default: ["Sam"]
-        field :map_marks, :map, default: %{}
-
-        field :route_preferences, :map,
-          default: %{
-            preferred_route: "moria",
-            risk_tolerance: "heroic"
-          }
-
-        field :mood, :atom, default: :peckish
-        field :started_on, :string, default: {:today, :iso8601}
+        field :order_id, :string
+        field :customer_id, :string
+        field :total_cents, :integer
+        field :expedite, :boolean, default: false
       end
     end
 
-    step :pack_lembas, Hobbiton.Steps.PackLembas,
-      input: [:snack_count],
-      output: :provisions,
-      transaction: :repo
+    step :reserve_inventory, Warehouse.Steps.ReserveInventory,
+      input: [:order_id],
+      output: :inventory_hold,
+      transaction: :repo,
+      compensate: Warehouse.Steps.ReleaseInventory
 
-    step :announce_departure, :log,
-      message: "Leaving the Shire with suspicious jewelry",
-      level: :info
-
-    step :wait_for_gandalf, :wait,
-      duration: 5_000
-
-    step :hide_at_prancing_pony, :pause
-
-    approval_step :council_vote,
-      output: :council
-
-    step :choose_path, Rivendell.Steps.ChoosePath,
-      input: [
-        bearer: [:bearer],
-        council_decision: [:council, :decision],
-        preferred_route: [:route_preferences, :preferred_route],
-        risk_tolerance: [:route_preferences, :risk_tolerance]
-      ],
-      output: :route
-
-    step :cross_moria, Fellowship.Steps.CrossMoria,
-      input: [:bearer, :provisions, :council, :route],
-      output: :moria,
+    step :screen_payment, Risk.Steps.ScreenPayment,
+      input: [:customer_id, :total_cents],
+      output: :risk,
       retry: [
         max_attempts: 3,
         backoff: [type: :exponential, min: 1_000, max: 10_000]
       ]
 
-    step :reserve_eagle, Eagles.Steps.ReserveRide,
-      compensate: Eagles.Steps.CancelRide
+    step :manual_review, :pause
 
-    step :insult_sauron, Gondor.Steps.InsultSauron,
+    approval_step :capture_approval,
+      output: :approval
+
+    step :capture_payment, Payments.Steps.Capture,
+      input: [:order_id, :total_cents, :inventory_hold, approval: [:approval, :decision]],
+      output: :payment,
+      compensate: Payments.Steps.Refund
+
+    step :book_shipment, Shipping.Steps.BookShipment,
+      input: [:order_id, :inventory_hold, expedite: [:expedite]],
+      output: :shipment,
+      retry: [max_attempts: 2],
+      compensate: Shipping.Steps.CancelShipment
+
+    step :send_receipt, Notifications.Steps.SendReceipt,
+      input: [:order_id, :payment, :shipment],
       compensatable: false
 
-    step :toss_ring, Mordor.Steps.TossRing,
+    step :handoff_to_carrier, Shipping.Steps.HandoffToCarrier,
+      input: [:shipment],
       irreversible: true
 
-    step :walk_home_awkwardly, Hobbiton.Steps.WalkHomeAwkwardly
+    step :cancel_order, Orders.Steps.CancelOrder
 
-    transition :pack_lembas, on: :ok, to: :announce_departure
-    transition :announce_departure, on: :ok, to: :wait_for_gandalf
-    transition :wait_for_gandalf, on: :ok, to: :hide_at_prancing_pony
-    transition :hide_at_prancing_pony, on: :ok, to: :council_vote
-    transition :council_vote, on: :ok, to: :choose_path
-    transition :council_vote, on: :error, to: :walk_home_awkwardly
+    transition :reserve_inventory, on: :ok, to: :screen_payment
+    transition :reserve_inventory, on: :error, to: :cancel_order
 
-    transition :choose_path,
+    transition :screen_payment,
       on: :ok,
-      to: :reserve_eagle,
-      condition: [path: [:route, :decision], equals: "eagle"]
+      to: :capture_payment,
+      condition: [path: [:risk, :decision], equals: "approve"]
 
-    transition :choose_path, on: :ok, to: :cross_moria
-    transition :cross_moria, on: :ok, to: :reserve_eagle
-    transition :cross_moria, on: :error, to: :walk_home_awkwardly, recovery: :undo
-    transition :reserve_eagle, on: :ok, to: :insult_sauron
-    transition :insult_sauron, on: :ok, to: :toss_ring
-    transition :toss_ring, on: :ok, to: :complete
-    transition :walk_home_awkwardly, on: :ok, to: :complete
+    transition :screen_payment,
+      on: :ok,
+      to: :manual_review,
+      condition: [path: [:risk, :decision], equals: "review"]
+
+    transition :screen_payment, on: :error, to: :cancel_order
+    transition :manual_review, on: :ok, to: :capture_approval
+    transition :manual_review, on: :error, to: :cancel_order
+    transition :capture_approval, on: :ok, to: :capture_payment
+    transition :capture_approval, on: :error, to: :cancel_order
+    transition :capture_payment, on: :ok, to: :book_shipment
+    transition :capture_payment, on: :error, to: :cancel_order, recovery: :undo
+    transition :book_shipment, on: :ok, to: :send_receipt
+    transition :book_shipment, on: :error, to: :cancel_order, recovery: :undo
+    transition :send_receipt, on: :ok, to: :handoff_to_carrier
+    transition :handoff_to_carrier, on: :ok, to: :complete
+    transition :cancel_order, on: :ok, to: :complete
   end
 end
 ```
@@ -250,32 +239,32 @@ end
 Cron-triggered workflows follow the same shape, with scheduling and activation remaining host-owned:
 
 ```elixir
-defmodule Gondor.Workflows.BeaconWatch do
+defmodule Acme.Workflows.InventoryAudit do
   use SquidMesh.Workflow
 
   workflow do
-    trigger :nightly_beacon_check do
+    trigger :nightly_inventory_audit do
       cron "0 21 * * *", timezone: "Etc/UTC"
 
       payload do
-        field :steward_mood, :string, default: "dramatic"
-        field :orc_count, :integer, default: 9001
+        field :warehouse_id, :string, default: "primary"
+        field :low_stock_threshold, :integer, default: 10
       end
     end
 
-    step :inspect_hilltops, Gondor.Steps.InspectHilltops,
+    step :scan_stock, Warehouse.Steps.ScanStock,
       retry: [max_attempts: 5]
 
-    step :light_first_beacon, Gondor.Steps.LightBeacon,
-      compensate: Gondor.Steps.ExtinguishBeacon
+    step :open_restock_orders, Warehouse.Steps.OpenRestockOrders,
+      compensate: Warehouse.Steps.CloseRestockOrders
 
-    step :log_call_for_aid, :log,
-      message: "Gondor calls for aid",
+    step :log_audit, :log,
+      message: "nightly inventory audit completed",
       level: :info
 
-    transition :inspect_hilltops, on: :ok, to: :light_first_beacon
-    transition :light_first_beacon, on: :ok, to: :log_call_for_aid
-    transition :log_call_for_aid, on: :ok, to: :complete
+    transition :scan_stock, on: :ok, to: :open_restock_orders
+    transition :open_restock_orders, on: :ok, to: :log_audit
+    transition :log_audit, on: :ok, to: :complete
   end
 end
 ```
@@ -283,24 +272,24 @@ end
 Dependency-based workflows use `after: [...]` instead of explicit transitions. A step becomes runnable only after all declared dependencies complete:
 
 ```elixir
-defmodule Mordor.Workflows.FinalDistraction do
+defmodule Acme.Workflows.FulfillmentFanout do
   use SquidMesh.Workflow
 
   workflow do
-    trigger :start_distraction do
+    trigger :prepare_fulfillment do
       manual()
 
       payload do
-        field :speech, :string, default: "For Frodo."
+        field :order_id, :string
       end
     end
 
-    step :march_to_gate, Gondor.Steps.MarchToGate
-    step :look_very_brave, Gondor.Steps.LookBrave
-    step :sneak_up_volcano, Hobbiton.Steps.SneakUpVolcano
+    step :print_pick_list, Warehouse.Steps.PrintPickList
+    step :reserve_packaging, Warehouse.Steps.ReservePackaging
+    step :rate_shipments, Shipping.Steps.RateShipments
 
-    step :declare_victory, Gondor.Steps.DeclareVictory,
-      after: [:march_to_gate, :look_very_brave, :sneak_up_volcano],
+    step :release_to_floor, Warehouse.Steps.ReleaseToFloor,
+      after: [:print_pick_list, :reserve_packaging, :rate_shipments],
       irreversible: true
   end
 end
@@ -308,14 +297,14 @@ end
 
 ## Running Workflows
 
-Start a run through the public API:
+Runs start through the public API:
 
 ```elixir
 {:ok, run} =
   SquidMesh.start(
-    MiddleEarth.Workflows.RingErrand,
-    :leave_shire,
-    %{ring_id: "one-ring"}
+    Acme.Workflows.OrderFulfillment,
+    :checkout_submitted,
+    %{order_id: "ord_123", customer_id: "cus_456", total_cents: 12_500}
   )
 ```
 
@@ -328,7 +317,7 @@ Public start, replay, and control helpers use concise names: `start/3`,
 constructors such as `Signal.approve_run/3` keep run-suffixed names because
 those names describe persisted command intent.
 
-Inspect a run with its full step history, audit events, and approval history:
+Run inspection includes full step history, audit events, and approval history:
 
 ```elixir
 SquidMesh.inspect_run(run.run_id, include_history: true)
@@ -359,14 +348,14 @@ explanation.evidence.command_counts
 Approval steps and pause steps block forward progression until explicitly resolved. For generic pause steps:
 
 ```elixir
-SquidMesh.resume(run.run_id, %{actor: "strider", reason: "pipeweed restocked"})
+SquidMesh.resume(run.run_id, %{actor: "ops", reason: "manual review complete"})
 ```
 
 For formal approval gates:
 
 ```elixir
-SquidMesh.approve(run.run_id, %{actor: "elrond", note: "approved by council"})
-SquidMesh.reject(run.run_id, %{actor: "elrond", note: "too much singing"})
+SquidMesh.approve(run.run_id, %{actor: "fraud_analyst", note: "capture approved"})
+SquidMesh.reject(run.run_id, %{actor: "fraud_analyst", note: "suspected fraud"})
 ```
 
 Host apps that already normalize operator commands at their own boundary can
@@ -377,9 +366,9 @@ interpreter used by the public control functions:
 alias SquidMesh.Runtime.Signal
 
 {:ok, signal} =
-  Signal.approve_run(run.run_id, %{actor: "elrond", note: "approved by council"},
-    metadata: %{source: "middle_earth.workflow_runs"},
-    idempotency_key: "council-approval-#{run.run_id}"
+  Signal.approve_run(run.run_id, %{actor: "fraud_analyst", note: "capture approved"},
+    metadata: %{source: "acme.workflow_runs"},
+    idempotency_key: "capture-approval-#{run.run_id}"
   )
 
 {:ok, approved_run} = SquidMesh.apply_signal(signal)
@@ -401,47 +390,47 @@ Approval steps persist their resolved `:ok` and `:error` targets along with outp
 
 ## Compensation and Recovery
 
-When a downstream step fails after retries and the workflow has no forward `:error` route, Squid Mesh executes completed compensation callbacks in reverse completion order. For saga-style steps, declare the callback directly on the step:
+When a downstream step fails after retries and the workflow has no forward `:error` route, Squid Mesh executes completed compensation callbacks in reverse completion order. Saga-style steps attach the callback directly on the step:
 
 ```elixir
-step :borrow_elven_rope, Lothlorien.Steps.BorrowRope,
-  compensate: Lothlorien.Steps.ReturnRope
+step :reserve_inventory, Warehouse.Steps.ReserveInventory,
+  compensate: Warehouse.Steps.ReleaseInventory
 
-step :reserve_eagle, Eagles.Steps.ReserveRide,
-  compensate: Eagles.Steps.CancelRide
+step :capture_payment, Payments.Steps.Capture,
+  compensate: Payments.Steps.Refund
 
-step :cross_moria, Fellowship.Steps.CrossMoria,
+step :book_shipment, Shipping.Steps.BookShipment,
   retry: [max_attempts: 2]
 ```
 
-A failed `:cross_moria` after retry exhaustion cancels the eagle reservation before returning the rope. Each compensation result is persisted under the originating step's `recovery.compensation` history.
+A failed `:book_shipment` after retry exhaustion refunds the payment before releasing the inventory hold. Each compensation result is persisted under the originating step's `recovery.compensation` history.
 
-For external side effects that cannot be honestly reversed, mark the step `irreversible: true` or `compensatable: false`. Squid Mesh exposes these recovery boundaries during inspection and blocks replay by default after irreversible execution unless explicitly overridden.
+External side effects that cannot be honestly reversed use `irreversible: true` or `compensatable: false`. Squid Mesh exposes these recovery boundaries during inspection and blocks replay by default after irreversible execution unless explicitly overridden.
 
 ## Child Workflows
 
-Native steps can start durable child workflow runs when runtime data expands the scope of work. The parent step must pass its `SquidMesh.Step.Context` and a stable `child_key`:
+Native steps can start durable child workflow runs when runtime data expands the scope of work. The parent step passes its `SquidMesh.Step.Context` and a stable `child_key`:
 
 ```elixir
-defmodule Hobbiton.Steps.SendPartyInvites do
-  use SquidMesh.Step, name: :send_party_invites
+defmodule Acme.Steps.StartSupplierOrders do
+  use SquidMesh.Step, name: :start_supplier_orders
 
   @impl true
-  def run(%{party_id: party_id, guests: guests}, %SquidMesh.Step.Context{} = context) do
+  def run(%{order_id: order_id, suppliers: suppliers}, %SquidMesh.Step.Context{} = context) do
     children =
-      for guest <- guests do
+      for supplier <- suppliers do
         {:ok, child} =
           SquidMesh.start_child_run(
             context,
-            Hobbiton.Workflows.DeliverInvite,
-            %{party_id: party_id, guest_id: guest.id},
-            child_key: "invite_#{guest.id}"
+            Acme.Workflows.SupplierOrder,
+            %{order_id: order_id, supplier_id: supplier.id},
+            child_key: "supplier_#{supplier.id}"
           )
 
         child.run_id
       end
 
-    {:ok, %{invite_run_ids: children}}
+    {:ok, %{supplier_run_ids: children}}
   end
 end
 ```
