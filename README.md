@@ -147,9 +147,13 @@ Finally, start one supervised worker loop. See [Host App Integration](docs/host_
 
 ## Workflows
 
-Workflows are Elixir modules. A trigger declares the entrypoint and validates the payload before the run is persisted. Steps declare their inputs, outputs, retry policy, and compensation behaviour. Transitions wire them together.
+Workflows are Elixir modules. A trigger declares the entrypoint and validates
+the payload before the run is persisted. Steps declare their inputs, outputs,
+retry policy, and compensation behavior. Transitions wire them together.
 
-The Ring Errand below is the canonical example — a quest with manual gates, approval flows, conditional routing, retries, saga compensation, and irreversible steps:
+The Ring Errand workflow combines payload validation, an approval gate, mapped
+step inputs, conditional routing, retry policy, compensation, recovery routing,
+and an irreversible terminal action.
 
 ```elixir
 defmodule MiddleEarth.Workflows.RingErrand do
@@ -162,52 +166,26 @@ defmodule MiddleEarth.Workflows.RingErrand do
       payload do
         field :bearer, :string, default: "Frodo"
         field :ring_id, :string
-        field :snack_count, :integer, default: 11
-        field :panic_level, :float, required: false
-        field :eagle_backup?, :boolean, default: false
-        field :fellowship, :list, default: ["Sam"]
-        field :map_marks, :map, default: %{}
-
-        field :route_preferences, :map,
-          default: %{
-            preferred_route: "moria",
-            risk_tolerance: "heroic"
-          }
-
-        field :mood, :atom, default: :peckish
-        field :started_on, :string, default: {:today, :iso8601}
+        field :preferred_route, :string, default: "moria"
       end
     end
 
     step :pack_lembas, Hobbiton.Steps.PackLembas,
-      input: [:snack_count],
-      output: :provisions,
-      transaction: :repo
-
-    step :announce_departure, :log,
-      message: "Leaving the Shire with suspicious jewelry",
-      level: :info
-
-    step :wait_for_gandalf, :wait,
-      duration: 5_000
-
-    step :hide_at_prancing_pony, :pause
+      input: [:bearer],
+      output: :provisions
 
     approval_step :council_vote,
       output: :council
 
     step :choose_path, Rivendell.Steps.ChoosePath,
       input: [
-        bearer: [:bearer],
-        council_decision: [:council, :decision],
-        preferred_route: [:route_preferences, :preferred_route],
-        risk_tolerance: [:route_preferences, :risk_tolerance]
+        preferred_route: [:preferred_route],
+        council_decision: [:council, :decision]
       ],
       output: :route
 
     step :cross_moria, Fellowship.Steps.CrossMoria,
-      input: [:bearer, :provisions, :council, :route],
-      output: :moria,
+      input: [:bearer, :provisions, :route],
       retry: [
         max_attempts: 3,
         backoff: [type: :exponential, min: 1_000, max: 10_000]
@@ -216,20 +194,15 @@ defmodule MiddleEarth.Workflows.RingErrand do
     step :reserve_eagle, Eagles.Steps.ReserveRide,
       compensate: Eagles.Steps.CancelRide
 
-    step :insult_sauron, Gondor.Steps.InsultSauron,
-      compensatable: false
-
     step :toss_ring, Mordor.Steps.TossRing,
+      input: [:ring_id],
       irreversible: true
 
-    step :walk_home_awkwardly, Hobbiton.Steps.WalkHomeAwkwardly
+    step :return_home, Hobbiton.Steps.ReturnHome
 
-    transition :pack_lembas, on: :ok, to: :announce_departure
-    transition :announce_departure, on: :ok, to: :wait_for_gandalf
-    transition :wait_for_gandalf, on: :ok, to: :hide_at_prancing_pony
-    transition :hide_at_prancing_pony, on: :ok, to: :council_vote
+    transition :pack_lembas, on: :ok, to: :council_vote
     transition :council_vote, on: :ok, to: :choose_path
-    transition :council_vote, on: :error, to: :walk_home_awkwardly
+    transition :council_vote, on: :error, to: :return_home
 
     transition :choose_path,
       on: :ok,
@@ -238,16 +211,21 @@ defmodule MiddleEarth.Workflows.RingErrand do
 
     transition :choose_path, on: :ok, to: :cross_moria
     transition :cross_moria, on: :ok, to: :reserve_eagle
-    transition :cross_moria, on: :error, to: :walk_home_awkwardly, recovery: :undo
-    transition :reserve_eagle, on: :ok, to: :insult_sauron
-    transition :insult_sauron, on: :ok, to: :toss_ring
+    transition :cross_moria, on: :error, to: :return_home, recovery: :undo
+    transition :reserve_eagle, on: :ok, to: :toss_ring
     transition :toss_ring, on: :ok, to: :complete
-    transition :walk_home_awkwardly, on: :ok, to: :complete
+    transition :return_home, on: :ok, to: :complete
   end
 end
 ```
 
-Cron-triggered workflows follow the same shape, with scheduling and activation remaining host-owned:
+Pause steps, richer payload shapes, built-in log/wait steps, and
+dependency-based execution are introduced below and expanded in
+[Workflow Authoring](docs/workflow_authoring.md) and
+[Reference Workflows](docs/reference_workflows.md).
+
+Cron-triggered workflows follow the same shape, with scheduling and activation
+remaining host-owned:
 
 ```elixir
 defmodule Gondor.Workflows.BeaconWatch do
