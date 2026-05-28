@@ -28,72 +28,64 @@
 
 Squid Mesh is an embedded durable workflow runtime for Elixir applications. Workflows are declared as Elixir modules through a DSL, persisted through Jido journals, and executed by host-owned workers calling `SquidMesh.execute_next/1`.
 
-The runtime stores workflow state, step attempts, retries, approvals, transitions, audit events, and recovery history inside the host application's database through `Jido.Storage` and the default Ecto adapter. Squid Mesh does not run as a separate service, broker, or orchestration cluster — the host application keeps its existing supervision tree, deployment model, repository, schedulers, and queue backend.
+The runtime stores workflow state, step attempts, retries, approvals, transitions, audit events, and recovery history in the host application's database through `Jido.Storage` and the default Ecto adapter. Squid Mesh does not run as a separate service, broker, or orchestration cluster. The host application retains its existing supervision tree, deployment model, repository, schedulers, and queue backend.
 
-Storage portability comes from the journal storage adapter contract, not from
-arbitrary database compatibility. The bundled production relational path is a
-Postgres-compatible Ecto adapter; see the
-[storage strategy](docs/storage_strategy.md) for the required adapter
-guarantees.
+Storage portability is defined by the journal storage adapter contract, not arbitrary database compatibility. The production relational implementation uses a Postgres-compatible Ecto adapter. See the [storage strategy](docs/storage_strategy.md) for adapter guarantees.
 
-Squid Mesh owns workflow progression, transition routing, retry semantics, pause and approval handling, replay and recovery policy, durable execution history, and graph inspection. Queue delivery, worker supervision, and backend leasing remain host-owned concerns.
+Squid Mesh manages workflow progression, transition routing, retry semantics, pause and approval handling, replay and recovery policy, durable execution history, and graph inspection. Queue delivery, worker supervision, and backend leasing remain host-owned concerns.
 
-Internally, the runtime builds on [Jido](https://github.com/agentjido/jido) for actions, execution, and journaling; [Runic](https://github.com/dark-trench/runic) for workflow planning; and [Spark](https://github.com/ash-project/spark) for the DSL authoring surface.
+The runtime builds on [Jido](https://github.com/agentjido/jido) for actions, execution, and journaling; [Runic](https://github.com/dark-trench/runic) for workflow planning; and [Spark](https://github.com/ash-project/spark) for the DSL authoring surface.
 
 > **Warning**
-> Squid Mesh is still in early development. The runtime is suitable for evaluation, local development, and integration work, but it is not yet documented as production-ready. See [Production Readiness](docs/production_readiness.md) for the current checklist and remaining items.
+> Squid Mesh is in early development. The runtime is suitable for evaluation, local development, and integration work, but is not production-ready. See [Production Readiness](docs/production_readiness.md) for the current status and remaining work.
 
 ## Start Here
 
-The quickest first run is the guided Livebook. It creates a small workflow, starts a journal-backed run, drains visible work with `SquidMesh.execute_next/1`, and inspects the durable result without making you read the full workflow reference first.
+The fastest way to start is the guided Livebook. It demonstrates creating a workflow, starting a journal-backed run, executing work with `SquidMesh.execute_next/1`, and inspecting the durable result.
 
 [![Run in Livebook](https://livebook.dev/badge/v1/pink.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fdark-trench%2Fsquid_mesh%2Fblob%2Fmain%2Fdocs%2Fgetting_started.livemd)
 
-| If you want to... | Start with |
+| Goal | Resource |
 | --- | --- |
-| Run the smallest guided example | [Getting Started Livebook](docs/getting_started.livemd) |
-| Add Squid Mesh to a host app | [Getting Started guide](docs/getting_started.md) |
-| Inspect a working app harness | [Minimal host app](examples/minimal_host_app/README.md) |
+| Run a guided interactive example | [Getting Started Livebook](docs/getting_started.livemd) |
+| Integrate Squid Mesh into an existing application | [Getting Started guide](docs/getting_started.md) |
+| Review a complete working example | [Minimal host app](examples/minimal_host_app/README.md) |
 
-The written guide follows the same path in a little more detail: installation, one workflow, draining journal attempts, inspecting the run, then adding retries, manual gates, cron, and Bedrock-backed leases only when those pieces are useful.
+The written guide covers installation, workflow creation, journal execution, run inspection, retries, manual gates, cron triggers, and Bedrock-backed leases.
 
 ## Jido Primitive Boundary
 
-Squid Mesh uses Jido as an internal runtime foundation while keeping the public workflow API focused on Squid Mesh concepts. Production runtime code uses these main Jido primitive families:
+Squid Mesh uses Jido as an internal runtime foundation while keeping the public workflow API focused on Squid Mesh concepts. The runtime uses these Jido primitives:
 
 | Jido primitive | Squid Mesh use |
 | --- | --- |
-| `Jido.Agent` | Rebuildable workflow and dispatch coordination state. |
-| `Jido.Action` | Step execution interop, including raw Jido action modules and the native `SquidMesh.Step` adapter. |
-| `Jido.Storage` | Journal and checkpoint persistence boundary. |
-| `Jido.Thread` / `Jido.Thread.Entry` | Durable journal facts for run, dispatch, index, and catalog threads. |
-| `Jido.Exec` | Action execution inside the journal executor. |
-| `Jido.Signal` | Interop envelope for Squid Mesh runtime signals when agents or other Jido primitives need to exchange commands/events. |
+| `Jido.Agent` | Rebuildable workflow and dispatch coordination state |
+| `Jido.Action` | Step execution interop, including raw Jido action modules and the native `SquidMesh.Step` adapter |
+| `Jido.Storage` | Journal and checkpoint persistence boundary |
+| `Jido.Thread` / `Jido.Thread.Entry` | Durable journal facts for run, dispatch, index, and catalog threads |
+| `Jido.Exec` | Action execution inside the journal executor |
+| `Jido.Signal` | Optional boundary envelope for internal Squid Mesh runtime command signals |
 
-Support code also touches lower-level details such as `Jido.Thread.EntryNormalizer` and validates built-in storage adapters like `Jido.Storage.File` and `Jido.Storage.Redis`. Workflow authors normally do not need to use those primitives directly.
+Support code uses lower-level primitives such as `Jido.Thread.EntryNormalizer` and validates built-in storage adapters like `Jido.Storage.File` and `Jido.Storage.Redis`. Workflow authors do not need to use these primitives directly.
 
-Runtime command signals use `SquidMesh.Runtime.Signal` as the stable Squid Mesh contract. Signals are the natural internal command/event shape for runtime control; `SquidMesh.Runtime.Signal.JidoAdapter` converts those structs to and from `Jido.Signal` envelopes when agents or other Jido primitives need to participate, while public callers can stay on Squid Mesh APIs.
+Runtime command signals use `SquidMesh.Runtime.Signal` as the stable contract. `SquidMesh.Runtime.Signal.JidoAdapter` converts between `SquidMesh.Runtime.Signal` structs and `Jido.Signal` envelopes for advanced runtime integration. Public callers use Squid Mesh APIs directly.
 
-Journal-backed runtime commands are also persisted as run-thread command
-receipts before their lifecycle facts. `SquidMesh.inspect_run/2` exposes those
-receipts through `snapshot.command_history`, including the command signal type,
-payload, actor/comment when supplied, redacted metadata, idempotency key when
-relevant, and occurrence time.
+Journal-backed runtime commands are persisted as run-thread command receipts before their lifecycle facts. `SquidMesh.inspect_run/2` exposes command history through `snapshot.command_history`, including signal type, payload, actor and comment when supplied, redacted metadata, idempotency key when relevant, and occurrence time.
 
 ## Getting Started
 
-After the first run, use these references to go deeper:
+Documentation and examples:
 
-| Reference | Use when |
+| Reference | Description |
 | --- | --- |
-| [Getting Started](docs/getting_started.md) | You want the shortest written setup and run path. |
-| [Workflow Authoring](docs/workflow_authoring.md) | You want to understand triggers, payloads, steps, transitions, dependencies, input mapping, retries, and compensation. |
-| [Host App Integration](docs/host_app_integration.md) | You are adding Squid Mesh to a Phoenix or OTP app. |
-| [Reference Workflows](docs/reference_workflows.md) | You want approval, recovery, dependency, saga, cron, restart, and soak examples. |
-| [Minimal Host App](examples/minimal_host_app/README.md) | You want the executable example app used for smoke testing. |
-| [Bedrock Minimal Host App](examples/bedrock_minimal_host_app/README.md) | You want backend-owned delivery, leases, delayed visibility, retry requeue, and dead-letter handling. |
-| [Architecture](docs/architecture.md) | You want the runtime flow diagram and component boundaries. |
-| [Positioning Guide](docs/positioning.md) | You want to understand how Squid Mesh compares to adjacent projects. |
+| [Getting Started](docs/getting_started.md) | Setup and first workflow run |
+| [Workflow Authoring](docs/workflow_authoring.md) | Triggers, steps, transitions, retries, and compensation |
+| [Host App Integration](docs/host_app_integration.md) | Phoenix and OTP integration |
+| [Reference Workflows](docs/reference_workflows.md) | Approval, recovery, saga, and cron examples |
+| [Minimal Host App](examples/minimal_host_app/README.md) | Executable example application |
+| [Bedrock Minimal Host App](examples/bedrock_minimal_host_app/README.md) | Backend-owned delivery with leases and retry requeue |
+| [Architecture](docs/architecture.md) | Runtime flow and component boundaries |
+| [Positioning Guide](docs/positioning.md) | Comparison with adjacent projects |
 
 ## Installation
 
@@ -122,7 +114,7 @@ Configure the repo and default queue:
 
 ```elixir
 config :squid_mesh,
-  repo: Acme.Repo,
+  repo: MiddleEarth.Repo,
   queue: "default"
 ```
 
@@ -147,277 +139,212 @@ Finally, start one supervised worker loop. See [Host App Integration](docs/host_
 
 ## Workflows
 
-Workflows are Elixir modules. A trigger declares the entrypoint and validates the payload before the run is persisted. Steps declare their inputs, outputs, retry policy, and compensation behaviour. Transitions wire them together.
+Workflows are Elixir modules. A trigger declares the entrypoint and validates the payload before the run is persisted. Steps declare their inputs, outputs, retry policy, and compensation behavior. Transitions wire them together.
 
-A compact order fulfillment workflow combines approval gates, conditional routing, retries, saga compensation, and irreversible steps:
+This workflow demonstrates manual gates, approval flows, conditional routing, retries, saga compensation, and irreversible steps:
 
 ```elixir
-defmodule Acme.Workflows.OrderFulfillment do
+defmodule MiddleEarth.Workflows.RingErrand do
   use SquidMesh.Workflow
 
   workflow do
-    trigger :checkout_submitted do
+    trigger :leave_shire do
       manual()
 
       payload do
-        field :order_id, :string
-        field :total_cents, :integer
-        field :expedite, :boolean, default: false
+        field :bearer, :string, default: "Frodo"
+        field :ring_id, :string
+        field :route_preference, :string, default: "moria"
       end
     end
 
-    step :reserve_inventory, Warehouse.Steps.ReserveInventory,
-      input: [:order_id],
-      output: :inventory_hold,
-      transaction: :repo,
-      compensate: Warehouse.Steps.ReleaseInventory
+    step :pack_provisions, Hobbiton.Steps.PackProvisions,
+      output: :provisions
 
-    step :screen_order, Risk.Steps.ScreenOrder,
-      input: [:order_id, :total_cents],
-      output: :risk,
-      retry: [max_attempts: 3]
+    step :hide_at_prancing_pony, :pause
 
-    approval_step :payment_approval,
-      output: :approval
+    approval_step :council_vote,
+      output: :council
 
-    step :capture_payment, Payments.Steps.Capture,
-      input: [:order_id, :total_cents, :inventory_hold],
-      output: :payment,
-      compensate: Payments.Steps.Refund
+    step :choose_path, Rivendell.Steps.ChoosePath,
+      input: [bearer: [:bearer], decision: [:council, :decision]],
+      output: :route
 
-    step :ship_order, Shipping.Steps.ShipOrder,
-      input: [:order_id, :inventory_hold, expedite: [:expedite]],
-      output: :shipment,
-      retry: [max_attempts: 2],
+    step :cross_moria, Fellowship.Steps.CrossMoria,
+      input: [:bearer, :provisions, :route],
+      retry: [max_attempts: 3, backoff: [type: :exponential]]
+
+    step :reserve_eagle, Eagles.Steps.ReserveRide,
+      compensate: Eagles.Steps.CancelRide
+
+    step :toss_ring, Mordor.Steps.TossRing,
       irreversible: true
 
-    step :cancel_order, Orders.Steps.CancelOrder
-
-    transition :reserve_inventory, on: :ok, to: :screen_order
-    transition :reserve_inventory, on: :error, to: :cancel_order
-
-    transition :screen_order,
-      on: :ok,
-      to: :capture_payment,
-      condition: [path: [:risk, :decision], equals: "approve"]
-
-    transition :screen_order,
-      on: :ok,
-      to: :payment_approval,
-      condition: [path: [:risk, :decision], equals: "review"]
-
-    transition :screen_order, on: :error, to: :cancel_order, recovery: :undo
-    transition :payment_approval, on: :ok, to: :capture_payment
-    transition :payment_approval, on: :error, to: :cancel_order, recovery: :undo
-    transition :capture_payment, on: :ok, to: :ship_order
-    transition :capture_payment, on: :error, to: :cancel_order, recovery: :undo
-    transition :ship_order, on: :ok, to: :complete
-    transition :ship_order, on: :error, to: :cancel_order, recovery: :undo
-    transition :cancel_order, on: :ok, to: :complete
+    transition :pack_provisions, on: :ok, to: :hide_at_prancing_pony
+    transition :hide_at_prancing_pony, on: :ok, to: :council_vote
+    transition :council_vote, on: :ok, to: :choose_path
+    transition :choose_path, on: :ok, to: :cross_moria
+    transition :cross_moria, on: :ok, to: :reserve_eagle
+    transition :cross_moria, on: :error, to: :complete, recovery: :undo
+    transition :reserve_eagle, on: :ok, to: :toss_ring
+    transition :toss_ring, on: :ok, to: :complete
   end
 end
 ```
 
-Cron-triggered workflows follow the same shape, with scheduling and activation remaining host-owned:
+Cron-triggered workflows use scheduling declarations:
 
 ```elixir
-defmodule Acme.Workflows.InventoryAudit do
+defmodule Gondor.Workflows.BeaconWatch do
   use SquidMesh.Workflow
 
   workflow do
-    trigger :nightly_inventory_audit do
+    trigger :nightly_beacon_check do
       cron "0 21 * * *", timezone: "Etc/UTC"
 
       payload do
-        field :warehouse_id, :string, default: "primary"
-        field :low_stock_threshold, :integer, default: 10
+        field :beacon_count, :integer, default: 7
       end
     end
 
-    step :scan_stock, Warehouse.Steps.ScanStock,
-      retry: [max_attempts: 5]
+    step :inspect_hilltops, Gondor.Steps.InspectHilltops,
+      retry: [max_attempts: 3]
 
-    step :open_restock_orders, Warehouse.Steps.OpenRestockOrders,
-      compensate: Warehouse.Steps.CloseRestockOrders
+    step :light_beacon, Gondor.Steps.LightBeacon,
+      compensate: Gondor.Steps.ExtinguishBeacon
 
-    step :log_audit, :log,
-      message: "nightly inventory audit completed",
-      level: :info
-
-    transition :scan_stock, on: :ok, to: :open_restock_orders
-    transition :open_restock_orders, on: :ok, to: :log_audit
-    transition :log_audit, on: :ok, to: :complete
+    transition :inspect_hilltops, on: :ok, to: :light_beacon
+    transition :light_beacon, on: :ok, to: :complete
   end
 end
 ```
 
-Dependency-based workflows use `after: [...]` instead of explicit transitions. A step becomes runnable only after all declared dependencies complete:
+Dependency-based workflows use `after: [...]` for parallel execution:
 
 ```elixir
-defmodule Acme.Workflows.FulfillmentFanout do
+defmodule Gondor.Workflows.ParallelAttack do
   use SquidMesh.Workflow
 
   workflow do
-    trigger :prepare_fulfillment do
+    trigger :start do
       manual()
-
-      payload do
-        field :order_id, :string
-      end
     end
 
-    step :print_pick_list, Warehouse.Steps.PrintPickList
-    step :reserve_packaging, Warehouse.Steps.ReservePackaging
-    step :rate_shipments, Shipping.Steps.RateShipments
+    step :march_to_gate, Gondor.Steps.MarchToGate
+    step :rally_rohan, Rohan.Steps.RallyArmy
+    step :distract_sauron, Fellowship.Steps.DistractEnemy
 
-    step :release_to_floor, Warehouse.Steps.ReleaseToFloor,
-      after: [:print_pick_list, :reserve_packaging, :rate_shipments],
-      irreversible: true
+    step :declare_victory, Gondor.Steps.DeclareVictory,
+      after: [:march_to_gate, :rally_rohan, :distract_sauron]
   end
 end
 ```
 
 ## Running Workflows
 
-Runs start through the public API:
+Start a workflow run:
 
 ```elixir
 {:ok, run} =
   SquidMesh.start(
-    Acme.Workflows.OrderFulfillment,
-    :checkout_submitted,
-    %{order_id: "ord_123", total_cents: 12_500}
+    MiddleEarth.Workflows.RingErrand,
+    :leave_shire,
+    %{ring_id: "one-ring"}
   )
 ```
 
-Inspection APIs keep explicit names such as `inspect_run/2`,
-`inspect_run_graph/2`, and `explain_run/2` to avoid confusion with Elixir's
-`inspect/2`.
-
-Public start, replay, and control helpers use concise names: `start/3`,
-`resume/3`, `approve/3`, `reject/3`, `cancel/2`, and `replay/2`. Runtime signal
-constructors such as `Signal.approve_run/3` keep run-suffixed names because
-those names describe persisted command intent.
-
-Run inspection includes full step history, audit events, and approval history:
+Inspect a run with full history:
 
 ```elixir
 SquidMesh.inspect_run(run.run_id, include_history: true)
 ```
 
-When a run needs an operator-facing explanation of its current state:
+Get an operator-facing explanation:
 
 ```elixir
 {:ok, explanation} = SquidMesh.explain_run(run.run_id)
 explanation.reason #=> :waiting_for_retry
+explanation.evidence.command_counts #=> %{"start_run" => 1, "cancel_run" => 2}
 ```
 
-`explain_run/2` summarizes the current runtime reason, valid next actions, and supporting evidence. It is designed for dashboards, CLIs, and operational tooling.
-When command receipt facts are present, `explanation.details.latest_command`
-shows the most recent runtime command and `explanation.evidence.command_history`
-keeps the redacted command audit trail. `explanation.evidence.command_counts`
-summarizes redacted command deliveries per signal type, while
-`explanation.evidence.duplicate_commands` highlights duplicate command
-evidence:
-
-```elixir
-explanation.evidence.command_counts
-#=> %{"start_run" => 1, "cancel_run" => 2}
-```
+The `explain_run/2` function summarizes the current state, valid next actions, and supporting evidence for dashboards and operational tooling.
 
 ## Approvals and Manual Gates
 
-Approval steps and pause steps block forward progression until explicitly resolved. For generic pause steps:
+Pause steps and approval steps block progression until explicitly resolved:
 
 ```elixir
-SquidMesh.resume(run.run_id, %{actor: "ops", reason: "manual review complete"})
+# Resume a paused step
+SquidMesh.resume(run.run_id, %{actor: "strider", reason: "ready to proceed"})
+
+# Approve or reject an approval gate
+SquidMesh.approve(run.run_id, %{actor: "elrond", note: "approved"})
+SquidMesh.reject(run.run_id, %{actor: "elrond", note: "rejected"})
 ```
 
-For formal approval gates:
-
-```elixir
-SquidMesh.approve(run.run_id, %{actor: "fraud_analyst", note: "capture approved"})
-SquidMesh.reject(run.run_id, %{actor: "fraud_analyst", note: "suspected fraud"})
-```
-
-Host apps that already normalize operator commands at their own boundary can
-build explicit runtime signals and apply them through the same journal
-interpreter used by the public control functions:
+For idempotent command delivery, use explicit runtime signals:
 
 ```elixir
 alias SquidMesh.Runtime.Signal
 
 {:ok, signal} =
-  Signal.approve_run(run.run_id, %{actor: "fraud_analyst", note: "capture approved"},
-    metadata: %{source: "acme.workflow_runs"},
-    idempotency_key: "capture-approval-#{run.run_id}"
+  Signal.approve_run(run.run_id, %{actor: "elrond", note: "approved"},
+    idempotency_key: "approval-#{run.run_id}"
   )
 
 {:ok, approved_run} = SquidMesh.apply_signal(signal)
 ```
 
-The same pattern applies to `Signal.start_run/4`, `Signal.start_cron/4`,
-`Signal.replay_run/2`, `Signal.resume_run/3`, `Signal.reject_run/3`, and
-`Signal.cancel_run/2`. Keep using the named helpers such as `SquidMesh.start/3`
-and `SquidMesh.cancel/2` for ordinary application calls; use
-`SquidMesh.apply_signal/2` when an agent, router, webhook, scheduler, or Jido
-interop boundary has already produced a signal envelope. Reusing an idempotency
-key makes duplicate command delivery return the already-applied run state
-without appending another command receipt.
-
-Workflow definitions are authored with the Squid Mesh DSL. Runtime signals
-start, replay, cancel, or resolve runs of those definitions.
-
-Approval steps persist their resolved `:ok` and `:error` targets along with output-mapping metadata, so paused review flows survive deploys and restarts without semantic drift.
+Reusing an idempotency key returns the existing result without creating duplicate command receipts. Approval steps persist their resolved targets and output metadata, surviving deploys and restarts.
 
 ## Compensation and Recovery
 
-When a downstream step fails after retries and the workflow has no forward `:error` route, Squid Mesh executes completed compensation callbacks in reverse completion order. Saga-style steps attach the callback directly on the step:
+When a step fails after retries with no forward `:error` route, Squid Mesh executes compensation callbacks in reverse completion order:
 
 ```elixir
-step :reserve_inventory, Warehouse.Steps.ReserveInventory,
-  compensate: Warehouse.Steps.ReleaseInventory
+step :borrow_rope, Lothlorien.Steps.BorrowRope,
+  compensate: Lothlorien.Steps.ReturnRope
 
-step :capture_payment, Payments.Steps.Capture,
-  compensate: Payments.Steps.Refund
+step :reserve_eagle, Eagles.Steps.ReserveRide,
+  compensate: Eagles.Steps.CancelRide
 
-step :book_shipment, Shipping.Steps.BookShipment,
-  retry: [max_attempts: 2]
+step :cross_moria, Fellowship.Steps.CrossMoria,
+  retry: [max_attempts: 3]
 ```
 
-A failed `:book_shipment` after retry exhaustion refunds the payment before releasing the inventory hold. Each compensation result is persisted under the originating step's `recovery.compensation` history.
+A failed `:cross_moria` triggers compensation in reverse order: cancel eagle, then return rope. Each compensation result is persisted in the step's recovery history.
 
-External side effects that cannot be honestly reversed use `irreversible: true` or `compensatable: false`. Squid Mesh exposes these recovery boundaries during inspection and blocks replay by default after irreversible execution unless explicitly overridden.
+For side effects that cannot be reversed, mark steps as `irreversible: true` or `compensatable: false`. Squid Mesh exposes these boundaries during inspection and blocks replay by default after irreversible execution.
 
 ## Child Workflows
 
-Native steps can start durable child workflow runs when runtime data expands the scope of work. The parent step passes its `SquidMesh.Step.Context` and a stable `child_key`:
+Steps can spawn child workflow runs for dynamic work expansion:
 
 ```elixir
-defmodule Acme.Steps.StartSupplierOrders do
-  use SquidMesh.Step, name: :start_supplier_orders
+defmodule Hobbiton.Steps.SendInvites do
+  use SquidMesh.Step, name: :send_invites
 
   @impl true
-  def run(%{order_id: order_id, suppliers: suppliers}, %SquidMesh.Step.Context{} = context) do
+  def run(%{party_id: party_id, guests: guests}, %SquidMesh.Step.Context{} = context) do
     children =
-      for supplier <- suppliers do
+      for guest <- guests do
         {:ok, child} =
           SquidMesh.start_child_run(
             context,
-            Acme.Workflows.SupplierOrder,
-            %{order_id: order_id, supplier_id: supplier.id},
-            child_key: "supplier_#{supplier.id}"
+            Hobbiton.Workflows.DeliverInvite,
+            %{party_id: party_id, guest_id: guest.id},
+            child_key: "invite_#{guest.id}"
           )
 
         child.run_id
       end
 
-    {:ok, %{supplier_run_ids: children}}
+    {:ok, %{child_run_ids: children}}
   end
 end
 ```
 
-Each child is a normal journal run with its own inspection, retry, replay, and cancellation boundary. Repeating the same parent step and `child_key` returns the existing child run instead of creating duplicate lineage.
+Each child run has independent inspection, retry, replay, and cancellation. Repeating the same `child_key` returns the existing child instead of creating duplicates.
 
 ## Cancellation, Replay, and Listing
 
@@ -432,7 +359,7 @@ Each child is a normal journal run with its own inspection, retry, replay, and c
 
 ## Graph Inspection
 
-Graph inspection exposes the workflow as UI-friendly nodes and edges. For conditional paths, the selected transition edge is marked separately from sibling edges, allowing dashboards to visualize execution flow directly from persisted runtime state:
+Inspect the workflow graph with execution state:
 
 ```elixir
 {:ok, graph} = SquidMesh.inspect_run_graph(run.run_id)
@@ -441,6 +368,8 @@ graph
 |> SquidMesh.Runs.GraphInspection.to_map()
 |> Map.take([:status, :current_node_ids, :nodes, :edges])
 ```
+
+The graph includes nodes, edges, and the selected transition path for conditional routing.
 
 ## Optional Dashboard
 

@@ -1,18 +1,13 @@
 # Getting Started
 
-This is the first guide for workflow authors and host-app maintainers. It starts
-with the product model, then adds runtime, reliability, and operations concepts
-only when they become useful.
+This guide covers the essential workflow authoring and integration concepts. It introduces runtime, reliability, and operations features incrementally.
 
 > ### Learn with Livebook
 >
-> The fastest interactive path is the getting-started Livebook. It walks through
-> a small runnable workflow, from step modules to run inspection and approval.
+> The fastest way to start is the interactive Livebook. It demonstrates workflow creation, step modules, run inspection, and approval flows.
 > [![Run in Livebook](https://livebook.dev/badge/v1/pink.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fdark-trench%2Fsquid_mesh%2Fblob%2Fmain%2Fdocs%2Fgetting_started.livemd)
 
-If you are adding Squid Mesh to a real host app, continue with the written
-steps below. They keep the first run small and introduce retries, manual gates,
-cron, child runs, and Bedrock leases only after the base loop is working.
+For production integration, follow the steps below. They introduce retries, manual gates, cron, child runs, and Bedrock leases after establishing the base execution loop.
 
 ## Mental Model
 
@@ -41,17 +36,14 @@ config :squid_mesh,
   queue: "default"
 ```
 
-Then install the current Squid Mesh migration into the host app and run it:
+Install and run the migration:
 
 ```sh
 mix squid_mesh.install
 mix ecto.migrate
 ```
 
-This gives Squid Mesh a Jido-backed journal store inside the host repo. Host
-apps can use another Jido-compatible store later, but production stores must
-provide ordered per-thread appends, optimistic conflict detection, and durable
-checkpoint reads.
+This creates a Jido-backed journal store in the host repo. Production stores must provide ordered per-thread appends, optimistic conflict detection, and durable checkpoint reads.
 
 Read next: [Host app integration](host_app_integration.md).
 
@@ -114,19 +106,13 @@ Public start, replay, and control helpers use concise names: `start/3`,
 `SquidMesh.Runtime.Signal` constructors keep run-suffixed names because those
 names describe persisted command intent.
 
-Workers drain visible journal attempts by calling:
+Workers drain journal attempts:
 
 ```elixir
 SquidMesh.execute_next(owner_id: "worker-1")
 ```
 
-A host app usually wraps that call in a supervised worker loop. The loop can be
-simple at first: call `execute_next/1`, back off when it returns `{:ok, :none}`,
-and add metrics or capacity controls as the integration matures. Step execution
-is pulled from the journal with `execute_next/1`. The remaining
-`SquidMesh.Executor` behavior is for optional cron payload enqueueing, while
-`SquidMesh.Executor.Leases` owns backend lease management when the host app
-opts into fencing and recovery.
+Wrap this call in a supervised worker loop. Start simple: call `execute_next/1`, back off when it returns `{:ok, :none}`, then add metrics and capacity controls as needed.
 
 Read next: [Host app integration](host_app_integration.md#journal-worker-contract).
 
