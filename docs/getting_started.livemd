@@ -10,14 +10,8 @@ integration guide.
 ## Install
 
 ```elixir
-squid_mesh_ref =
-  System.get_env(
-    "SQUID_MESH_DOCS_REF",
-    "d6f21be53c655246d18c01c94bd51a3405ff9086"
-  )
-
 Mix.install([
-  {:squid_mesh, git: "https://github.com/dark-trench/squid_mesh.git", ref: squid_mesh_ref}
+  {:squid_mesh, git: "https://github.com/dark-trench/squid_mesh.git"}
 ])
 ```
 
