@@ -149,7 +149,7 @@ Finally, start one supervised worker loop. See [Host App Integration](docs/host_
 
 Workflows are Elixir modules. A trigger declares the entrypoint and validates the payload before the run is persisted. Steps declare their inputs, outputs, retry policy, and compensation behaviour. Transitions wire them together.
 
-A compact order fulfillment workflow combines manual gates, approval flows, conditional routing, retries, saga compensation, irreversible steps, and built-in adapters:
+A compact order fulfillment workflow combines approval gates, conditional routing, retries, saga compensation, and irreversible steps:
 
 ```elixir
 defmodule Acme.Workflows.OrderFulfillment do
@@ -161,7 +161,6 @@ defmodule Acme.Workflows.OrderFulfillment do
 
       payload do
         field :order_id, :string
-        field :customer_id, :string
         field :total_cents, :integer
         field :expedite, :boolean, default: false
       end
@@ -173,64 +172,47 @@ defmodule Acme.Workflows.OrderFulfillment do
       transaction: :repo,
       compensate: Warehouse.Steps.ReleaseInventory
 
-    step :screen_payment, Risk.Steps.ScreenPayment,
-      input: [:customer_id, :total_cents],
+    step :screen_order, Risk.Steps.ScreenOrder,
+      input: [:order_id, :total_cents],
       output: :risk,
-      retry: [
-        max_attempts: 3,
-        backoff: [type: :exponential, min: 1_000, max: 10_000]
-      ]
+      retry: [max_attempts: 3]
 
-    step :manual_review, :pause
-
-    approval_step :capture_approval,
+    approval_step :payment_approval,
       output: :approval
 
     step :capture_payment, Payments.Steps.Capture,
-      input: [:order_id, :total_cents, :inventory_hold, approval: [:approval, :decision]],
+      input: [:order_id, :total_cents, :inventory_hold],
       output: :payment,
       compensate: Payments.Steps.Refund
 
-    step :book_shipment, Shipping.Steps.BookShipment,
+    step :ship_order, Shipping.Steps.ShipOrder,
       input: [:order_id, :inventory_hold, expedite: [:expedite]],
       output: :shipment,
       retry: [max_attempts: 2],
-      compensate: Shipping.Steps.CancelShipment
-
-    step :send_receipt, Notifications.Steps.SendReceipt,
-      input: [:order_id, :payment, :shipment],
-      compensatable: false
-
-    step :handoff_to_carrier, Shipping.Steps.HandoffToCarrier,
-      input: [:shipment],
       irreversible: true
 
     step :cancel_order, Orders.Steps.CancelOrder
 
-    transition :reserve_inventory, on: :ok, to: :screen_payment
+    transition :reserve_inventory, on: :ok, to: :screen_order
     transition :reserve_inventory, on: :error, to: :cancel_order
 
-    transition :screen_payment,
+    transition :screen_order,
       on: :ok,
       to: :capture_payment,
       condition: [path: [:risk, :decision], equals: "approve"]
 
-    transition :screen_payment,
+    transition :screen_order,
       on: :ok,
-      to: :manual_review,
+      to: :payment_approval,
       condition: [path: [:risk, :decision], equals: "review"]
 
-    transition :screen_payment, on: :error, to: :cancel_order
-    transition :manual_review, on: :ok, to: :capture_approval
-    transition :manual_review, on: :error, to: :cancel_order
-    transition :capture_approval, on: :ok, to: :capture_payment
-    transition :capture_approval, on: :error, to: :cancel_order
-    transition :capture_payment, on: :ok, to: :book_shipment
+    transition :screen_order, on: :error, to: :cancel_order, recovery: :undo
+    transition :payment_approval, on: :ok, to: :capture_payment
+    transition :payment_approval, on: :error, to: :cancel_order, recovery: :undo
+    transition :capture_payment, on: :ok, to: :ship_order
     transition :capture_payment, on: :error, to: :cancel_order, recovery: :undo
-    transition :book_shipment, on: :ok, to: :send_receipt
-    transition :book_shipment, on: :error, to: :cancel_order, recovery: :undo
-    transition :send_receipt, on: :ok, to: :handoff_to_carrier
-    transition :handoff_to_carrier, on: :ok, to: :complete
+    transition :ship_order, on: :ok, to: :complete
+    transition :ship_order, on: :error, to: :cancel_order, recovery: :undo
     transition :cancel_order, on: :ok, to: :complete
   end
 end
@@ -304,7 +286,7 @@ Runs start through the public API:
   SquidMesh.start(
     Acme.Workflows.OrderFulfillment,
     :checkout_submitted,
-    %{order_id: "ord_123", customer_id: "cus_456", total_cents: 12_500}
+    %{order_id: "ord_123", total_cents: 12_500}
   )
 ```
 
