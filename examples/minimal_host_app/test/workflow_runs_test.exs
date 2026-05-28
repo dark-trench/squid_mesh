@@ -2,6 +2,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
   use MinimalHostApp.DataCase
 
   alias MinimalHostApp.CronPlugin
+  alias MinimalHostApp.RuntimeSignals
   alias MinimalHostApp.Smoke
   alias MinimalHostApp.Steps
   alias MinimalHostApp.Workers.SquidMeshWorker
@@ -12,7 +13,6 @@ defmodule MinimalHostApp.WorkflowRunsTest do
   alias SquidMesh.ReadModel.Inspection.Snapshot
   alias SquidMesh.ReadModel.Listing.Summary
   alias SquidMesh.Runtime.Signal
-  alias SquidMesh.Runtime.Signal.JidoAdapter
 
   defmodule InvalidRecurringIdempotentCronWorkflow do
     use SquidMesh.Workflow
@@ -993,17 +993,16 @@ defmodule MinimalHostApp.WorkflowRunsTest do
                idempotency_key: "minimal-host-app:jido-cancel:#{run.run_id}"
              )
 
-    assert {:ok, jido_signal} = JidoAdapter.to_jido(signal)
-    assert {:ok, inbound_signal} = JidoAdapter.from_jido(jido_signal)
+    assert {:ok, jido_signal} = RuntimeSignals.to_jido(signal)
 
-    assert {:ok, cancelled_run} = SquidMesh.apply_signal(inbound_signal)
+    assert {:ok, cancelled_run} = RuntimeSignals.apply(jido_signal)
 
     assert cancelled_run.status == :cancelled
     assert cancelled_run.visible_attempts == []
 
     command_history_before = cancelled_run.command_history
 
-    assert {:ok, duplicate_cancelled_run} = SquidMesh.apply_signal(inbound_signal)
+    assert {:ok, duplicate_cancelled_run} = RuntimeSignals.apply(jido_signal)
 
     assert duplicate_cancelled_run.command_history == command_history_before
 
@@ -1023,7 +1022,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              )
 
     assert {:error, {:invalid_signal_adapter, {:data, :missing_signal_payload}}} =
-             JidoAdapter.from_jido(invalid_jido_signal)
+             RuntimeSignals.apply(invalid_jido_signal)
   end
 
   test "runs the documented smoke path" do

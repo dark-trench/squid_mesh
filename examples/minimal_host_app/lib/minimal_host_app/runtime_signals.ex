@@ -1,0 +1,27 @@
+defmodule MinimalHostApp.RuntimeSignals do
+  @moduledoc """
+  Host-app boundary for runtime command signals.
+
+  Application code can use `SquidMesh.Runtime.Signal` directly. Jido-facing
+  routers or agents can exchange `Jido.Signal` envelopes and hand them to this
+  module at the boundary.
+  """
+
+  alias SquidMesh.ReadModel.Inspection
+  alias SquidMesh.Runtime.Signal
+  alias SquidMesh.Runtime.Signal.JidoAdapter
+
+  @type apply_result :: {:ok, Inspection.Snapshot.t()} | {:error, term()}
+
+  @spec apply(Signal.t() | Jido.Signal.t()) :: apply_result()
+  def apply(%Signal{} = signal), do: SquidMesh.apply_signal(signal)
+
+  def apply(%Jido.Signal{} = signal) do
+    with {:ok, runtime_signal} <- JidoAdapter.from_jido(signal) do
+      SquidMesh.apply_signal(runtime_signal)
+    end
+  end
+
+  @spec to_jido(Signal.t()) :: {:ok, Jido.Signal.t()} | {:error, term()}
+  def to_jido(%Signal{} = signal), do: JidoAdapter.to_jido(signal)
+end

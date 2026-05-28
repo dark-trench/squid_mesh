@@ -5,6 +5,7 @@ defmodule BedrockMinimalHostApp.SquidMeshLeaseAdapterTest do
   alias BedrockMinimalHostApp.Jobs.SquidMeshPayload
   alias BedrockMinimalHostApp.JobQueue
   alias BedrockMinimalHostApp.Repo
+  alias BedrockMinimalHostApp.RuntimeSignals
   alias BedrockMinimalHostApp.SquidMeshLeaseAdapter
   alias BedrockMinimalHostApp.WorkflowRuns
   alias BedrockMinimalHostApp.Workflows.DailyDigest
@@ -138,7 +139,14 @@ defmodule BedrockMinimalHostApp.SquidMeshLeaseAdapterTest do
       assert started_run.status == :running
       assert [%{step: "wait_for_cancellation", status: :available}] = started_run.visible_attempts
 
-      assert {:ok, cancelled_run} = WorkflowRuns.cancel(started_run.run_id)
+      assert {:ok, signal} =
+               SquidMesh.Runtime.Signal.cancel_run(started_run.run_id,
+                 metadata: %{source: "bedrock_minimal_host_app.runtime_signals"},
+                 idempotency_key: "bedrock-runtime-signal:cancel:#{started_run.run_id}"
+               )
+
+      assert {:ok, jido_signal} = RuntimeSignals.to_jido(signal)
+      assert {:ok, cancelled_run} = RuntimeSignals.apply(jido_signal)
 
       assert cancelled_run.run_id == started_run.run_id
       assert cancelled_run.queue == queue
@@ -150,7 +158,8 @@ defmodule BedrockMinimalHostApp.SquidMeshLeaseAdapterTest do
                %{signal_type: "start_run"},
                %{
                  signal_type: "cancel_run",
-                 metadata: %{source: "bedrock_minimal_host_app.workflow_runs"}
+                 metadata: %{source: "bedrock_minimal_host_app.runtime_signals"},
+                 idempotency_key: "bedrock-runtime-signal:cancel:" <> _
                }
              ] = cancelled_run.command_history
     end)

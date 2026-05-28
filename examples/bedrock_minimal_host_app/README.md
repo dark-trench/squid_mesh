@@ -81,6 +81,11 @@ cancel/resume/approve/reject commands and applies them through
 `SquidMesh.apply_signal/2`. The example tests cover cancellation and manual
 control signals that reach run history, plus a missing-run signal target.
 
+`BedrockMinimalHostApp.RuntimeSignals` is the concrete Jido-facing signal
+boundary. It accepts inbound `Jido.Signal` envelopes, converts them with
+`SquidMesh.Runtime.Signal.JidoAdapter`, and applies the resulting Squid Mesh
+runtime command.
+
 The example intentionally does not include another job backend. That keeps the
 adapter boundary clear while the spike evaluates Bedrock as the host-owned
 delivery and leasing layer for Jido-native Squid Mesh execution.
