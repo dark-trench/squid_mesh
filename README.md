@@ -1,8 +1,6 @@
-<div align="center">
+<div align="left">
 
-# SquidMesh — Durable workflow runtime for Elixir
-
-<img width="350" alt="Squid Mesh logo" src="https://github.com/user-attachments/assets/37bdd955-aacf-448e-b050-4d3305020c32" />
+# SquidMesh
 
 <p>
   <a href="https://github.com/dark-trench/squid_mesh/actions/workflows/ci.yml">
